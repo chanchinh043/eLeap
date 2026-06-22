@@ -1,3 +1,4 @@
+// ReadingListScreen.kt
 package com.eleap.eleap.feature.reading
 
 import androidx.compose.foundation.clickable
@@ -14,7 +15,7 @@ import androidx.compose.ui.Modifier
 import androidx.compose.ui.platform.LocalContext
 import androidx.compose.ui.unit.dp
 import androidx.lifecycle.viewmodel.compose.viewModel
-import com.eleap.eleap.feature.reading.data.Entities
+import com.eleap.eleap.feature.reading.data.Reading
 
 @OptIn(ExperimentalMaterial3Api::class)
 @Composable
@@ -56,7 +57,7 @@ fun ReadingListScreen(
 }
 
 @Composable
-private fun ReadingCard(reading: Entities, onClick: () -> Unit) {
+private fun ReadingCard(reading: Reading, onClick: () -> Unit) {
     Card(
         modifier = Modifier
             .fillMaxWidth()

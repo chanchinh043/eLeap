@@ -1,3 +1,4 @@
+// MainScreen.kt
 package com.eleap.eleap
 
 import androidx.compose.foundation.layout.*
@@ -5,10 +6,10 @@ import androidx.compose.material3.*
 import androidx.compose.runtime.*
 import androidx.compose.ui.Alignment
 import androidx.compose.ui.Modifier
-import androidx.compose.ui.unit.dp
 import com.eleap.eleap.feature.reading.ReadingListScreen
+import com.eleap.eleap.feature.reading.ReadingScreen
 
-private enum class Screen { MAIN, READING_LIST }
+private enum class Screen { MAIN, READING_LIST, READING }
 
 @Composable
 fun MainScreen() {
@@ -27,8 +28,15 @@ fun MainScreen() {
                 onBack = { screen = Screen.MAIN },
                 onReadingClick = { readingId ->
                     selectedReadingId = readingId
-                    // TODO: screen = Screen.READING (flow 3)
+                    screen = Screen.READING
                 }
+            )
+        }
+
+        Screen.READING -> {
+            ReadingScreen(
+                readingId = selectedReadingId ?: return,
+                onBack = { screen = Screen.READING_LIST }
             )
         }
     }
