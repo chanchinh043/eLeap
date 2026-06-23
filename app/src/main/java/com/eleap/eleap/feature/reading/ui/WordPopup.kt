@@ -17,6 +17,7 @@ import androidx.compose.ui.window.PopupProperties
 import com.eleap.eleap.feature.reading.data.DictEntry
 import com.eleap.eleap.feature.reading.data.SentencePhrase
 import com.eleap.eleap.feature.reading.data.SentenceWord
+import com.eleap.eleap.feature.reading.ui.SaveWordButton
 
 @Composable
 fun WordPopup(
@@ -164,6 +165,10 @@ fun WordPopup(
                         }
                     }
                 }
+
+                // ── Lưu từ ───────────────────────────────────────────────────
+                HorizontalDivider()
+                SaveWordButton(word = word, phrase = phrase)
 
                 // ── Từ điển ──────────────────────────────────────────────────
                 dictEntry?.let { entry ->
