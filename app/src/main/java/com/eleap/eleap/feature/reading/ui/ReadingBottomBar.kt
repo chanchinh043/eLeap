@@ -11,6 +11,7 @@ import com.eleap.eleap.feature.reading.ReadingMode
 fun ReadingBottomBar(
     mode: ReadingMode,
     onWordClick: () -> Unit,
+    onSentenceClick: () -> Unit,
 ) {
     BottomAppBar {
         Row(
@@ -24,6 +25,13 @@ fun ReadingBottomBar(
                 selected = mode == ReadingMode.WORD,
                 onClick = onWordClick,
                 label = { Text("Dịch Từ") }
+            )
+
+            // Nút Dịch Câu — toggle: bấm lần 1 bật, bấm lần 2 tắt
+            FilterChip(
+                selected = mode == ReadingMode.SENTENCE,
+                onClick = onSentenceClick,
+                label = { Text("Dịch Câu") }
             )
         }
     }

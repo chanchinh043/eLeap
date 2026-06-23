@@ -10,6 +10,8 @@ import com.eleap.eleap.feature.reading.data.ReadingDao
 import com.eleap.eleap.feature.reading.data.ReadingDatabase
 import com.eleap.eleap.feature.reading.data.ReadingRepository
 import com.eleap.eleap.feature.reading.data.ReadingSentence
+import com.eleap.eleap.feature.reading.data.SentencePhrase
+import com.eleap.eleap.feature.reading.data.SentenceWord
 import kotlinx.coroutines.flow.MutableStateFlow
 import kotlinx.coroutines.flow.StateFlow
 import kotlinx.coroutines.launch
@@ -33,6 +35,18 @@ class ReadingViewModel(private val repository: ReadingRepository) : ViewModel() 
     // ── Flow 4/5: mode dịch ───────────────────────────────────────────────────
     private val _readingMode = MutableStateFlow(ReadingMode.NONE)
     val readingMode: StateFlow<ReadingMode> = _readingMode
+
+    // ── Flow 6: từ đang được chọn để hiện WordPopup ───────────────────────────
+    private val _selectedWord = MutableStateFlow<SentenceWord?>(null)
+    val selectedWord: StateFlow<SentenceWord?> = _selectedWord
+
+    // ── Flow 6 (phrase): cụm từ chứa từ đang click (null nếu từ không thuộc cụm) ──
+    private val _selectedPhrase = MutableStateFlow<SentencePhrase?>(null)
+    val selectedPhrase: StateFlow<SentencePhrase?> = _selectedPhrase
+
+    // ── Flow 7: câu đang được chọn để hiện SentencePopup ─────────────────────
+    private val _selectedSentence = MutableStateFlow<ReadingSentence?>(null)
+    val selectedSentence: StateFlow<ReadingSentence?> = _selectedSentence
 
     init {
         loadReadings()
@@ -73,6 +87,50 @@ class ReadingViewModel(private val repository: ReadingRepository) : ViewModel() 
             ReadingMode.WORD
         }
         Log.d("ReadingVM", "mode=${_readingMode.value}")
+    }
+
+    // ── Flow 5: toggle dịch câu ───────────────────────────────────────────────
+    fun toggleSentenceMode() {
+        _readingMode.value = if (_readingMode.value == ReadingMode.SENTENCE) {
+            ReadingMode.NONE
+        } else {
+            ReadingMode.SENTENCE
+        }
+        Log.d("ReadingVM", "mode=${_readingMode.value}")
+    }
+
+    // ── Flow 6: click vào từ — lấy từ RAM, không truy cập DB ─────────────────
+    // sentence được truyền vào để lookup phrase từ sentence.phrases (RAM)
+    fun onWordClick(word: SentenceWord, sentence: ReadingSentence) {
+        _selectedWord.value = word
+
+        // Nếu từ có phraseId → tìm phrase tương ứng trong sentence.phrases (RAM)
+        _selectedPhrase.value = word.phraseId?.let { pid ->
+            sentence.phrases.find { it.phraseId == pid }
+        }
+
+        Log.d(
+            "ReadingVM",
+            "wordClick: \"${word.textEn}\" (id=${word.wordId})" +
+                    (_selectedPhrase.value?.let { " → phrase=\"${it.textEn}\"" } ?: " → no phrase")
+        )
+    }
+
+    // ── Flow 8: đóng WordPopup ────────────────────────────────────────────────
+    fun dismissWordPopup() {
+        _selectedWord.value = null
+        _selectedPhrase.value = null
+    }
+
+    // ── Flow 7: click vào câu — lấy từ RAM, không truy cập DB ────────────────
+    fun onSentenceClick(sentence: ReadingSentence) {
+        _selectedSentence.value = sentence
+        Log.d("ReadingVM", "sentenceClick: sentenceId=${sentence.sentenceId}")
+    }
+
+    // ── Flow 9: đóng SentencePopup ───────────────────────────────────────────
+    fun dismissSentencePopup() {
+        _selectedSentence.value = null
     }
 
     // ── Factory ───────────────────────────────────────────────────────────────
