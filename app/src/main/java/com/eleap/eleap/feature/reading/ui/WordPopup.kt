@@ -7,13 +7,17 @@ import androidx.compose.ui.Alignment
 import androidx.compose.ui.Modifier
 import androidx.compose.ui.text.font.FontStyle
 import androidx.compose.ui.unit.dp
+import com.eleap.eleap.feature.reading.data.DictEntry
 import com.eleap.eleap.feature.reading.data.SentencePhrase
 import com.eleap.eleap.feature.reading.data.SentenceWord
 
 @Composable
 fun WordPopup(
     word: SentenceWord,
-    phrase: SentencePhrase?,   // null nếu từ không thuộc cụm nào
+    phrase: SentencePhrase?,        // null nếu từ không thuộc cụm nào
+    dictEntry: DictEntry?,          // null nếu không tra được trong dict.db
+    isDictExpanded: Boolean,        // true khi đang hiện "meaning" đầy đủ
+    onToggleDictExpanded: () -> Unit,
     onDismiss: () -> Unit,
 ) {
     AlertDialog(
@@ -107,6 +111,46 @@ fun WordPopup(
                                 style = MaterialTheme.typography.bodyMedium,
                                 color = MaterialTheme.colorScheme.onSurfaceVariant
                             )
+                        }
+                    }
+                }
+
+                // ── Nghĩa từ điển (dict.db) — hiện sau cùng, kể cả khi có phrase ──
+                dictEntry?.let { entry ->
+                    HorizontalDivider()
+                    Column(verticalArrangement = Arrangement.spacedBy(4.dp)) {
+                        Text(
+                            text = "Từ điển",
+                            style = MaterialTheme.typography.labelMedium,
+                            color = MaterialTheme.colorScheme.outline
+                        )
+
+                        // Nghĩa ngắn — luôn hiện
+                        entry.shortMeaning?.let {
+                            Text(
+                                text = it,
+                                style = MaterialTheme.typography.bodyMedium
+                            )
+                        }
+
+                        // Nghĩa đầy đủ — chỉ hiện khi bấm "Xem thêm"
+                        if (isDictExpanded) {
+                            entry.meaning?.let {
+                                Text(
+                                    text = it,
+                                    style = MaterialTheme.typography.bodyMedium,
+                                    color = MaterialTheme.colorScheme.onSurfaceVariant
+                                )
+                            }
+                        }
+
+                        if (!entry.meaning.isNullOrBlank()) {
+                            TextButton(
+                                onClick = onToggleDictExpanded,
+                                contentPadding = PaddingValues(0.dp)
+                            ) {
+                                Text(if (isDictExpanded) "Thu gọn" else "Xem thêm")
+                            }
                         }
                     }
                 }

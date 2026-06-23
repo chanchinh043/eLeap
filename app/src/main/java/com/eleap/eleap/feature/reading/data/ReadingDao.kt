@@ -3,7 +3,10 @@ package com.eleap.eleap.feature.reading.data
 
 import android.database.sqlite.SQLiteDatabase
 
-class ReadingDao(private val db: SQLiteDatabase) {
+class ReadingDao(
+    private val db: SQLiteDatabase,
+    private val dictDb: SQLiteDatabase,
+) {
 
     // ── Flow 2: danh sách bài đọc ─────────────────────────────────────────────
     fun getAllReadings(): List<Reading> {
@@ -100,6 +103,33 @@ class ReadingDao(private val db: SQLiteDatabase) {
                         wordFormExplanation = it.getString(it.getColumnIndexOrThrow("word_form_explanation")),
                     )
                 )
+            }
+        }
+        return list
+    }
+
+    // ── Background: tra nghĩa từ điển cho danh sách từ (dict.db) ─────────────
+    fun getDictEntries(words: List<String>): List<DictEntry> {
+        if (words.isEmpty()) return emptyList()
+        val list = mutableListOf<DictEntry>()
+
+        // Chia batch để không vượt giới hạn placeholder của SQLite (~999)
+        words.chunked(500).forEach { chunk ->
+            val placeholders = chunk.joinToString(",") { "?" }
+            val cursor = dictDb.rawQuery(
+                "SELECT * FROM dict WHERE word IN ($placeholders)",
+                chunk.toTypedArray()
+            )
+            cursor.use {
+                while (it.moveToNext()) {
+                    list.add(
+                        DictEntry(
+                            word         = it.getString(it.getColumnIndexOrThrow("word")),
+                            meaning      = it.getString(it.getColumnIndexOrThrow("meaning")),
+                            shortMeaning = it.getString(it.getColumnIndexOrThrow("short_meaning")),
+                        )
+                    )
+                }
             }
         }
         return list

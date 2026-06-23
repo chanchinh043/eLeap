@@ -48,3 +48,10 @@ data class SentenceWord(
     val lemma: String?,
     val wordFormExplanation: String?,
 )
+
+// ── dict (dict.db) ────────────────────────────────────────────────────────────
+data class DictEntry(
+    val word: String,
+    val meaning: String?,
+    val shortMeaning: String?,
+)

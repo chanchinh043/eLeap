@@ -10,6 +10,7 @@ import com.eleap.eleap.feature.reading.data.ReadingDao
 import com.eleap.eleap.feature.reading.data.ReadingDatabase
 import com.eleap.eleap.feature.reading.data.ReadingRepository
 import com.eleap.eleap.feature.reading.data.ReadingSentence
+import com.eleap.eleap.feature.reading.data.DictEntry
 import com.eleap.eleap.feature.reading.data.SentencePhrase
 import com.eleap.eleap.feature.reading.data.SentenceWord
 import kotlinx.coroutines.flow.MutableStateFlow
@@ -17,7 +18,7 @@ import kotlinx.coroutines.flow.StateFlow
 import kotlinx.coroutines.launch
 
 // ── ReadingMode ───────────────────────────────────────────────────────────────
-enum class ReadingMode { NONE, WORD, SENTENCE }
+
 
 class ReadingViewModel(private val repository: ReadingRepository) : ViewModel() {
 
@@ -33,8 +34,7 @@ class ReadingViewModel(private val repository: ReadingRepository) : ViewModel() 
     val isLoadingReading: StateFlow<Boolean> = _isLoadingReading
 
     // ── Flow 4/5: mode dịch ───────────────────────────────────────────────────
-    private val _readingMode = MutableStateFlow(ReadingMode.NONE)
-    val readingMode: StateFlow<ReadingMode> = _readingMode
+
 
     // ── Flow 6: từ đang được chọn để hiện WordPopup ───────────────────────────
     private val _selectedWord = MutableStateFlow<SentenceWord?>(null)
@@ -47,6 +47,14 @@ class ReadingViewModel(private val repository: ReadingRepository) : ViewModel() 
     // ── Flow 7: câu đang được chọn để hiện SentencePopup ─────────────────────
     private val _selectedSentence = MutableStateFlow<ReadingSentence?>(null)
     val selectedSentence: StateFlow<ReadingSentence?> = _selectedSentence
+
+    // ── Dict: nghĩa từ điển (dict.db) của từ đang chọn ────────────────────────
+    private val _selectedDictEntry = MutableStateFlow<DictEntry?>(null)
+    val selectedDictEntry: StateFlow<DictEntry?> = _selectedDictEntry
+
+    // ── Dict: trạng thái "Xem thêm" (hiện meaning đầy đủ) trong WordPopup ────
+    private val _isDictExpanded = MutableStateFlow(false)
+    val isDictExpanded: StateFlow<Boolean> = _isDictExpanded
 
     init {
         loadReadings()
@@ -76,28 +84,14 @@ class ReadingViewModel(private val repository: ReadingRepository) : ViewModel() 
 
             _sentences.value = result
             _isLoadingReading.value = false
+
+            // ── Background: nạp Dict RAM cho các từ trong bài, không chặn UI ──
+            launch { repository.preloadDictForReading(result) }
         }
     }
 
     // ── Flow 4: toggle dịch từ ────────────────────────────────────────────────
-    fun toggleWordMode() {
-        _readingMode.value = if (_readingMode.value == ReadingMode.WORD) {
-            ReadingMode.NONE
-        } else {
-            ReadingMode.WORD
-        }
-        Log.d("ReadingVM", "mode=${_readingMode.value}")
-    }
 
-    // ── Flow 5: toggle dịch câu ───────────────────────────────────────────────
-    fun toggleSentenceMode() {
-        _readingMode.value = if (_readingMode.value == ReadingMode.SENTENCE) {
-            ReadingMode.NONE
-        } else {
-            ReadingMode.SENTENCE
-        }
-        Log.d("ReadingVM", "mode=${_readingMode.value}")
-    }
 
     // ── Flow 6: click vào từ — lấy từ RAM, không truy cập DB ─────────────────
     // sentence được truyền vào để lookup phrase từ sentence.phrases (RAM)
@@ -109,6 +103,10 @@ class ReadingViewModel(private val repository: ReadingRepository) : ViewModel() 
             sentence.phrases.find { it.phraseId == pid }
         }
 
+        // Dict RAM: tra nghĩa từ điển (không truy cập DB)
+        _selectedDictEntry.value = repository.getDictEntry(word.textEn)
+        _isDictExpanded.value = false
+
         Log.d(
             "ReadingVM",
             "wordClick: \"${word.textEn}\" (id=${word.wordId})" +
@@ -116,10 +114,17 @@ class ReadingViewModel(private val repository: ReadingRepository) : ViewModel() 
         )
     }
 
+    // ── Toggle "Xem thêm" / "Thu gọn" nghĩa đầy đủ (dict.db) trong WordPopup ──
+    fun toggleDictExpanded() {
+        _isDictExpanded.value = !_isDictExpanded.value
+    }
+
     // ── Flow 8: đóng WordPopup ────────────────────────────────────────────────
     fun dismissWordPopup() {
         _selectedWord.value = null
         _selectedPhrase.value = null
+        _selectedDictEntry.value = null
+        _isDictExpanded.value = false
     }
 
     // ── Flow 7: click vào câu — lấy từ RAM, không truy cập DB ────────────────
@@ -137,7 +142,7 @@ class ReadingViewModel(private val repository: ReadingRepository) : ViewModel() 
     class Factory(private val context: Context) : ViewModelProvider.Factory {
         override fun <T : ViewModel> create(modelClass: Class<T>): T {
             val db   = ReadingDatabase.getInstance(context)
-            val dao  = ReadingDao(db.db)
+            val dao  = ReadingDao(db.db, db.dictDb)
             val repo = ReadingRepository(dao)
             @Suppress("UNCHECKED_CAST")
             return ReadingViewModel(repo) as T

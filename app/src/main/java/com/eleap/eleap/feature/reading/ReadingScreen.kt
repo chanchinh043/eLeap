@@ -1,25 +1,31 @@
 package com.eleap.eleap.feature.reading
 
-import androidx.compose.foundation.clickable
+import androidx.compose.foundation.background
+import androidx.compose.foundation.gestures.awaitEachGesture
+import androidx.compose.foundation.gestures.awaitFirstDown
+import androidx.compose.foundation.gestures.drag
 import androidx.compose.foundation.layout.*
 import androidx.compose.foundation.lazy.LazyColumn
 import androidx.compose.foundation.lazy.items
+import androidx.compose.foundation.shape.RoundedCornerShape
 import androidx.compose.material.icons.Icons
 import androidx.compose.material.icons.automirrored.filled.ArrowBack
 import androidx.compose.material3.*
 import androidx.compose.runtime.*
 import androidx.compose.ui.Alignment
 import androidx.compose.ui.Modifier
+import androidx.compose.ui.geometry.Offset
+import androidx.compose.ui.geometry.Rect
+import androidx.compose.ui.graphics.Color
+import androidx.compose.ui.input.pointer.pointerInput
+import androidx.compose.ui.layout.onGloballyPositioned
+import androidx.compose.ui.layout.positionInParent
 import androidx.compose.ui.platform.LocalContext
-import androidx.compose.ui.text.SpanStyle
-import androidx.compose.ui.text.buildAnnotatedString
 import androidx.compose.ui.text.style.TextDecoration
-import androidx.compose.ui.text.withStyle
 import androidx.compose.ui.unit.dp
+import androidx.compose.ui.unit.toSize
 import androidx.lifecycle.viewmodel.compose.viewModel
 import com.eleap.eleap.feature.reading.data.ReadingSentence
-import com.eleap.eleap.feature.reading.data.SentenceWord
-import com.eleap.eleap.feature.reading.ui.ReadingBottomBar
 import com.eleap.eleap.feature.reading.ui.SentencePopup
 import com.eleap.eleap.feature.reading.ui.WordPopup
 
@@ -31,31 +37,33 @@ fun ReadingScreen(
 ) {
     val context = LocalContext.current
     val vm: ReadingViewModel = viewModel(factory = ReadingViewModel.Factory(context))
-    val sentences        by vm.sentences.collectAsState()
-    val isLoading        by vm.isLoadingReading.collectAsState()
-    val readingMode      by vm.readingMode.collectAsState()
-    val selectedWord     by vm.selectedWord.collectAsState()
-    val selectedPhrase   by vm.selectedPhrase.collectAsState()
-    val selectedSentence by vm.selectedSentence.collectAsState()
+    val sentences         by vm.sentences.collectAsState()
+    val isLoading         by vm.isLoadingReading.collectAsState()
+    val selectedWord      by vm.selectedWord.collectAsState()
+    val selectedPhrase    by vm.selectedPhrase.collectAsState()
+    val selectedSentence  by vm.selectedSentence.collectAsState()
+    val selectedDictEntry by vm.selectedDictEntry.collectAsState()
+    val isDictExpanded    by vm.isDictExpanded.collectAsState()
 
     LaunchedEffect(readingId) {
         vm.loadReading(readingId)
     }
 
-    // ── Flow 6: WordPopup (kèm phrase nếu từ thuộc cụm) ─────────────────────
     selectedWord?.let { word ->
         WordPopup(
             word = word,
-            phrase = selectedPhrase,                    // null nếu từ không thuộc cụm
-            onDismiss = { vm.dismissWordPopup() }       // Flow 8
+            phrase = selectedPhrase,
+            dictEntry = selectedDictEntry,
+            isDictExpanded = isDictExpanded,
+            onToggleDictExpanded = { vm.toggleDictExpanded() },
+            onDismiss = { vm.dismissWordPopup() }
         )
     }
 
-    // ── Flow 7: SentencePopup ────────────────────────────────────────────────
     selectedSentence?.let { sentence ->
         SentencePopup(
             sentence = sentence,
-            onDismiss = { vm.dismissSentencePopup() }   // Flow 9
+            onDismiss = { vm.dismissSentencePopup() }
         )
     }
 
@@ -68,13 +76,6 @@ fun ReadingScreen(
                         Icon(Icons.AutoMirrored.Filled.ArrowBack, contentDescription = "Back")
                     }
                 }
-            )
-        },
-        bottomBar = {
-            ReadingBottomBar(
-                mode = readingMode,
-                onWordClick = { vm.toggleWordMode() },          // Flow 4
-                onSentenceClick = { vm.toggleSentenceMode() }  // Flow 5
             )
         }
     ) { padding ->
@@ -92,12 +93,10 @@ fun ReadingScreen(
                     modifier = Modifier.fillMaxSize()
                 ) {
                     items(sentences, key = { it.sentenceId }) { sentence ->
-                        SentenceRow(
+                        WordClickableRow(
                             sentence = sentence,
-                            mode = readingMode,
-                            // Flow 6: truyền cả sentence để VM lookup phrase từ RAM
                             onWordClick = { word -> vm.onWordClick(word, sentence) },
-                            onSentenceClick = { vm.onSentenceClick(sentence) }  // Flow 7
+                            onSentenceClick = { vm.onSentenceClick(sentence) }
                         )
                     }
                 }
@@ -106,68 +105,67 @@ fun ReadingScreen(
     }
 }
 
-// ── SentenceRow ───────────────────────────────────────────────────────────────
-@Composable
-private fun SentenceRow(
-    sentence: ReadingSentence,
-    mode: ReadingMode,
-    onWordClick: (SentenceWord) -> Unit,
-    onSentenceClick: () -> Unit,
-) {
-    when (mode) {
-
-        // ── WORD mode: mỗi từ là 1 element có thể click ───────────────────────
-        ReadingMode.WORD -> {
-            WordClickableRow(
-                sentence = sentence,
-                onWordClick = onWordClick
-            )
-        }
-
-        // ── SENTENCE mode: cả câu có thể click ───────────────────────────────
-        ReadingMode.SENTENCE -> {
-            Text(
-                text = buildAnnotatedString {
-                    withStyle(SpanStyle(textDecoration = TextDecoration.Underline)) {
-                        append(sentence.textEn ?: "")
-                    }
-                },
-                style = MaterialTheme.typography.bodyLarge,
-                color = MaterialTheme.colorScheme.primary,
-                modifier = Modifier
-                    .fillMaxWidth()
-                    .clickable { onSentenceClick() }
-            )
-        }
-
-        // ── NONE: plain text ──────────────────────────────────────────────────
-        ReadingMode.NONE -> {
-            Text(
-                text = sentence.textEn ?: "",
-                style = MaterialTheme.typography.bodyLarge
-            )
-        }
-    }
-}
-
-// ── WordClickableRow ──────────────────────────────────────────────────────────
+// ── WordClickableRow: tap 1 từ = dịch từ, kéo qua ≥2 từ = dịch câu ────────────
 @Composable
 private fun WordClickableRow(
     sentence: ReadingSentence,
-    onWordClick: (SentenceWord) -> Unit,
+    onWordClick: (com.eleap.eleap.feature.reading.data.SentenceWord) -> Unit,
+    onSentenceClick: () -> Unit,
 ) {
+    val words = sentence.words
+    val bounds = remember(sentence.sentenceId) { mutableStateMapOf<Int, Rect>() }
+    var startIdx by remember(sentence.sentenceId) { mutableStateOf<Int?>(null) }
+    var currentIdx by remember(sentence.sentenceId) { mutableStateOf<Int?>(null) }
+
+    val selectedRange = remember(startIdx, currentIdx) {
+        val s = startIdx; val e = currentIdx
+        if (s != null && e != null) minOf(s, e)..maxOf(s, e) else null
+    }
+
+    fun indexAt(pos: Offset): Int? =
+        bounds.entries.firstOrNull { it.value.contains(pos) }?.key
+
     FlowRow(
         horizontalArrangement = Arrangement.spacedBy(2.dp),
         verticalArrangement = Arrangement.spacedBy(2.dp),
+        modifier = Modifier.pointerInput(sentence.sentenceId) {
+            awaitEachGesture {
+                val down = awaitFirstDown()
+                val idx = indexAt(down.position)
+                startIdx = idx
+                currentIdx = idx
+
+                drag(down.id) { change ->
+                    indexAt(change.position)?.let { currentIdx = it }
+                    change.consume()
+                }
+
+                val s = startIdx
+                val e = currentIdx
+                if (s != null && e != null) {
+                    if (s == e) onWordClick(words[s]) else onSentenceClick()
+                }
+                startIdx = null
+                currentIdx = null
+            }
+        }
     ) {
-        sentence.words.forEach { word ->
+        words.forEachIndexed { index, word ->
+            val selected = selectedRange?.contains(index) == true
             Text(
                 text = word.textEn ?: "",
                 style = MaterialTheme.typography.bodyLarge,
-                color = MaterialTheme.colorScheme.primary,
+                color = if (selected) MaterialTheme.colorScheme.onPrimary
+                else MaterialTheme.colorScheme.primary,
                 textDecoration = TextDecoration.Underline,
                 modifier = Modifier
-                    .clickable { onWordClick(word) }
+                    .onGloballyPositioned { c ->
+                        bounds[index] = Rect(c.positionInParent(), c.size.toSize())
+                    }
+                    .background(
+                        if (selected) MaterialTheme.colorScheme.primary else Color.Transparent,
+                        RoundedCornerShape(4.dp)
+                    )
                     .padding(horizontal = 2.dp, vertical = 2.dp)
             )
         }
