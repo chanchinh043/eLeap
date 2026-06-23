@@ -14,27 +14,38 @@ import kotlinx.coroutines.flow.MutableStateFlow
 import kotlinx.coroutines.flow.StateFlow
 import kotlinx.coroutines.launch
 
+// ── ReadingMode ───────────────────────────────────────────────────────────────
+enum class ReadingMode { NONE, WORD, SENTENCE }
+
 class ReadingViewModel(private val repository: ReadingRepository) : ViewModel() {
 
+    // ── Flow 2 ────────────────────────────────────────────────────────────────
     private val _readings = MutableStateFlow<List<Reading>>(emptyList())
     val readings: StateFlow<List<Reading>> = _readings
 
+    // ── Flow 3 ────────────────────────────────────────────────────────────────
     private val _sentences = MutableStateFlow<List<ReadingSentence>>(emptyList())
     val sentences: StateFlow<List<ReadingSentence>> = _sentences
 
     private val _isLoadingReading = MutableStateFlow(false)
     val isLoadingReading: StateFlow<Boolean> = _isLoadingReading
 
+    // ── Flow 4/5: mode dịch ───────────────────────────────────────────────────
+    private val _readingMode = MutableStateFlow(ReadingMode.NONE)
+    val readingMode: StateFlow<ReadingMode> = _readingMode
+
     init {
         loadReadings()
     }
 
+    // ── Flow 2 ────────────────────────────────────────────────────────────────
     private fun loadReadings() {
         viewModelScope.launch {
             _readings.value = repository.getAllReadings()
         }
     }
 
+    // ── Flow 3 ────────────────────────────────────────────────────────────────
     fun loadReading(readingId: Int) {
         viewModelScope.launch {
             _isLoadingReading.value = true
@@ -43,45 +54,10 @@ class ReadingViewModel(private val repository: ReadingRepository) : ViewModel() 
             val result = repository.getReading(readingId)
             val elapsed = System.currentTimeMillis() - before
 
-            Log.d(
-                "ReadingVM",
-                "readingId=$readingId | sentences=${result.size} | time=${elapsed}ms"
-            )
-
-            result.forEachIndexed { sentenceIndex, sentence ->
-
-                Log.d(
-                    "ReadingVM",
-                    "================ SENTENCE ${sentenceIndex + 1} ================"
-                )
-
-                Log.d("ReadingVM", "sentenceId=${sentence.sentenceId}")
-                Log.d("ReadingVM", "textEn=${sentence.textEn}")
-
-                // Nếu class có textVi
-                try {
-                    Log.d("ReadingVM", "textVi=${sentence.textVi}")
-                } catch (_: Exception) {
-                }
-
-                Log.d(
-                    "ReadingVM",
-                    "phrases=${sentence.phrases.size}, words=${sentence.words.size}"
-                )
-
-                sentence.phrases.forEachIndexed { phraseIndex, phrase ->
-                    Log.d(
-                        "ReadingVM",
-                        "PHRASE ${phraseIndex + 1}: $phrase"
-                    )
-                }
-
-                sentence.words.forEachIndexed { wordIndex, word ->
-                    Log.d(
-                        "ReadingVM",
-                        "WORD ${wordIndex + 1}: $word"
-                    )
-                }
+            Log.d("ReadingVM", "readingId=$readingId | sentences=${result.size} | time=${elapsed}ms")
+            result.firstOrNull()?.let { s ->
+                Log.d("ReadingVM", "  First sentence: \"${s.textEn}\"")
+                Log.d("ReadingVM", "  words=${s.words.size}, phrases=${s.phrases.size}")
             }
 
             _sentences.value = result
@@ -89,6 +65,17 @@ class ReadingViewModel(private val repository: ReadingRepository) : ViewModel() 
         }
     }
 
+    // ── Flow 4: toggle dịch từ ────────────────────────────────────────────────
+    fun toggleWordMode() {
+        _readingMode.value = if (_readingMode.value == ReadingMode.WORD) {
+            ReadingMode.NONE
+        } else {
+            ReadingMode.WORD
+        }
+        Log.d("ReadingVM", "mode=${_readingMode.value}")
+    }
+
+    // ── Factory ───────────────────────────────────────────────────────────────
     class Factory(private val context: Context) : ViewModelProvider.Factory {
         override fun <T : ViewModel> create(modelClass: Class<T>): T {
             val db   = ReadingDatabase.getInstance(context)

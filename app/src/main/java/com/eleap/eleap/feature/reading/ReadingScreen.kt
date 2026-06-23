@@ -1,4 +1,3 @@
-// ReadingScreen.kt
 package com.eleap.eleap.feature.reading
 
 import androidx.compose.foundation.layout.*
@@ -13,6 +12,7 @@ import androidx.compose.ui.Modifier
 import androidx.compose.ui.platform.LocalContext
 import androidx.compose.ui.unit.dp
 import androidx.lifecycle.viewmodel.compose.viewModel
+import com.eleap.eleap.feature.reading.ui.ReadingBottomBar
 
 @OptIn(ExperimentalMaterial3Api::class)
 @Composable
@@ -22,10 +22,10 @@ fun ReadingScreen(
 ) {
     val context = LocalContext.current
     val vm: ReadingViewModel = viewModel(factory = ReadingViewModel.Factory(context))
-    val sentences by vm.sentences.collectAsState()
-    val isLoading by vm.isLoadingReading.collectAsState()
+    val sentences    by vm.sentences.collectAsState()
+    val isLoading    by vm.isLoadingReading.collectAsState()
+    val readingMode  by vm.readingMode.collectAsState()
 
-    // Load khi màn hình mở lần đầu
     LaunchedEffect(readingId) {
         vm.loadReading(readingId)
     }
@@ -39,6 +39,12 @@ fun ReadingScreen(
                         Icon(Icons.AutoMirrored.Filled.ArrowBack, contentDescription = "Back")
                     }
                 }
+            )
+        },
+        bottomBar = {
+            ReadingBottomBar(
+                mode = readingMode,
+                onWordClick = { vm.toggleWordMode() }
             )
         }
     ) { padding ->
