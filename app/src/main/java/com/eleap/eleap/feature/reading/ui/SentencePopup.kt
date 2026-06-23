@@ -5,8 +5,11 @@ import androidx.compose.foundation.rememberScrollState
 import androidx.compose.foundation.verticalScroll
 import androidx.compose.material3.*
 import androidx.compose.runtime.Composable
+import androidx.compose.runtime.remember
 import androidx.compose.ui.Alignment
 import androidx.compose.ui.Modifier
+import androidx.compose.ui.geometry.Rect
+import androidx.compose.ui.platform.LocalDensity
 import androidx.compose.ui.unit.dp
 import androidx.compose.ui.window.Popup
 import androidx.compose.ui.window.PopupProperties
@@ -15,11 +18,26 @@ import com.eleap.eleap.feature.reading.data.ReadingSentence
 @Composable
 fun SentencePopup(
     sentence: ReadingSentence,
+    anchorInfo: PopupAnchorInfo?,
+    viewportRect: Rect?,
     onDismiss: () -> Unit,
 ) {
+    val density = LocalDensity.current
+    val spacingPx = with(density) { 8.dp.toPx() }
+
+    // ── Vị trí popup: ưu tiên TRÊN câu được chọn; không đủ chỗ thì lật XUỐNG,
+    //    và khi xuống thì chừa thêm 1 dòng để không che chữ sắp đọc ──────────
+    val positionProvider = remember(anchorInfo, viewportRect) {
+        if (anchorInfo != null && viewportRect != null) {
+            SmartPopupPositionProvider(anchorInfo, viewportRect, spacingPx)
+        } else {
+            FallbackBottomCenterPositionProvider
+        }
+    }
+
     // Popup KHÔNG có scrim → touch vẫn xuyên xuống LazyColumn bên dưới
     Popup(
-        alignment = Alignment.BottomCenter,
+        popupPositionProvider = positionProvider,
         onDismissRequest = onDismiss,
         properties = PopupProperties(focusable = false)
     ) {

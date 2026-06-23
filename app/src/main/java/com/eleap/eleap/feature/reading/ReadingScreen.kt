@@ -17,6 +17,7 @@ import androidx.compose.ui.geometry.Offset
 import androidx.compose.ui.geometry.Rect
 import androidx.compose.ui.graphics.Color
 import androidx.compose.ui.input.pointer.pointerInput
+import androidx.compose.ui.layout.boundsInWindow
 import androidx.compose.ui.layout.onGloballyPositioned
 import androidx.compose.ui.layout.positionInParent
 import androidx.compose.ui.platform.LocalContext
@@ -26,6 +27,7 @@ import androidx.compose.ui.unit.toSize
 import androidx.lifecycle.viewmodel.compose.viewModel
 import com.eleap.eleap.feature.reading.data.ReadingSentence
 import com.eleap.eleap.feature.reading.data.SentenceWord
+import com.eleap.eleap.feature.reading.ui.PopupAnchorInfo
 import com.eleap.eleap.feature.reading.ui.SentencePopup
 import com.eleap.eleap.feature.reading.ui.WordPopup
 
@@ -45,6 +47,10 @@ fun ReadingScreen(
     val selectedDictEntry by vm.selectedDictEntry.collectAsState()
     val isDictExpanded    by vm.isDictExpanded.collectAsState()
 
+    // ── Vị trí "mỏ neo" (từ/câu đang chọn) + khung hiển thị — dùng để đặt popup ──
+    var anchorInfo by remember { mutableStateOf<PopupAnchorInfo?>(null) }
+    var viewportRect by remember { mutableStateOf<Rect?>(null) }
+
     LaunchedEffect(readingId) {
         vm.loadReading(readingId)
     }
@@ -56,8 +62,13 @@ fun ReadingScreen(
             phrase = selectedPhrase,
             dictEntry = selectedDictEntry,
             isDictExpanded = isDictExpanded,
+            anchorInfo = anchorInfo,
+            viewportRect = viewportRect,
             onToggleDictExpanded = { vm.toggleDictExpanded() },
-            onDismiss = { vm.dismissWordPopup() }
+            onDismiss = {
+                vm.dismissWordPopup()
+                anchorInfo = null
+            }
         )
     }
 
@@ -65,7 +76,12 @@ fun ReadingScreen(
     selectedSentence?.let { sentence ->
         SentencePopup(
             sentence = sentence,
-            onDismiss = { vm.dismissSentencePopup() }
+            anchorInfo = anchorInfo,
+            viewportRect = viewportRect,
+            onDismiss = {
+                vm.dismissSentencePopup()
+                anchorInfo = null
+            }
         )
     }
 
@@ -85,6 +101,7 @@ fun ReadingScreen(
             modifier = Modifier
                 .fillMaxSize()
                 .padding(padding)
+                .onGloballyPositioned { viewportRect = it.boundsInWindow() }
         ) {
             if (isLoading) {
                 CircularProgressIndicator(modifier = Modifier.align(Alignment.Center))
@@ -100,7 +117,8 @@ fun ReadingScreen(
                             selectedWord = selectedWord,
                             selectedSentence = selectedSentence,
                             onWordClick = { word -> vm.onWordClick(word, sentence) },
-                            onSentenceClick = { vm.onSentenceClick(sentence) }
+                            onSentenceClick = { vm.onSentenceClick(sentence) },
+                            onAnchorInfoChanged = { info -> anchorInfo = info }
                         )
                     }
                 }
@@ -121,9 +139,13 @@ private fun WordClickableRow(
     selectedSentence: ReadingSentence?,
     onWordClick: (SentenceWord) -> Unit,
     onSentenceClick: () -> Unit,
+    onAnchorInfoChanged: (PopupAnchorInfo) -> Unit,
 ) {
     val words = sentence.words
     val bounds = remember(sentence.sentenceId) { mutableStateMapOf<Int, Rect>() }
+    // Toạ độ WINDOW (màn hình thật) của từng từ — dùng riêng để định vị popup,
+    // tách biệt với `bounds` (toạ độ cục bộ trong FlowRow) vốn dùng để hit-test khi kéo.
+    val windowBounds = remember(sentence.sentenceId) { mutableStateMapOf<Int, Rect>() }
     var startIdx by remember(sentence.sentenceId) { mutableStateOf<Int?>(null) }
     var currentIdx by remember(sentence.sentenceId) { mutableStateOf<Int?>(null) }
 
@@ -148,6 +170,30 @@ private fun WordClickableRow(
 
     // Đang kéo tay thì ưu tiên hiện theo tay; nhả tay xong thì theo trạng thái popup
     val highlightRange = liveRange ?: committedRange
+
+    // ── Báo vị trí "mỏ neo" lên ReadingScreen để đặt popup ───────────────────
+    // Chỉ row đang chứa lựa chọn hiện tại (committedRange != null) mới báo cáo.
+    // anchor  = hợp các Rect (toạ độ window) của các từ trong committedRange
+    //           (xử lý cả trường hợp câu wrap nhiều dòng).
+    // lineHeight = chiều cao 1 dòng, lấy luôn từ Rect của từ đầu tiên — không cần đo thêm.
+    val computedAnchor = committedRange?.let { range ->
+        val rects = range.mapNotNull { windowBounds[it] }
+        val unionRect = rects.reduceOrNull { acc, r ->
+            Rect(
+                left = minOf(acc.left, r.left),
+                top = minOf(acc.top, r.top),
+                right = maxOf(acc.right, r.right),
+                bottom = maxOf(acc.bottom, r.bottom),
+            )
+        }
+        val lineHeight = windowBounds[range.first]?.height
+        if (unionRect != null && lineHeight != null) {
+            PopupAnchorInfo(rect = unionRect, lineHeightPx = lineHeight)
+        } else null
+    }
+    LaunchedEffect(computedAnchor) {
+        computedAnchor?.let(onAnchorInfoChanged)
+    }
 
     fun indexAt(pos: Offset): Int? =
         bounds.entries.firstOrNull { it.value.contains(pos) }?.key
@@ -219,6 +265,7 @@ private fun WordClickableRow(
                 modifier = Modifier
                     .onGloballyPositioned { c ->
                         bounds[index] = Rect(c.positionInParent(), c.size.toSize())
+                        windowBounds[index] = c.boundsInWindow()
                     }
                     .background(
                         if (selected) MaterialTheme.colorScheme.primary else Color.Transparent,
