@@ -1,12 +1,16 @@
 package com.eleap.eleap.feature.reading.ui
 
 import androidx.compose.foundation.layout.*
+import androidx.compose.foundation.rememberScrollState
+import androidx.compose.foundation.verticalScroll
 import androidx.compose.material3.*
 import androidx.compose.runtime.Composable
 import androidx.compose.ui.Alignment
 import androidx.compose.ui.Modifier
 import androidx.compose.ui.text.font.FontStyle
 import androidx.compose.ui.unit.dp
+import androidx.compose.ui.window.Popup
+import androidx.compose.ui.window.PopupProperties
 import com.eleap.eleap.feature.reading.data.DictEntry
 import com.eleap.eleap.feature.reading.data.SentencePhrase
 import com.eleap.eleap.feature.reading.data.SentenceWord
@@ -14,37 +18,68 @@ import com.eleap.eleap.feature.reading.data.SentenceWord
 @Composable
 fun WordPopup(
     word: SentenceWord,
-    phrase: SentencePhrase?,        // null nếu từ không thuộc cụm nào
-    dictEntry: DictEntry?,          // null nếu không tra được trong dict.db
-    isDictExpanded: Boolean,        // true khi đang hiện "meaning" đầy đủ
+    phrase: SentencePhrase?,
+    dictEntry: DictEntry?,
+    isDictExpanded: Boolean,
     onToggleDictExpanded: () -> Unit,
     onDismiss: () -> Unit,
 ) {
-    AlertDialog(
+    // Popup KHÔNG có scrim → touch vẫn xuyên xuống LazyColumn bên dưới
+    // focusable = false để gesture của màn hình chính vẫn hoạt động
+    Popup(
+        alignment = Alignment.BottomCenter,
         onDismissRequest = onDismiss,
-        title = {
-            Row(
-                verticalAlignment = Alignment.CenterVertically,
-                horizontalArrangement = Arrangement.spacedBy(8.dp)
+        properties = PopupProperties(focusable = false)
+    ) {
+        Card(
+            modifier = Modifier
+                .fillMaxWidth()
+                .padding(horizontal = 12.dp, vertical = 8.dp)
+                .heightIn(max = 320.dp),   // giới hạn chiều cao, có scroll nếu nội dung dài
+            elevation = CardDefaults.cardElevation(defaultElevation = 8.dp),
+            colors = CardDefaults.cardColors(
+                containerColor = MaterialTheme.colorScheme.surfaceContainerHigh
+            )
+        ) {
+            Column(
+                modifier = Modifier
+                    .padding(16.dp)
+                    .verticalScroll(rememberScrollState()),
+                verticalArrangement = Arrangement.spacedBy(8.dp)
             ) {
-                Text(
-                    text = word.textEn ?: "",
-                    style = MaterialTheme.typography.titleLarge
-                )
-                word.pos?.let {
-                    Text(
-                        text = "[$it]",
-                        style = MaterialTheme.typography.bodySmall,
-                        color = MaterialTheme.colorScheme.outline,
-                        fontStyle = FontStyle.Italic
-                    )
-                }
-            }
-        },
-        text = {
-            Column(verticalArrangement = Arrangement.spacedBy(8.dp)) {
 
-                // ── Nghĩa tiếng Việt của từ ──────────────────────────────────
+                // ── Header: từ + POS + nút Đóng ──────────────────────────────
+                Row(
+                    modifier = Modifier.fillMaxWidth(),
+                    verticalAlignment = Alignment.CenterVertically,
+                    horizontalArrangement = Arrangement.SpaceBetween
+                ) {
+                    Row(
+                        verticalAlignment = Alignment.CenterVertically,
+                        horizontalArrangement = Arrangement.spacedBy(8.dp)
+                    ) {
+                        Text(
+                            text = word.textEn ?: "",
+                            style = MaterialTheme.typography.titleLarge
+                        )
+                        word.pos?.let {
+                            Text(
+                                text = "[$it]",
+                                style = MaterialTheme.typography.bodySmall,
+                                color = MaterialTheme.colorScheme.outline,
+                                fontStyle = FontStyle.Italic
+                            )
+                        }
+                    }
+                    TextButton(
+                        onClick = onDismiss,
+                        contentPadding = PaddingValues(horizontal = 8.dp, vertical = 0.dp)
+                    ) {
+                        Text("Đóng")
+                    }
+                }
+
+                // ── Nghĩa tiếng Việt ─────────────────────────────────────────
                 word.textVi?.let {
                     Text(
                         text = it,
@@ -81,7 +116,7 @@ fun WordPopup(
                     )
                 }
 
-                // ── Section cụm từ (chỉ hiện khi từ thuộc 1 phrase) ──────────
+                // ── Cụm từ ───────────────────────────────────────────────────
                 phrase?.let { p ->
                     HorizontalDivider()
                     Column(verticalArrangement = Arrangement.spacedBy(4.dp)) {
@@ -90,13 +125,11 @@ fun WordPopup(
                             style = MaterialTheme.typography.labelMedium,
                             color = MaterialTheme.colorScheme.outline
                         )
-                        // Tên cụm từ tiếng Anh
                         Text(
                             text = p.textEn ?: "",
                             style = MaterialTheme.typography.bodyLarge,
                             color = MaterialTheme.colorScheme.secondary
                         )
-                        // Nghĩa cụm từ tiếng Việt
                         p.textVi?.let {
                             Text(
                                 text = "→ $it",
@@ -104,7 +137,6 @@ fun WordPopup(
                                 color = MaterialTheme.colorScheme.primary
                             )
                         }
-                        // Giải thích cụm từ (nếu có)
                         p.phraseExplanation?.let {
                             Text(
                                 text = it,
@@ -115,7 +147,7 @@ fun WordPopup(
                     }
                 }
 
-                // ── Nghĩa từ điển (dict.db) — hiện sau cùng, kể cả khi có phrase ──
+                // ── Từ điển ──────────────────────────────────────────────────
                 dictEntry?.let { entry ->
                     HorizontalDivider()
                     Column(verticalArrangement = Arrangement.spacedBy(4.dp)) {
@@ -124,16 +156,12 @@ fun WordPopup(
                             style = MaterialTheme.typography.labelMedium,
                             color = MaterialTheme.colorScheme.outline
                         )
-
-                        // Nghĩa ngắn — luôn hiện
                         entry.shortMeaning?.let {
                             Text(
                                 text = it,
                                 style = MaterialTheme.typography.bodyMedium
                             )
                         }
-
-                        // Nghĩa đầy đủ — chỉ hiện khi bấm "Xem thêm"
                         if (isDictExpanded) {
                             entry.meaning?.let {
                                 Text(
@@ -143,7 +171,6 @@ fun WordPopup(
                                 )
                             }
                         }
-
                         if (!entry.meaning.isNullOrBlank()) {
                             TextButton(
                                 onClick = onToggleDictExpanded,
@@ -155,11 +182,6 @@ fun WordPopup(
                     }
                 }
             }
-        },
-        confirmButton = {
-            TextButton(onClick = onDismiss) {
-                Text("Đóng")
-            }
         }
-    )
+    }
 }

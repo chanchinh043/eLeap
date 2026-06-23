@@ -3,7 +3,6 @@ package com.eleap.eleap.feature.reading
 import androidx.compose.foundation.background
 import androidx.compose.foundation.gestures.awaitEachGesture
 import androidx.compose.foundation.gestures.awaitFirstDown
-import androidx.compose.foundation.gestures.drag
 import androidx.compose.foundation.layout.*
 import androidx.compose.foundation.lazy.LazyColumn
 import androidx.compose.foundation.lazy.items
@@ -26,6 +25,7 @@ import androidx.compose.ui.unit.dp
 import androidx.compose.ui.unit.toSize
 import androidx.lifecycle.viewmodel.compose.viewModel
 import com.eleap.eleap.feature.reading.data.ReadingSentence
+import com.eleap.eleap.feature.reading.data.SentenceWord
 import com.eleap.eleap.feature.reading.ui.SentencePopup
 import com.eleap.eleap.feature.reading.ui.WordPopup
 
@@ -49,6 +49,7 @@ fun ReadingScreen(
         vm.loadReading(readingId)
     }
 
+    // ── WordPopup (kèm phrase nếu từ thuộc cụm) ──────────────────────────────
     selectedWord?.let { word ->
         WordPopup(
             word = word,
@@ -60,6 +61,7 @@ fun ReadingScreen(
         )
     }
 
+    // ── SentencePopup ─────────────────────────────────────────────────────────
     selectedSentence?.let { sentence ->
         SentencePopup(
             sentence = sentence,
@@ -95,6 +97,8 @@ fun ReadingScreen(
                     items(sentences, key = { it.sentenceId }) { sentence ->
                         WordClickableRow(
                             sentence = sentence,
+                            selectedWord = selectedWord,
+                            selectedSentence = selectedSentence,
                             onWordClick = { word -> vm.onWordClick(word, sentence) },
                             onSentenceClick = { vm.onSentenceClick(sentence) }
                         )
@@ -105,11 +109,17 @@ fun ReadingScreen(
     }
 }
 
-// ── WordClickableRow: tap 1 từ = dịch từ, kéo qua ≥2 từ = dịch câu ────────────
+// ── WordClickableRow ──────────────────────────────────────────────────────────
+// Tap 1 từ          → dịch từ (WordPopup)
+// Kéo ngang qua ≥2 từ → dịch câu (SentencePopup)
+// Kéo dọc            → nhường cho LazyColumn cuộn trang
+// Highlight giữ nguyên trong lúc popup tương ứng đang mở
 @Composable
 private fun WordClickableRow(
     sentence: ReadingSentence,
-    onWordClick: (com.eleap.eleap.feature.reading.data.SentenceWord) -> Unit,
+    selectedWord: SentenceWord?,
+    selectedSentence: ReadingSentence?,
+    onWordClick: (SentenceWord) -> Unit,
     onSentenceClick: () -> Unit,
 ) {
     val words = sentence.words
@@ -117,10 +127,27 @@ private fun WordClickableRow(
     var startIdx by remember(sentence.sentenceId) { mutableStateOf<Int?>(null) }
     var currentIdx by remember(sentence.sentenceId) { mutableStateOf<Int?>(null) }
 
-    val selectedRange = remember(startIdx, currentIdx) {
+    // Phạm vi đang kéo tay (live, chỉ tồn tại trong lúc gesture diễn ra)
+    val liveRange = remember(startIdx, currentIdx) {
         val s = startIdx; val e = currentIdx
         if (s != null && e != null) minOf(s, e)..maxOf(s, e) else null
     }
+
+    // Phạm vi "đã chốt" — giữ highlight khi popup (từ hoặc câu) đang mở
+    val committedRange = remember(selectedWord?.wordId, selectedSentence?.sentenceId, sentence.sentenceId) {
+        when {
+            selectedSentence?.sentenceId == sentence.sentenceId ->
+                if (words.isNotEmpty()) 0..words.lastIndex else null
+            selectedWord != null -> {
+                val idx = words.indexOfFirst { it.wordId == selectedWord.wordId }
+                if (idx >= 0) idx..idx else null
+            }
+            else -> null
+        }
+    }
+
+    // Đang kéo tay thì ưu tiên hiện theo tay; nhả tay xong thì theo trạng thái popup
+    val highlightRange = liveRange ?: committedRange
 
     fun indexAt(pos: Offset): Int? =
         bounds.entries.firstOrNull { it.value.contains(pos) }?.key
@@ -129,21 +156,52 @@ private fun WordClickableRow(
         horizontalArrangement = Arrangement.spacedBy(2.dp),
         verticalArrangement = Arrangement.spacedBy(2.dp),
         modifier = Modifier.pointerInput(sentence.sentenceId) {
+            val slop = viewConfiguration.touchSlop
             awaitEachGesture {
-                val down = awaitFirstDown()
-                val idx = indexAt(down.position)
-                startIdx = idx
-                currentIdx = idx
+                val down = awaitFirstDown(requireUnconsumed = false)
+                startIdx = indexAt(down.position)
+                currentIdx = startIdx
 
-                drag(down.id) { change ->
-                    indexAt(change.position)?.let { currentIdx = it }
-                    change.consume()
+                var horizontal: Boolean? = null // null = chưa rõ hướng
+
+                while (true) {
+                    val event = awaitPointerEvent()
+                    val change = event.changes.firstOrNull { it.id == down.id }
+
+                    if (change == null || !change.pressed) {
+                        if (horizontal == true) change?.consume()
+                        break
+                    }
+
+                    if (horizontal == null) {
+                        val dx = kotlin.math.abs(change.position.x - down.position.x)
+                        val dy = kotlin.math.abs(change.position.y - down.position.y)
+                        horizontal = when {
+                            dx > slop && dx > dy -> true   // kéo ngang → chọn câu
+                            dy > slop -> false              // kéo dọc → để LazyColumn cuộn
+                            else -> null                    // chưa đủ để xác định
+                        }
+                    }
+
+                    when (horizontal) {
+                        true -> {
+                            change.consume()
+                            indexAt(change.position)?.let { currentIdx = it }
+                        }
+                        false -> {
+                            // Nhường gesture cho LazyColumn cuộn — không consume, dừng luôn
+                            startIdx = null
+                            currentIdx = null
+                            return@awaitEachGesture
+                        }
+                        null -> Unit
+                    }
                 }
 
                 val s = startIdx
                 val e = currentIdx
                 if (s != null && e != null) {
-                    if (s == e) onWordClick(words[s]) else onSentenceClick()
+                    if (horizontal == true && s != e) onSentenceClick() else onWordClick(words[s])
                 }
                 startIdx = null
                 currentIdx = null
@@ -151,7 +209,7 @@ private fun WordClickableRow(
         }
     ) {
         words.forEachIndexed { index, word ->
-            val selected = selectedRange?.contains(index) == true
+            val selected = highlightRange?.contains(index) == true
             Text(
                 text = word.textEn ?: "",
                 style = MaterialTheme.typography.bodyLarge,

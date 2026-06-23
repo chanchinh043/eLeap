@@ -1,10 +1,15 @@
 package com.eleap.eleap.feature.reading.ui
 
 import androidx.compose.foundation.layout.*
+import androidx.compose.foundation.rememberScrollState
+import androidx.compose.foundation.verticalScroll
 import androidx.compose.material3.*
 import androidx.compose.runtime.Composable
+import androidx.compose.ui.Alignment
 import androidx.compose.ui.Modifier
 import androidx.compose.ui.unit.dp
+import androidx.compose.ui.window.Popup
+import androidx.compose.ui.window.PopupProperties
 import com.eleap.eleap.feature.reading.data.ReadingSentence
 
 @Composable
@@ -12,17 +17,48 @@ fun SentencePopup(
     sentence: ReadingSentence,
     onDismiss: () -> Unit,
 ) {
-    AlertDialog(
+    // Popup KHÔNG có scrim → touch vẫn xuyên xuống LazyColumn bên dưới
+    Popup(
+        alignment = Alignment.BottomCenter,
         onDismissRequest = onDismiss,
-        title = {
-            Text(
-                text = "Dịch câu",
-                style = MaterialTheme.typography.titleMedium
+        properties = PopupProperties(focusable = false)
+    ) {
+        Card(
+            modifier = Modifier
+                .fillMaxWidth()
+                .padding(horizontal = 12.dp, vertical = 8.dp)
+                .heightIn(max = 280.dp),
+            elevation = CardDefaults.cardElevation(defaultElevation = 8.dp),
+            colors = CardDefaults.cardColors(
+                containerColor = MaterialTheme.colorScheme.surfaceContainerHigh
             )
-        },
-        text = {
-            Column(verticalArrangement = Arrangement.spacedBy(12.dp)) {
-                // Câu gốc tiếng Anh
+        ) {
+            Column(
+                modifier = Modifier
+                    .padding(16.dp)
+                    .verticalScroll(rememberScrollState()),
+                verticalArrangement = Arrangement.spacedBy(12.dp)
+            ) {
+
+                // ── Header: tiêu đề + nút Đóng ───────────────────────────────
+                Row(
+                    modifier = Modifier.fillMaxWidth(),
+                    verticalAlignment = Alignment.CenterVertically,
+                    horizontalArrangement = Arrangement.SpaceBetween
+                ) {
+                    Text(
+                        text = "Dịch câu",
+                        style = MaterialTheme.typography.titleMedium
+                    )
+                    TextButton(
+                        onClick = onDismiss,
+                        contentPadding = PaddingValues(horizontal = 8.dp, vertical = 0.dp)
+                    ) {
+                        Text("Đóng")
+                    }
+                }
+
+                // ── Câu gốc tiếng Anh ────────────────────────────────────────
                 Text(
                     text = sentence.textEn ?: "",
                     style = MaterialTheme.typography.bodyLarge
@@ -30,14 +66,14 @@ fun SentencePopup(
 
                 HorizontalDivider()
 
-                // Bản dịch tiếng Việt
+                // ── Bản dịch tiếng Việt ──────────────────────────────────────
                 Text(
                     text = sentence.textVi ?: "",
                     style = MaterialTheme.typography.bodyLarge,
                     color = MaterialTheme.colorScheme.primary
                 )
 
-                // Giải thích câu (nếu có)
+                // ── Giải thích câu (nếu có) ──────────────────────────────────
                 sentence.sentenceExplanation?.let {
                     HorizontalDivider()
                     Text(
@@ -47,11 +83,6 @@ fun SentencePopup(
                     )
                 }
             }
-        },
-        confirmButton = {
-            TextButton(onClick = onDismiss) {
-                Text("Đóng")
-            }
         }
-    )
+    }
 }
