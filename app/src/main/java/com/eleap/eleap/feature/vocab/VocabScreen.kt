@@ -1,6 +1,8 @@
 // VocabScreen.kt
+// Đặt tại: com/eleap/eleap/feature/vocab/VocabScreen.kt
 package com.eleap.eleap.feature.vocab
 
+import androidx.compose.foundation.clickable
 import androidx.compose.foundation.layout.*
 import androidx.compose.foundation.lazy.LazyColumn
 import androidx.compose.foundation.lazy.items
@@ -27,12 +29,27 @@ fun VocabScreen(
 ) {
     val context = LocalContext.current
     val vm: VocabViewModel = viewModel(factory = VocabViewModel.Factory(context))
-    val vocabList by vm.vocabList.collectAsState()
-    val isLoading by vm.isLoading.collectAsState()
+    val vocabList     by vm.vocabList.collectAsState()
+    val isLoading     by vm.isLoading.collectAsState()
+    val selectedEntry by vm.selectedEntry.collectAsState()
+    val dictEntry     by vm.selectedDictEntry.collectAsState()
+    val isDictExpanded by vm.isDictExpanded.collectAsState()
 
     // ── Reload mỗi khi VocabScreen được mở ───────────────────────────────────
     LaunchedEffect(Unit) {
         vm.loadVocab()
+    }
+
+    // ── Popup ─────────────────────────────────────────────────────────────────
+    selectedEntry?.let { entry ->
+        VocabPopup(
+            entry              = entry,
+            dictEntry          = dictEntry,
+            isDictExpanded     = isDictExpanded,
+            onToggleDictExpanded = { vm.toggleDictExpanded() },
+            onDelete           = { vm.deleteWord(entry.id) },
+            onDismiss          = { vm.dismissPopup() }
+        )
     }
 
     Scaffold(
@@ -72,7 +89,8 @@ fun VocabScreen(
                 ) {
                     items(vocabList, key = { it.id }) { entry ->
                         VocabCard(
-                            entry = entry,
+                            entry    = entry,
+                            onWordClick = { vm.onEntryClick(entry) },
                             onDelete = { vm.deleteWord(entry.id) }
                         )
                     }
@@ -85,6 +103,7 @@ fun VocabScreen(
 @Composable
 private fun VocabCard(
     entry: UserVocabularyEntry,
+    onWordClick: () -> Unit,
     onDelete: () -> Unit,
 ) {
     Card(
@@ -99,16 +118,21 @@ private fun VocabCard(
             horizontalArrangement = Arrangement.SpaceBetween
         ) {
             Column(modifier = Modifier.weight(1f)) {
+
+                // ── Tap vào textEn để mở popup ───────────────────────────────
                 Text(
                     text = entry.textEn ?: "",
-                    style = MaterialTheme.typography.titleMedium
+                    style = MaterialTheme.typography.titleMedium,
+                    color = MaterialTheme.colorScheme.primary,
+                    modifier = Modifier.clickable(onClick = onWordClick)
                 )
+
                 entry.textVi?.let {
                     Spacer(modifier = Modifier.height(2.dp))
                     Text(
                         text = it,
                         style = MaterialTheme.typography.bodyMedium,
-                        color = MaterialTheme.colorScheme.primary
+                        color = MaterialTheme.colorScheme.onSurfaceVariant
                     )
                 }
                 Spacer(modifier = Modifier.height(6.dp))

@@ -33,8 +33,6 @@ fun WordPopup(
     val density = LocalDensity.current
     val spacingPx = with(density) { 8.dp.toPx() }
 
-    // ── Vị trí popup: ưu tiên TRÊN từ được chọn; không đủ chỗ thì lật XUỐNG,
-    //    và khi xuống thì chừa thêm 1 dòng để không che chữ sắp đọc ──────────
     val positionProvider = remember(anchorInfo, viewportRect) {
         if (anchorInfo != null && viewportRect != null) {
             SmartPopupPositionProvider(anchorInfo, viewportRect, spacingPx)
@@ -43,8 +41,6 @@ fun WordPopup(
         }
     }
 
-    // Popup KHÔNG có scrim → touch vẫn xuyên xuống LazyColumn bên dưới
-    // focusable = false để gesture của màn hình chính vẫn hoạt động
     Popup(
         popupPositionProvider = positionProvider,
         onDismissRequest = onDismiss,
@@ -54,7 +50,7 @@ fun WordPopup(
             modifier = Modifier
                 .fillMaxWidth()
                 .padding(horizontal = 12.dp, vertical = 8.dp)
-                .heightIn(max = 320.dp),   // giới hạn chiều cao, có scroll nếu nội dung dài
+                .heightIn(max = 320.dp),
             elevation = CardDefaults.cardElevation(defaultElevation = 8.dp),
             colors = CardDefaults.cardColors(
                 containerColor = MaterialTheme.colorScheme.surfaceContainerHigh
@@ -67,27 +63,53 @@ fun WordPopup(
                 verticalArrangement = Arrangement.spacedBy(8.dp)
             ) {
 
-                // ── Header: từ + POS + nút Đóng ──────────────────────────────
+                // ── Header: từ + POS + IPA + nút Đóng ────────────────────────
                 Row(
                     modifier = Modifier.fillMaxWidth(),
                     verticalAlignment = Alignment.CenterVertically,
                     horizontalArrangement = Arrangement.SpaceBetween
                 ) {
-                    Row(
-                        verticalAlignment = Alignment.CenterVertically,
-                        horizontalArrangement = Arrangement.spacedBy(8.dp)
-                    ) {
-                        Text(
-                            text = word.textEn ?: "",
-                            style = MaterialTheme.typography.titleLarge
-                        )
-                        word.pos?.let {
+                    Column(verticalArrangement = Arrangement.spacedBy(2.dp)) {
+                        // Dòng 1: từ + POS
+                        Row(
+                            verticalAlignment = Alignment.CenterVertically,
+                            horizontalArrangement = Arrangement.spacedBy(8.dp)
+                        ) {
                             Text(
-                                text = "[$it]",
-                                style = MaterialTheme.typography.bodySmall,
-                                color = MaterialTheme.colorScheme.outline,
-                                fontStyle = FontStyle.Italic
+                                text = word.textEn ?: "",
+                                style = MaterialTheme.typography.titleLarge
                             )
+                            word.pos?.let {
+                                Text(
+                                    text = "[$it]",
+                                    style = MaterialTheme.typography.bodySmall,
+                                    color = MaterialTheme.colorScheme.outline,
+                                    fontStyle = FontStyle.Italic
+                                )
+                            }
+                        }
+                        // Dòng 2: IPA (nếu có)
+                        val ipa   = dictEntry?.ipa?.takeIf { it.isNotBlank() }
+                        val ipaVi = dictEntry?.ipaVi?.takeIf { it.isNotBlank() }
+                        if (ipa != null || ipaVi != null) {
+                            Row(horizontalArrangement = Arrangement.spacedBy(10.dp)) {
+                                ipa?.let {
+                                    Text(
+                                        text = "/$it/",
+                                        style = MaterialTheme.typography.bodySmall,
+                                        color = MaterialTheme.colorScheme.onSurfaceVariant,
+                                        fontStyle = FontStyle.Italic
+                                    )
+                                }
+                                ipaVi?.let {
+                                    Text(
+                                        text = "/$it/",
+                                        style = MaterialTheme.typography.bodySmall,
+                                        color = MaterialTheme.colorScheme.onSurfaceVariant,
+                                        fontStyle = FontStyle.Italic
+                                    )
+                                }
+                            }
                         }
                     }
                     TextButton(

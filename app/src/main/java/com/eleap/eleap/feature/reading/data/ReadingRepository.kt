@@ -67,6 +67,8 @@ data class SentenceWord(
 // ── dict (dict.db) ────────────────────────────────────────────────────────────
 data class DictEntry(
     val word: String,
+    val ipa: String?,
+    val ipaVi: String?,
     val meaning: String?,
     val shortMeaning: String?,
 )
@@ -197,6 +199,8 @@ class ReadingDao(
                     list.add(
                         DictEntry(
                             word         = it.getString(it.getColumnIndexOrThrow("word")),
+                            ipa          = it.getString(it.getColumnIndexOrThrow("ipa")),
+                            ipaVi        = it.getString(it.getColumnIndexOrThrow("ipa_vi")),
                             meaning      = it.getString(it.getColumnIndexOrThrow("meaning")),
                             shortMeaning = it.getString(it.getColumnIndexOrThrow("short_meaning")),
                         )
@@ -215,6 +219,10 @@ class ReadingDao(
 /**
  * Mở readings.db và dict.db từ assets bằng SQLite thuần — không dùng Room
  * để tránh schema validation conflict (VARCHAR vs TEXT, DATETIME vs TEXT).
+ *
+ * Mỗi DB có 1 "schema version" riêng lưu trong SharedPreferences.
+ * Khi tăng version → file cũ bị xoá và copy lại từ assets.
+ * Chỉ tăng version khi schema thay đổi (thêm/xoá cột, đổi tên bảng, v.v.).
  */
 class ReadingDatabase private constructor(context: Context) {
 
@@ -222,12 +230,21 @@ class ReadingDatabase private constructor(context: Context) {
     val dictDb: SQLiteDatabase   // dict.db
 
     init {
-        db     = openDatabase(context, "readings.db")
-        dictDb = openDatabase(context, "dict.db")
+        db     = openDatabase(context, "readings.db", schemaVersion = 1)
+        dictDb = openDatabase(context, "dict.db",     schemaVersion = 2) // tăng khi thêm ipa, ipa_vi
     }
 
-    private fun openDatabase(context: Context, fileName: String): SQLiteDatabase {
-        val dbFile = File(context.getDatabasePath(fileName).absolutePath)
+    private fun openDatabase(context: Context, fileName: String, schemaVersion: Int): SQLiteDatabase {
+        val prefs   = context.getSharedPreferences("db_versions", Context.MODE_PRIVATE)
+        val prefKey = "version_$fileName"
+        val dbFile  = File(context.getDatabasePath(fileName).absolutePath)
+
+        val savedVersion = prefs.getInt(prefKey, 0)
+        if (savedVersion < schemaVersion && dbFile.exists()) {
+            // Schema đã thay đổi → xoá bản cũ, sẽ copy lại từ assets
+            dbFile.delete()
+        }
+
         if (!dbFile.exists()) {
             dbFile.parentFile?.mkdirs()
             context.assets.open("databases/$fileName").use { input ->
@@ -235,7 +252,9 @@ class ReadingDatabase private constructor(context: Context) {
                     input.copyTo(output)
                 }
             }
+            prefs.edit().putInt(prefKey, schemaVersion).apply()
         }
+
         return SQLiteDatabase.openDatabase(
             dbFile.absolutePath,
             null,
