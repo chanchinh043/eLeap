@@ -14,8 +14,15 @@ import androidx.compose.runtime.Composable
 import androidx.compose.runtime.LaunchedEffect
 import androidx.compose.runtime.collectAsState
 import androidx.compose.runtime.getValue
+import androidx.compose.runtime.mutableStateOf
+import androidx.compose.runtime.remember
+import androidx.compose.runtime.setValue
 import androidx.compose.ui.Alignment
 import androidx.compose.ui.Modifier
+import androidx.compose.ui.geometry.Rect
+import androidx.compose.ui.layout.LayoutCoordinates
+import androidx.compose.ui.layout.boundsInWindow
+import androidx.compose.ui.layout.onGloballyPositioned
 import androidx.compose.ui.platform.LocalContext
 import androidx.compose.ui.text.style.TextAlign
 import androidx.compose.ui.unit.dp
@@ -26,29 +33,29 @@ import com.eleap.eleap.feature.reading.ui.UserVocabularyEntry
 @Composable
 fun VocabScreen(
     onBack: () -> Unit,
+    onStudyClick: () -> Unit,
 ) {
     val context = LocalContext.current
     val vm: VocabViewModel = viewModel(factory = VocabViewModel.Factory(context))
-    val vocabList     by vm.vocabList.collectAsState()
-    val isLoading     by vm.isLoading.collectAsState()
-    val selectedEntry by vm.selectedEntry.collectAsState()
-    val dictEntry     by vm.selectedDictEntry.collectAsState()
+    val vocabList      by vm.vocabList.collectAsState()
+    val isLoading      by vm.isLoading.collectAsState()
+    val selectedEntry  by vm.selectedEntry.collectAsState()
+    val dictEntry      by vm.selectedDictEntry.collectAsState()
     val isDictExpanded by vm.isDictExpanded.collectAsState()
+    val selectedCount  by vm.selectedCount.collectAsState()
 
-    // ── Reload mỗi khi VocabScreen được mở ───────────────────────────────────
-    LaunchedEffect(Unit) {
-        vm.loadVocab()
-    }
+    var anchorRect by remember { mutableStateOf<Rect?>(null) }
 
-    // ── Popup ─────────────────────────────────────────────────────────────────
+    LaunchedEffect(Unit) { vm.loadVocab() }
+
     selectedEntry?.let { entry ->
         VocabPopup(
-            entry              = entry,
-            dictEntry          = dictEntry,
-            isDictExpanded     = isDictExpanded,
+            entry                = entry,
+            dictEntry            = dictEntry,
+            isDictExpanded       = isDictExpanded,
+            anchorRect           = anchorRect,
             onToggleDictExpanded = { vm.toggleDictExpanded() },
-            onDelete           = { vm.deleteWord(entry.id) },
-            onDismiss          = { vm.dismissPopup() }
+            onDismiss            = { vm.dismissPopup() }
         )
     }
 
@@ -62,6 +69,21 @@ fun VocabScreen(
                     }
                 }
             )
+        },
+        bottomBar = {
+            // Nút "Học từ" chỉ hiện khi có ít nhất 1 từ được chọn
+            if (selectedCount > 0) {
+                Surface(shadowElevation = 8.dp) {
+                    Button(
+                        onClick = onStudyClick,
+                        modifier = Modifier
+                            .fillMaxWidth()
+                            .padding(horizontal = 16.dp, vertical = 12.dp)
+                    ) {
+                        Text("Học từ ($selectedCount từ được chọn)")
+                    }
+                }
+            }
         }
     ) { padding ->
         Box(
@@ -88,10 +110,16 @@ fun VocabScreen(
                     modifier = Modifier.fillMaxSize()
                 ) {
                     items(vocabList, key = { it.id }) { entry ->
+                        var cardCoords by remember { mutableStateOf<LayoutCoordinates?>(null) }
                         VocabCard(
-                            entry    = entry,
-                            onWordClick = { vm.onEntryClick(entry) },
-                            onDelete = { vm.deleteWord(entry.id) }
+                            entry            = entry,
+                            modifier         = Modifier.onGloballyPositioned { cardCoords = it },
+                            onWordClick      = {
+                                anchorRect = cardCoords?.boundsInWindow()
+                                vm.onEntryClick(entry)
+                            },
+                            onToggleSelected = { vm.toggleSelected(entry) },
+                            onDelete         = { vm.deleteWord(entry.id) }
                         )
                     }
                 }
@@ -104,29 +132,48 @@ fun VocabScreen(
 private fun VocabCard(
     entry: UserVocabularyEntry,
     onWordClick: () -> Unit,
+    onToggleSelected: () -> Unit,
     onDelete: () -> Unit,
+    modifier: Modifier = Modifier,
 ) {
+    val isSelected = entry.selected == 1
     Card(
-        modifier = Modifier.fillMaxWidth(),
-        elevation = CardDefaults.cardElevation(defaultElevation = 2.dp)
+        modifier = modifier.fillMaxWidth(),
+        elevation = CardDefaults.cardElevation(defaultElevation = 2.dp),
+        colors = CardDefaults.cardColors(
+            containerColor = if (isSelected)
+                MaterialTheme.colorScheme.primaryContainer
+            else
+                MaterialTheme.colorScheme.surface
+        )
     ) {
         Row(
             modifier = Modifier
                 .fillMaxWidth()
-                .padding(16.dp),
+                .padding(horizontal = 8.dp, vertical = 12.dp),
             verticalAlignment = Alignment.CenterVertically,
-            horizontalArrangement = Arrangement.SpaceBetween
         ) {
-            Column(modifier = Modifier.weight(1f)) {
+            // ── Checkbox chọn từ để học ───────────────────────────────────────
+            Checkbox(
+                checked = isSelected,
+                onCheckedChange = { onToggleSelected() }
+            )
 
-                // ── Tap vào textEn để mở popup ───────────────────────────────
+            // ── Nội dung từ ───────────────────────────────────────────────────
+            Column(
+                modifier = Modifier
+                    .weight(1f)
+                    .padding(start = 4.dp)
+            ) {
                 Text(
                     text = entry.textEn ?: "",
                     style = MaterialTheme.typography.titleMedium,
-                    color = MaterialTheme.colorScheme.primary,
+                    color = if (isSelected)
+                        MaterialTheme.colorScheme.onPrimaryContainer
+                    else
+                        MaterialTheme.colorScheme.primary,
                     modifier = Modifier.clickable(onClick = onWordClick)
                 )
-
                 entry.textVi?.let {
                     Spacer(modifier = Modifier.height(2.dp))
                     Text(
@@ -141,6 +188,8 @@ private fun VocabCard(
                     AssistChip(onClick = {}, label = { Text("Điểm: ${entry.score}") })
                 }
             }
+
+            // ── Nút xoá ──────────────────────────────────────────────────────
             IconButton(onClick = onDelete) {
                 Icon(
                     Icons.Filled.Delete,

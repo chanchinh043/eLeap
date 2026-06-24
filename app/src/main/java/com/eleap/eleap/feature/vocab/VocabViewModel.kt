@@ -7,10 +7,8 @@ import android.util.Log
 import androidx.lifecycle.ViewModel
 import androidx.lifecycle.ViewModelProvider
 import androidx.lifecycle.viewModelScope
-import com.eleap.eleap.feature.reading.ui.UserDatabase
 import com.eleap.eleap.feature.reading.ui.UserVocabularyEntry
 import com.eleap.eleap.feature.vocab.data.VocabDictEntry
-import com.eleap.eleap.feature.vocab.data.VocabDictRepository
 import com.eleap.eleap.feature.vocab.data.VocabRepository
 import kotlinx.coroutines.flow.MutableStateFlow
 import kotlinx.coroutines.flow.StateFlow
@@ -18,10 +16,8 @@ import kotlinx.coroutines.launch
 
 class VocabViewModel(
     private val repository: VocabRepository,
-    private val dictRepository: VocabDictRepository,
 ) : ViewModel() {
 
-    // ── Danh sách từ đã lưu ───────────────────────────────────────────────────
     private val _vocabList = MutableStateFlow<List<UserVocabularyEntry>>(emptyList())
     val vocabList: StateFlow<List<UserVocabularyEntry>> = _vocabList
 
@@ -38,68 +34,73 @@ class VocabViewModel(
     private val _isDictExpanded = MutableStateFlow(false)
     val isDictExpanded: StateFlow<Boolean> = _isDictExpanded
 
-    init {
-        loadVocab()
-    }
+    // ── Số từ đang được chọn để học ──────────────────────────────────────────
+    val selectedCount: StateFlow<Int> get() = _selectedCount
+    private val _selectedCount = MutableStateFlow(0)
 
-    // ── Nạp danh sách từ users.db, sau đó preload dict vào RAM ───────────────
+    init { loadVocab() }
+
     fun loadVocab() {
         viewModelScope.launch {
             _isLoading.value = true
             val result = repository.getAllVocabulary()
             _vocabList.value = result
+            _selectedCount.value = result.count { it.selected == 1 }
             _isLoading.value = false
-            Log.d("VocabVM", "loaded ${result.size} saved words")
+            Log.d("VocabVM", "loaded ${result.size} words, ${_selectedCount.value} selected")
 
-            // Preload dict trong background — không chặn UI
-            // Khi user tap từ, nghĩa đã có sẵn trong RAM → hiện popup tức thì
             launch {
                 val words = result.mapNotNull { it.textEn }
-                dictRepository.preloadDict(words)
+                repository.preloadDict(words)
             }
         }
     }
 
-    // ── Mở popup khi tap vào từ — lấy từ RAM, không truy cập DB ─────────────
-    fun onEntryClick(entry: UserVocabularyEntry) {
-        _selectedEntry.value = entry
-        _isDictExpanded.value = false
-
-        // getDictEntry trả ngay từ RAM (sau preload); fallback DB nếu chưa xong
+    // ── Toggle checkbox chọn/bỏ chọn từ để học ───────────────────────────────
+    fun toggleSelected(entry: UserVocabularyEntry) {
+        val newSelected = if (entry.selected == 1) 0 else 1
         viewModelScope.launch {
-            _selectedDictEntry.value = dictRepository.getDictEntry(entry.textEn)
+            if (repository.updateSelected(entry.id, newSelected)) {
+                _vocabList.value = _vocabList.value.map {
+                    if (it.id == entry.id) it.copy(selected = newSelected) else it
+                }
+                _selectedCount.value = _vocabList.value.count { it.selected == 1 }
+            }
         }
     }
 
-    // ── Đóng popup ────────────────────────────────────────────────────────────
+    // ── Mở popup ─────────────────────────────────────────────────────────────
+    fun onEntryClick(entry: UserVocabularyEntry) {
+        _selectedEntry.value = entry
+        _isDictExpanded.value = false
+        viewModelScope.launch {
+            _selectedDictEntry.value = repository.getDictEntry(entry.textEn)
+        }
+    }
+
     fun dismissPopup() {
         _selectedEntry.value = null
         _selectedDictEntry.value = null
         _isDictExpanded.value = false
     }
 
-    // ── Toggle "Xem thêm" / "Thu gọn" trong popup ────────────────────────────
     fun toggleDictExpanded() {
         _isDictExpanded.value = !_isDictExpanded.value
     }
 
-    // ── Xoá từ ───────────────────────────────────────────────────────────────
     fun deleteWord(id: Int) {
         viewModelScope.launch {
             if (repository.deleteWord(id)) {
                 _vocabList.value = _vocabList.value.filterNot { it.id == id }
+                _selectedCount.value = _vocabList.value.count { it.selected == 1 }
             }
         }
     }
 
-    // ── Factory ───────────────────────────────────────────────────────────────
     class Factory(private val context: Context) : ViewModelProvider.Factory {
         override fun <T : ViewModel> create(modelClass: Class<T>): T {
-            val userDb   = UserDatabase.getInstance(context)
-            val repo     = VocabRepository(userDb)
-            val dictRepo = VocabDictRepository.getInstance(context)
             @Suppress("UNCHECKED_CAST")
-            return VocabViewModel(repo, dictRepo) as T
+            return VocabViewModel(VocabRepository.getInstance(context)) as T
         }
     }
 }
