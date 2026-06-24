@@ -6,10 +6,12 @@ import androidx.compose.material3.*
 import androidx.compose.runtime.*
 import androidx.compose.ui.Alignment
 import androidx.compose.ui.Modifier
+import androidx.compose.ui.unit.dp
 import com.eleap.eleap.feature.reading.ReadingListScreen
 import com.eleap.eleap.feature.reading.ReadingScreen
+import com.eleap.eleap.feature.vocab.VocabScreen
 
-private enum class Screen { MAIN, READING_LIST, READING }
+private enum class Screen { MAIN, READING_LIST, READING, VOCAB }
 
 @Composable
 fun MainScreen() {
@@ -19,7 +21,8 @@ fun MainScreen() {
     when (screen) {
         Screen.MAIN -> {
             MainContent(
-                onReadingClick = { screen = Screen.READING_LIST }
+                onReadingClick = { screen = Screen.READING_LIST },
+                onVocabClick = { screen = Screen.VOCAB }
             )
         }
 
@@ -39,11 +42,20 @@ fun MainScreen() {
                 onBack = { screen = Screen.READING_LIST }
             )
         }
+
+        Screen.VOCAB -> {
+            VocabScreen(
+                onBack = { screen = Screen.MAIN }
+            )
+        }
     }
 }
 
 @Composable
-private fun MainContent(onReadingClick: () -> Unit) {
+private fun MainContent(
+    onReadingClick: () -> Unit,
+    onVocabClick: () -> Unit,
+) {
     Column(
         modifier = Modifier.fillMaxSize(),
         horizontalAlignment = Alignment.CenterHorizontally,
@@ -51,6 +63,10 @@ private fun MainContent(onReadingClick: () -> Unit) {
     ) {
         Button(onClick = onReadingClick) {
             Text("Reading")
+        }
+        Spacer(modifier = Modifier.height(12.dp))
+        Button(onClick = onVocabClick) {
+            Text("Ôn từ vựng")
         }
     }
 }

@@ -29,6 +29,7 @@ import java.util.*
 // ─────────────────────────────────────────────────────────────────────────────
 
 data class UserVocabularyEntry(
+    val id: Int = 0,                // id trong bảng user_vocabulary (dùng để xoá/hiển thị)
     val userId: Int = 0,
     val sourceSentenceId: Int?,
     val sourceWordId: Int?,
@@ -131,6 +132,49 @@ class UserDatabase private constructor(context: Context) {
             arrayOf(wordId.toString())
         )
         return cursor.use { it.moveToFirst() }
+    }
+
+    // ── Lấy toàn bộ từ đã lưu của 1 user (dùng cho VocabScreen) ──────────────
+    fun getAllVocabulary(userId: Int = 0): List<UserVocabularyEntry> {
+        val list = mutableListOf<UserVocabularyEntry>()
+        val cursor = db.rawQuery(
+            "SELECT * FROM user_vocabulary WHERE user_id = ? ORDER BY created_at DESC",
+            arrayOf(userId.toString())
+        )
+        cursor.use {
+            while (it.moveToNext()) {
+                fun nullableInt(col: String): Int? {
+                    val idx = it.getColumnIndexOrThrow(col)
+                    return if (it.isNull(idx)) null else it.getInt(idx)
+                }
+                list.add(
+                    UserVocabularyEntry(
+                        id                = it.getInt(it.getColumnIndexOrThrow("id")),
+                        userId            = it.getInt(it.getColumnIndexOrThrow("user_id")),
+                        sourceSentenceId  = nullableInt("source_sentence_id"),
+                        sourceWordId      = nullableInt("source_word_id"),
+                        sourcePhraseId    = nullableInt("source_phrase_id"),
+                        textEn            = it.getString(it.getColumnIndexOrThrow("text_en")),
+                        textVi            = it.getString(it.getColumnIndexOrThrow("text_vi")),
+                        selected          = it.getInt(it.getColumnIndexOrThrow("selected")),
+                        createdAt         = it.getString(it.getColumnIndexOrThrow("created_at")),
+                        count             = it.getInt(it.getColumnIndexOrThrow("count")),
+                        score             = it.getInt(it.getColumnIndexOrThrow("score")),
+                    )
+                )
+            }
+        }
+        return list
+    }
+
+    // ── Xoá 1 từ khỏi user_vocabulary (theo id) ───────────────────────────────
+    fun deleteWord(id: Int): Boolean {
+        return try {
+            db.delete("user_vocabulary", "id = ?", arrayOf(id.toString())) > 0
+        } catch (e: Exception) {
+            Log.e("UserDB", "deleteWord error", e)
+            false
+        }
     }
 
     /** Đường dẫn thật của file users.db trên thiết bị — dùng để debug */
