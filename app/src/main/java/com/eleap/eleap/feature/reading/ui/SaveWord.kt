@@ -37,6 +37,8 @@ data class UserVocabularyEntry(
     val textVi: String?,
     val selected: Int = 1,          // 1 = đang học, 0 = bỏ qua
     val createdAt: String,
+    val count: Int = 0,       // số lần người dùng đã ôn lại từ này
+    val score: Int = 0,      // điểm thuộc từ: +1 khi trả lời đúng, -1 khi sai
 )
 
 // ─────────────────────────────────────────────────────────────────────────────
@@ -79,6 +81,8 @@ class UserDatabase private constructor(context: Context) {
                     text_vi            TEXT,
                     selected           INTEGER NOT NULL DEFAULT 1,
                     created_at         TEXT NOT NULL,
+                    count       INTEGER NOT NULL DEFAULT 0,
+                    score      INTEGER NOT NULL DEFAULT 0,
                     FOREIGN KEY (user_id) REFERENCES users(user_id)
                 )
                 """.trimIndent()
@@ -87,9 +91,13 @@ class UserDatabase private constructor(context: Context) {
 
         override fun onUpgrade(db: SQLiteDatabase, oldVersion: Int, newVersion: Int) {
             // Chỉ thêm cột mới nếu cần — không DROP TABLE để giữ dữ liệu người dùng
+            if (oldVersion < 2) {
+                db.execSQL("ALTER TABLE user_vocabulary ADD COLUMN count  INTEGER NOT NULL DEFAULT 0")
+                db.execSQL("ALTER TABLE user_vocabulary ADD COLUMN score INTEGER NOT NULL DEFAULT 0")
+            }
         }
 
-        companion object { const val DB_VERSION = 1 }
+        companion object { const val DB_VERSION = 2 }
     }
 
     // ── Lưu 1 từ vào user_vocabulary ─────────────────────────────────────────
@@ -104,6 +112,8 @@ class UserDatabase private constructor(context: Context) {
                 put("text_vi",            entry.textVi)
                 put("selected",           entry.selected)
                 put("created_at",         entry.createdAt)
+                put("count",       entry.count)
+                put("score",      entry.score)
             }
             val rowId = db.insert("user_vocabulary", null, cv)
             Log.d("UserDB", "saveWord: \"${entry.textEn}\" → rowId=$rowId")
