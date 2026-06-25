@@ -83,13 +83,7 @@ fun VocabStudyScreen(
     Scaffold(
         topBar = {
             TopAppBar(
-                title = {
-                    if (currentIndex >= 0) {
-                        Text("Đã ôn: ${currentIndex + 1} từ")
-                    } else {
-                        Text("Học từ")
-                    }
-                },
+                title = { Text("Quay từ") },
                 navigationIcon = {
                     IconButton(onClick = onBack) {
                         Icon(Icons.AutoMirrored.Filled.ArrowBack, contentDescription = "Back")

@@ -23,6 +23,7 @@ import androidx.compose.ui.layout.positionInParent
 import androidx.compose.ui.platform.LocalContext
 import androidx.compose.ui.text.style.TextDecoration
 import androidx.compose.ui.unit.dp
+import androidx.compose.ui.unit.sp
 import androidx.compose.ui.unit.toSize
 import androidx.lifecycle.viewmodel.compose.viewModel
 import com.eleap.eleap.feature.reading.data.ReadingSentence
@@ -46,6 +47,10 @@ fun ReadingScreen(
     val selectedSentence  by vm.selectedSentence.collectAsState()
     val selectedDictEntry by vm.selectedDictEntry.collectAsState()
     val isDictExpanded    by vm.isDictExpanded.collectAsState()
+
+    // ── Cỡ chữ — đọc từ SharedPreferences khi mở, ghi lại mỗi khi đổi ─────────
+    val prefs = remember { context.getSharedPreferences("reading_settings", android.content.Context.MODE_PRIVATE) }
+    var fontSize by remember { mutableStateOf(prefs.getInt("font_size", 16)) }
 
     // ── Vị trí "mỏ neo" (từ/câu đang chọn) + khung hiển thị — dùng để đặt popup ──
     var anchorInfo by remember { mutableStateOf<PopupAnchorInfo?>(null) }
@@ -93,6 +98,39 @@ fun ReadingScreen(
                     IconButton(onClick = onBack) {
                         Icon(Icons.AutoMirrored.Filled.ArrowBack, contentDescription = "Back")
                     }
+                },
+                actions = {
+                    // ── Nút trừ ──────────────────────────────────────────────
+                    IconButton(
+                        onClick = {
+                            if (fontSize > 10) {
+                                fontSize--
+                                prefs.edit().putInt("font_size", fontSize).apply()
+                            }
+                        },
+                        enabled = fontSize > 10
+                    ) {
+                        Text(text = "−", style = MaterialTheme.typography.titleLarge)
+                    }
+                    // ── Hiện cỡ chữ hiện tại ─────────────────────────────────
+                    Text(
+                        text = "$fontSize",
+                        style = MaterialTheme.typography.bodyMedium,
+                        modifier = Modifier.widthIn(min = 28.dp),
+                        textAlign = androidx.compose.ui.text.style.TextAlign.Center
+                    )
+                    // ── Nút cộng ─────────────────────────────────────────────
+                    IconButton(
+                        onClick = {
+                            if (fontSize < 30) {
+                                fontSize++
+                                prefs.edit().putInt("font_size", fontSize).apply()
+                            }
+                        },
+                        enabled = fontSize < 30
+                    ) {
+                        Text(text = "+", style = MaterialTheme.typography.titleLarge)
+                    }
                 }
             )
         }
@@ -116,6 +154,7 @@ fun ReadingScreen(
                             sentence = sentence,
                             selectedWord = selectedWord,
                             selectedSentence = selectedSentence,
+                            fontSize = fontSize,
                             onWordClick = { word -> vm.onWordClick(word, sentence) },
                             onSentenceClick = { vm.onSentenceClick(sentence) },
                             onAnchorInfoChanged = { info -> anchorInfo = info }
@@ -137,6 +176,7 @@ private fun WordClickableRow(
     sentence: ReadingSentence,
     selectedWord: SentenceWord?,
     selectedSentence: ReadingSentence?,
+    fontSize: Int,
     onWordClick: (SentenceWord) -> Unit,
     onSentenceClick: () -> Unit,
     onAnchorInfoChanged: (PopupAnchorInfo) -> Unit,
@@ -258,10 +298,10 @@ private fun WordClickableRow(
             val selected = highlightRange?.contains(index) == true
             Text(
                 text = word.textEn ?: "",
-                style = MaterialTheme.typography.bodyLarge,
+                style = MaterialTheme.typography.bodyLarge.copy(fontSize = fontSize.sp),
                 color = if (selected) MaterialTheme.colorScheme.onPrimary
                 else MaterialTheme.colorScheme.primary,
-                textDecoration = TextDecoration.Underline,
+
                 modifier = Modifier
                     .onGloballyPositioned { c ->
                         bounds[index] = Rect(c.positionInParent(), c.size.toSize())

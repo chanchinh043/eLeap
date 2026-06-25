@@ -63,49 +63,40 @@ fun WordPopup(
                 verticalArrangement = Arrangement.spacedBy(8.dp)
             ) {
 
-                // ── Header: từ + POS + IPA + nút Đóng ────────────────────────
+                // ── Header: từ + IPA cùng hàng + nút Đóng ───────────────────
+                val ipa   = dictEntry?.ipa?.takeIf { it.isNotBlank() }
+                val ipaVi = dictEntry?.ipaVi?.takeIf { it.isNotBlank() }
                 Row(
                     modifier = Modifier.fillMaxWidth(),
                     verticalAlignment = Alignment.CenterVertically,
                     horizontalArrangement = Arrangement.SpaceBetween
                 ) {
-                    Column(verticalArrangement = Arrangement.spacedBy(2.dp)) {
-                        // Dòng 1: từ + POS
-                        Row(
-                            verticalAlignment = Alignment.CenterVertically,
-                            horizontalArrangement = Arrangement.spacedBy(8.dp)
-                        ) {
-                            Text(
-                                text = word.textEn ?: "",
-                                style = MaterialTheme.typography.titleLarge
-                            )
-                            word.pos?.let {
-                                Text(
-                                    text = "[$it]",
-                                    style = MaterialTheme.typography.bodySmall,
-                                    color = MaterialTheme.colorScheme.outline,
-                                    fontStyle = FontStyle.Italic
-                                )
-                            }
-                        }
-                        // Dòng 2: IPA (nếu có)
-                        val ipa   = dictEntry?.ipa?.takeIf { it.isNotBlank() }
-                        val ipaVi = dictEntry?.ipaVi?.takeIf { it.isNotBlank() }
+                    // Dòng từ + IPA nằm ngang nhau, co lại để không đè nút Đóng
+                    Row(
+                        modifier = Modifier.weight(1f),
+                        verticalAlignment = Alignment.CenterVertically,
+                        horizontalArrangement = Arrangement.spacedBy(8.dp)
+                    ) {
+                        Text(
+                            text = word.textEn ?: "",
+                            style = MaterialTheme.typography.titleLarge
+                        )
+                        // IPA: [ipa][ipa_vi] — cỡ bodyMedium cho dễ đọc hơn
                         if (ipa != null || ipaVi != null) {
-                            Row(horizontalArrangement = Arrangement.spacedBy(10.dp)) {
+                            Row(horizontalArrangement = Arrangement.spacedBy(4.dp)) {
                                 ipa?.let {
                                     Text(
-                                        text = "/$it/",
-                                        style = MaterialTheme.typography.bodySmall,
-                                        color = MaterialTheme.colorScheme.onSurfaceVariant,
+                                        text = "[$it]",
+                                        style = MaterialTheme.typography.bodyMedium,
+                                        color = MaterialTheme.colorScheme.secondary,
                                         fontStyle = FontStyle.Italic
                                     )
                                 }
                                 ipaVi?.let {
                                     Text(
-                                        text = "/$it/",
-                                        style = MaterialTheme.typography.bodySmall,
-                                        color = MaterialTheme.colorScheme.onSurfaceVariant,
+                                        text = "[$it]",
+                                        style = MaterialTheme.typography.bodyMedium,
+                                        color = MaterialTheme.colorScheme.secondary,
                                         fontStyle = FontStyle.Italic
                                     )
                                 }
@@ -225,6 +216,17 @@ fun WordPopup(
                             }
                         }
                     }
+                }
+
+                // ── Loại từ (POS) — ít quan trọng, để cuối cùng ──────────────
+                word.pos?.let {
+                    HorizontalDivider()
+                    Text(
+                        text = "Loại từ: $it",
+                        style = MaterialTheme.typography.bodySmall,
+                        color = MaterialTheme.colorScheme.outline,
+                        fontStyle = FontStyle.Italic
+                    )
                 }
             }
         }

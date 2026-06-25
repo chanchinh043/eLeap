@@ -79,6 +79,8 @@ fun VocabScreen(
                         modifier = Modifier
                             .fillMaxWidth()
                             .padding(horizontal = 16.dp, vertical = 12.dp)
+                            // Đẩy nút lên trên nút ảo Home/Back (navigation bar)
+                            .windowInsetsPadding(WindowInsets.navigationBars)
                     ) {
                         Text("Học từ ($selectedCount từ được chọn)")
                     }
