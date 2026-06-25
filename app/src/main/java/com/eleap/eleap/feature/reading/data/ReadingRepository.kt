@@ -7,8 +7,10 @@ package com.eleap.eleap.feature.reading.data
 
 import android.content.Context
 import android.database.sqlite.SQLiteDatabase
+import android.util.Log
 import java.io.File
 import java.io.FileOutputStream
+import java.security.MessageDigest
 import kotlinx.coroutines.Dispatchers
 import kotlinx.coroutines.withContext
 
@@ -217,12 +219,15 @@ class ReadingDao(
 // ═════════════════════════════════════════════════════════════════════════════
 
 /**
- * Mở readings.db và dict.db từ assets bằng SQLite thuần — không dùng Room
- * để tránh schema validation conflict (VARCHAR vs TEXT, DATETIME vs TEXT).
+ * Mở readings.db và dict.db từ assets bằng SQLite thuần — không dùng Room.
  *
- * Mỗi DB có 1 "schema version" riêng lưu trong SharedPreferences.
- * Khi tăng version → file cũ bị xoá và copy lại từ assets.
- * Chỉ tăng version khi schema thay đổi (thêm/xoá cột, đổi tên bảng, v.v.).
+ * Cơ chế tự động cập nhật:
+ *   - Tính MD5 của file trong assets và file đang dùng trên thiết bị.
+ *   - Nếu khác nhau (DB đã được thay bằng file mới) → tự động copy đè, không cần xóa app.
+ *   - Hash được lưu trong SharedPreferences để tránh tính lại mỗi lần khởi động.
+ *
+ * Lưu ý: readings.db và dict.db là DB chỉ đọc từ assets — không chứa dữ liệu người dùng.
+ * Dữ liệu người dùng (từ đã lưu, v.v.) nằm trong users.db — không bị ảnh hưởng.
  */
 class ReadingDatabase private constructor(context: Context) {
 
@@ -230,29 +235,45 @@ class ReadingDatabase private constructor(context: Context) {
     val dictDb: SQLiteDatabase   // dict.db
 
     init {
-        db     = openDatabase(context, "readings.db", schemaVersion = 1)
-        dictDb = openDatabase(context, "dict.db",     schemaVersion = 2) // tăng khi thêm ipa, ipa_vi
+        db     = openDatabase(context, "readings.db")
+        dictDb = openDatabase(context, "dict.db")
     }
 
-    private fun openDatabase(context: Context, fileName: String, schemaVersion: Int): SQLiteDatabase {
-        val prefs   = context.getSharedPreferences("db_versions", Context.MODE_PRIVATE)
-        val prefKey = "version_$fileName"
-        val dbFile  = File(context.getDatabasePath(fileName).absolutePath)
+    /**
+     * Mở một DB từ assets.
+     * Tự động copy lại từ assets nếu:
+     *   1. File chưa tồn tại trên thiết bị (lần đầu cài app), hoặc
+     *   2. MD5 của file assets khác với MD5 đã lưu (DB đã được cập nhật trong APK mới).
+     */
+    private fun openDatabase(context: Context, fileName: String): SQLiteDatabase {
+        val prefs      = context.getSharedPreferences("db_checksums", Context.MODE_PRIVATE)
+        val prefKey    = "md5_$fileName"
+        val assetPath  = "databases/$fileName"
+        val dbFile     = File(context.getDatabasePath(fileName).absolutePath)
 
-        val savedVersion = prefs.getInt(prefKey, 0)
-        if (savedVersion < schemaVersion && dbFile.exists()) {
-            // Schema đã thay đổi → xoá bản cũ, sẽ copy lại từ assets
-            dbFile.delete()
-        }
+        // ── Tính MD5 của file trong assets ───────────────────────────────────
+        val assetMd5 = context.assets.open(assetPath).use { md5OfStream(it) }
+        Log.d("ReadingDB", "$fileName | asset MD5  = $assetMd5")
 
-        if (!dbFile.exists()) {
+        val savedMd5 = prefs.getString(prefKey, null)
+        Log.d("ReadingDB", "$fileName | saved MD5  = $savedMd5")
+
+        val needsCopy = !dbFile.exists() || assetMd5 != savedMd5
+
+        if (needsCopy) {
+            Log.d("ReadingDB", "$fileName | DB thay đổi → copy lại từ assets")
             dbFile.parentFile?.mkdirs()
-            context.assets.open("databases/$fileName").use { input ->
-                FileOutputStream(dbFile).use { output ->
-                    input.copyTo(output)
-                }
+            // Đóng DB cũ nếu đang mở (trường hợp singleton bị tái tạo)
+            try { SQLiteDatabase.openDatabase(dbFile.absolutePath, null, SQLiteDatabase.OPEN_READONLY).close() }
+            catch (_: Exception) { }
+
+            context.assets.open(assetPath).use { input ->
+                FileOutputStream(dbFile).use { output -> input.copyTo(output) }
             }
-            prefs.edit().putInt(prefKey, schemaVersion).apply()
+            prefs.edit().putString(prefKey, assetMd5).apply()
+            Log.d("ReadingDB", "$fileName | copy hoàn tất, MD5 đã lưu")
+        } else {
+            Log.d("ReadingDB", "$fileName | DB đã mới nhất, bỏ qua copy")
         }
 
         return SQLiteDatabase.openDatabase(
@@ -260,6 +281,17 @@ class ReadingDatabase private constructor(context: Context) {
             null,
             SQLiteDatabase.OPEN_READONLY
         )
+    }
+
+    /** Tính MD5 của một InputStream, trả về chuỗi hex 32 ký tự. */
+    private fun md5OfStream(stream: java.io.InputStream): String {
+        val digest = MessageDigest.getInstance("MD5")
+        val buffer = ByteArray(8192)
+        var read: Int
+        while (stream.read(buffer).also { read = it } != -1) {
+            digest.update(buffer, 0, read)
+        }
+        return digest.digest().joinToString("") { "%02x".format(it) }
     }
 
     companion object {
