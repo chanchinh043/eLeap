@@ -189,10 +189,11 @@ private fun WordClickableRow(
     var startIdx by remember(sentence.sentenceId) { mutableStateOf<Int?>(null) }
     var currentIdx by remember(sentence.sentenceId) { mutableStateOf<Int?>(null) }
 
-    // Phạm vi đang kéo tay (live, chỉ tồn tại trong lúc gesture diễn ra)
+    // Phạm vi đang kéo tay — chỉ highlight khi kéo trái → phải (currentIdx > startIdx).
+    // Kéo phải → trái thì liveRange = null, không highlight, sẽ fallback về chọn từ.
     val liveRange = remember(startIdx, currentIdx) {
         val s = startIdx; val e = currentIdx
-        if (s != null && e != null) minOf(s, e)..maxOf(s, e) else null
+        if (s != null && e != null && e > s) s..e else null
     }
 
     // Phạm vi "đã chốt" — giữ highlight khi popup (từ hoặc câu) đang mở
@@ -249,6 +250,8 @@ private fun WordClickableRow(
                 currentIdx = startIdx
 
                 var horizontal: Boolean? = null // null = chưa rõ hướng
+                val dragStartX = down.position.x   // x lúc chạm — để xét chiều kéo
+                var lastX = dragStartX             // x của frame cuối — sống ngoài loop
 
                 while (true) {
                     val event = awaitPointerEvent()
@@ -258,6 +261,8 @@ private fun WordClickableRow(
                         if (horizontal == true) change?.consume()
                         break
                     }
+
+                    lastX = change.position.x      // cập nhật mỗi frame
 
                     if (horizontal == null) {
                         val dx = kotlin.math.abs(change.position.x - down.position.x)
@@ -286,8 +291,15 @@ private fun WordClickableRow(
 
                 val s = startIdx
                 val e = currentIdx
+                val draggedRightward = lastX > dragStartX
                 if (s != null && e != null) {
-                    if (horizontal == true && s != e) onSentenceClick() else onWordClick(words[s])
+                    when {
+                        // Kéo trái → phải qua ≥2 từ → chọn câu
+                        horizontal == true && e > s && draggedRightward -> onSentenceClick()
+                        // Tap (không kéo ngang) → chọn từ
+                        horizontal != true -> onWordClick(words[s])
+                        // Kéo phải → trái → bỏ qua, không làm gì
+                    }
                 }
                 startIdx = null
                 currentIdx = null
