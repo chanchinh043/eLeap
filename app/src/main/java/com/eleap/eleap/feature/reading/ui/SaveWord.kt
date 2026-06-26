@@ -1,13 +1,4 @@
 // SaveWord.kt
-// Đặt tại: com/eleap/eleap/feature/reading/ui/SaveWord.kt
-//
-// File duy nhất cần thêm cho tính năng "Lưu từ".
-// Chứa: UserVocabularyEntry (entity), UserDatabase (DB creation), SaveWordButton (UI).
-//
-// Thay đổi ở file khác (tối thiểu):
-//   1. ReadingViewModel.kt  → thêm hàm saveWord() (xem comment cuối file)
-//   2. WordPopup.kt         → thêm SaveWordButton vào Column (xem comment cuối file)
-
 package com.eleap.eleap.feature.reading.ui
 
 import android.content.Context
@@ -29,21 +20,21 @@ import java.util.*
 // ─────────────────────────────────────────────────────────────────────────────
 
 data class UserVocabularyEntry(
-    val id: Int = 0,                // id trong bảng user_vocabulary (dùng để xoá/hiển thị)
+    val id: Int = 0,
     val userId: Int = 0,
     val sourceSentenceId: Int?,
     val sourceWordId: Int?,
     val sourcePhraseId: Int?,
     val textEn: String?,
     val textVi: String?,
-    val selected: Int = 1,          // 1 = đang học, 0 = bỏ qua
+    val selected: Int = 1,
     val createdAt: String,
-    val count: Int = 0,       // số lần người dùng đã ôn lại từ này
-    val score: Int = 0,      // điểm thuộc từ: +1 khi trả lời đúng, -1 khi sai
+    val count: Int = 0,
+    val score: Int = 0,
 )
 
 // ─────────────────────────────────────────────────────────────────────────────
-// 2. Database  (users.db — cùng thư mục với readings.db / dict.db)
+// 2. Database
 // ─────────────────────────────────────────────────────────────────────────────
 
 class UserDatabase private constructor(context: Context) {
@@ -55,7 +46,6 @@ class UserDatabase private constructor(context: Context) {
         Log.d("UserDB", "DB path: ${db.path}")
     }
 
-    // ── SQLiteOpenHelper tự tạo + migrate schema ──────────────────────────────
     private class Helper(context: Context) :
         SQLiteOpenHelper(context, "users.db", null, DB_VERSION) {
 
@@ -67,7 +57,6 @@ class UserDatabase private constructor(context: Context) {
                 )
                 """.trimIndent()
             )
-            // Đảm bảo luôn tồn tại dòng user mặc định (user_id = 0)
             db.execSQL("INSERT OR IGNORE INTO users (user_id) VALUES (0)")
 
             db.execSQL(
@@ -91,7 +80,6 @@ class UserDatabase private constructor(context: Context) {
         }
 
         override fun onUpgrade(db: SQLiteDatabase, oldVersion: Int, newVersion: Int) {
-            // Chỉ thêm cột mới nếu cần — không DROP TABLE để giữ dữ liệu người dùng
             if (oldVersion < 2) {
                 db.execSQL("ALTER TABLE user_vocabulary ADD COLUMN count  INTEGER NOT NULL DEFAULT 0")
                 db.execSQL("ALTER TABLE user_vocabulary ADD COLUMN score INTEGER NOT NULL DEFAULT 0")
@@ -101,7 +89,6 @@ class UserDatabase private constructor(context: Context) {
         companion object { const val DB_VERSION = 2 }
     }
 
-    // ── Lưu 1 từ vào user_vocabulary ─────────────────────────────────────────
     fun saveWord(entry: UserVocabularyEntry): Boolean {
         return try {
             val cv = ContentValues().apply {
@@ -125,7 +112,6 @@ class UserDatabase private constructor(context: Context) {
         }
     }
 
-    // ── Kiểm tra từ đã được lưu chưa (theo source_word_id) ───────────────────
     fun isWordSaved(wordId: Int): Boolean {
         val cursor = db.rawQuery(
             "SELECT 1 FROM user_vocabulary WHERE source_word_id = ? LIMIT 1",
@@ -134,7 +120,6 @@ class UserDatabase private constructor(context: Context) {
         return cursor.use { it.moveToFirst() }
     }
 
-    // ── Lấy toàn bộ từ đã lưu của 1 user (dùng cho VocabScreen) ──────────────
     fun getAllVocabulary(userId: Int = 0): List<UserVocabularyEntry> {
         val list = mutableListOf<UserVocabularyEntry>()
         val cursor = db.rawQuery(
@@ -167,7 +152,6 @@ class UserDatabase private constructor(context: Context) {
         return list
     }
 
-    // ── Xoá 1 từ khỏi user_vocabulary (theo id) ───────────────────────────────
     fun deleteWord(id: Int): Boolean {
         return try {
             db.delete("user_vocabulary", "id = ?", arrayOf(id.toString())) > 0
@@ -177,7 +161,31 @@ class UserDatabase private constructor(context: Context) {
         }
     }
 
-    /** Đường dẫn thật của file users.db trên thiết bị — dùng để debug */
+    fun unsaveWord(wordId: Int): Boolean {
+        return try {
+            val rows = db.delete("user_vocabulary", "source_word_id = ?", arrayOf(wordId.toString()))
+            Log.d("UserDB", "unsaveWord: wordId=$wordId → $rows row(s) deleted")
+            rows > 0
+        } catch (e: Exception) {
+            Log.e("UserDB", "unsaveWord error", e)
+            false
+        }
+    }
+
+    fun getAllSavedWordIds(): Set<Int> {
+        val set = mutableSetOf<Int>()
+        val cursor = db.rawQuery(
+            "SELECT source_word_id FROM user_vocabulary WHERE source_word_id IS NOT NULL",
+            null
+        )
+        cursor.use {
+            while (it.moveToNext()) {
+                set.add(it.getInt(0))
+            }
+        }
+        return set
+    }
+
     val dbPath: String get() = db.path
 
     companion object {
@@ -191,35 +199,36 @@ class UserDatabase private constructor(context: Context) {
 }
 
 // ─────────────────────────────────────────────────────────────────────────────
-// 3. Composable nút "Lưu từ" — dùng trong WordPopup
+// 3. SaveWordButton
 // ─────────────────────────────────────────────────────────────────────────────
 
 /**
- * Nút lưu từ vào users.db.
- *
- * Cách dùng trong WordPopup.kt — thêm vào cuối Column (trước dấu đóng `}`):
- *
- *     HorizontalDivider()
- *     SaveWordButton(word = word, phrase = phrase)
- *
- * @param word   Từ đang hiển thị trong popup
- * @param phrase Cụm từ chứa từ đó (có thể null)
+ * @param word               Từ đang hiển thị trong popup
+ * @param phrase             Cụm từ chứa từ đó (có thể null)
+ * @param onSaveStateChanged Callback gọi sau khi lưu hoặc bỏ lưu thành công —
+ *                           dùng để ViewModel refresh savedWordIds → màu từ đổi ngay
  */
 @Composable
 fun SaveWordButton(
     word: SentenceWord,
     phrase: SentencePhrase?,
+    onSaveStateChanged: () -> Unit = {},   // ← mới, mặc định rỗng để không break code cũ
 ) {
     val context = LocalContext.current
     val userDb  = remember { UserDatabase.getInstance(context) }
 
-    // Kiểm tra trạng thái lưu ngay khi popup mở
     var isSaved by remember(word.wordId) {
         mutableStateOf(userDb.isWordSaved(word.wordId))
     }
 
     TextButton(onClick = {
-        if (!isSaved) {
+        if (isSaved) {
+            val removed = userDb.unsaveWord(word.wordId)
+            if (removed) {
+                isSaved = false
+                onSaveStateChanged()   // ← notify ViewModel
+            }
+        } else {
             val now = SimpleDateFormat("yyyy-MM-dd HH:mm:ss", Locale.getDefault())
                 .format(Date())
             val entry = UserVocabularyEntry(
@@ -232,29 +241,13 @@ fun SaveWordButton(
                 selected         = 1,
                 createdAt        = now,
             )
-            isSaved = userDb.saveWord(entry)
+            val saved = userDb.saveWord(entry)
+            if (saved) {
+                isSaved = true
+                onSaveStateChanged()   // ← notify ViewModel
+            }
         }
     }) {
-        Text(if (isSaved) "✓ Đã lưu" else "Lưu từ")
+        Text(if (isSaved) "Bỏ lưu" else "Lưu từ")
     }
 }
-
-// ─────────────────────────────────────────────────────────────────────────────
-// HƯỚNG DẪN THAY ĐỔI TỐI THIỂU Ở CÁC FILE KHÁC
-// ─────────────────────────────────────────────────────────────────────────────
-//
-// ── WordPopup.kt ─────────────────────────────────────────────────────────────
-// Thêm import:
-//   import com.eleap.eleap.feature.reading.ui.SaveWordButton
-//
-// Trong Column { ... } của WordPopup, thêm vào SAU khối "// ── Từ điển ──":
-//
-//     // ── Lưu từ ───────────────────────────────────────────────────────────
-//     HorizontalDivider()
-//     SaveWordButton(word = word, phrase = phrase)
-//
-// Không cần thêm tham số mới vào WordPopup — word và phrase đã có sẵn.
-//
-// ─────────────────────────────────────────────────────────────────────────────
-// Không cần thay đổi ReadingViewModel, ReadingScreen, hay bất kỳ file nào khác.
-// ─────────────────────────────────────────────────────────────────────────────

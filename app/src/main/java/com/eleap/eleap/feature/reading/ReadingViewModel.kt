@@ -13,14 +13,17 @@ import com.eleap.eleap.feature.reading.data.ReadingSentence
 import com.eleap.eleap.feature.reading.data.DictEntry
 import com.eleap.eleap.feature.reading.data.SentencePhrase
 import com.eleap.eleap.feature.reading.data.SentenceWord
+import com.eleap.eleap.feature.reading.ui.UserDatabase
+import kotlinx.coroutines.Dispatchers
 import kotlinx.coroutines.flow.MutableStateFlow
 import kotlinx.coroutines.flow.StateFlow
 import kotlinx.coroutines.launch
+import kotlinx.coroutines.withContext
 
-// ── ReadingMode ───────────────────────────────────────────────────────────────
-
-
-class ReadingViewModel(private val repository: ReadingRepository) : ViewModel() {
+class ReadingViewModel(
+    private val repository: ReadingRepository,
+    private val userDb: UserDatabase,          // thêm mới — để quản lý savedWordIds
+) : ViewModel() {
 
     // ── Flow 2 ────────────────────────────────────────────────────────────────
     private val _readings = MutableStateFlow<List<Reading>>(emptyList())
@@ -33,14 +36,11 @@ class ReadingViewModel(private val repository: ReadingRepository) : ViewModel() 
     private val _isLoadingReading = MutableStateFlow(false)
     val isLoadingReading: StateFlow<Boolean> = _isLoadingReading
 
-    // ── Flow 4/5: mode dịch ───────────────────────────────────────────────────
-
-
     // ── Flow 6: từ đang được chọn để hiện WordPopup ───────────────────────────
     private val _selectedWord = MutableStateFlow<SentenceWord?>(null)
     val selectedWord: StateFlow<SentenceWord?> = _selectedWord
 
-    // ── Flow 6 (phrase): cụm từ chứa từ đang click (null nếu từ không thuộc cụm) ──
+    // ── Flow 6 (phrase): cụm từ chứa từ đang click ───────────────────────────
     private val _selectedPhrase = MutableStateFlow<SentencePhrase?>(null)
     val selectedPhrase: StateFlow<SentencePhrase?> = _selectedPhrase
 
@@ -48,16 +48,29 @@ class ReadingViewModel(private val repository: ReadingRepository) : ViewModel() 
     private val _selectedSentence = MutableStateFlow<ReadingSentence?>(null)
     val selectedSentence: StateFlow<ReadingSentence?> = _selectedSentence
 
-    // ── Dict: nghĩa từ điển (dict.db) của từ đang chọn ────────────────────────
+    // ── Dict: nghĩa từ điển của từ đang chọn ─────────────────────────────────
     private val _selectedDictEntry = MutableStateFlow<DictEntry?>(null)
     val selectedDictEntry: StateFlow<DictEntry?> = _selectedDictEntry
 
-    // ── Dict: trạng thái "Xem thêm" (hiện meaning đầy đủ) trong WordPopup ────
+    // ── Dict: trạng thái "Xem thêm" trong WordPopup ───────────────────────────
     private val _isDictExpanded = MutableStateFlow(false)
     val isDictExpanded: StateFlow<Boolean> = _isDictExpanded
 
+    // ── savedWordIds: tập wordId đã lưu — dùng để tô màu từ trong bài đọc ────
+    // Quản lý ở đây để SaveWordButton có thể notify cập nhật mà không cần
+    // ReadingScreen phải poll lại DB mỗi khi popup đóng.
+    private val _savedWordIds = MutableStateFlow<Set<Int>>(emptySet())
+    val savedWordIds: StateFlow<Set<Int>> = _savedWordIds
+
+    // ── readingId đang cache — tránh load lại bài đọc đã load rồi ────────────
+    // Repository đã có readingCache (RAM), nhưng ViewModel bị recreate mỗi lần
+    // navigate nên loadReading() vẫn bị gọi lại. Giờ ViewModel là singleton
+    // (qua Factory companion), nên chỉ cần kiểm tra biến này là đủ.
+    private var cachedReadingId: Int = -1
+
     init {
         loadReadings()
+        refreshSavedWordIds()
     }
 
     // ── Flow 2 ────────────────────────────────────────────────────────────────
@@ -67,8 +80,13 @@ class ReadingViewModel(private val repository: ReadingRepository) : ViewModel() 
         }
     }
 
-    // ── Flow 3 ────────────────────────────────────────────────────────────────
+    // ── Flow 3: chỉ load khi readingId thay đổi ──────────────────────────────
     fun loadReading(readingId: Int) {
+        if (readingId == cachedReadingId) {
+            // Bài đọc đã load rồi — không làm gì thêm, ViewModel giữ nguyên state
+            Log.d("ReadingVM", "readingId=$readingId đã cache, bỏ qua loadReading()")
+            return
+        }
         viewModelScope.launch {
             _isLoadingReading.value = true
 
@@ -83,27 +101,31 @@ class ReadingViewModel(private val repository: ReadingRepository) : ViewModel() 
             }
 
             _sentences.value = result
+            cachedReadingId  = readingId
             _isLoadingReading.value = false
 
-            // ── Background: nạp Dict RAM cho các từ trong bài, không chặn UI ──
+            // Background: nạp Dict RAM cho các từ trong bài, không chặn UI
             launch { repository.preloadDictForReading(result) }
         }
     }
 
-    // ── Flow 4: toggle dịch từ ────────────────────────────────────────────────
+    // ── savedWordIds: nạp lại từ users.db (chạy nền) ─────────────────────────
+    // Gọi khi: init, sau khi lưu từ, sau khi bỏ lưu từ.
+    fun refreshSavedWordIds() {
+        viewModelScope.launch {
+            val ids = withContext(Dispatchers.IO) { userDb.getAllSavedWordIds() }
+            _savedWordIds.value = ids
+        }
+    }
 
-
-    // ── Flow 6: click vào từ — lấy từ RAM, không truy cập DB ─────────────────
-    // sentence được truyền vào để lookup phrase từ sentence.phrases (RAM)
+    // ── Flow 6: click vào từ ──────────────────────────────────────────────────
     fun onWordClick(word: SentenceWord, sentence: ReadingSentence) {
         _selectedWord.value = word
 
-        // Nếu từ có phraseId → tìm phrase tương ứng trong sentence.phrases (RAM)
         _selectedPhrase.value = word.phraseId?.let { pid ->
             sentence.phrases.find { it.phraseId == pid }
         }
 
-        // Dict RAM: tra nghĩa từ điển (không truy cập DB)
         _selectedDictEntry.value = repository.getDictEntry(word.textEn)
         _isDictExpanded.value = false
 
@@ -114,7 +136,7 @@ class ReadingViewModel(private val repository: ReadingRepository) : ViewModel() 
         )
     }
 
-    // ── Toggle "Xem thêm" / "Thu gọn" nghĩa đầy đủ (dict.db) trong WordPopup ──
+    // ── Toggle "Xem thêm" / "Thu gọn" trong WordPopup ────────────────────────
     fun toggleDictExpanded() {
         _isDictExpanded.value = !_isDictExpanded.value
     }
@@ -127,7 +149,7 @@ class ReadingViewModel(private val repository: ReadingRepository) : ViewModel() 
         _isDictExpanded.value = false
     }
 
-    // ── Flow 7: click vào câu — lấy từ RAM, không truy cập DB ────────────────
+    // ── Flow 7: click vào câu ─────────────────────────────────────────────────
     fun onSentenceClick(sentence: ReadingSentence) {
         _selectedSentence.value = sentence
         Log.d("ReadingVM", "sentenceClick: sentenceId=${sentence.sentenceId}")
@@ -138,14 +160,28 @@ class ReadingViewModel(private val repository: ReadingRepository) : ViewModel() 
         _selectedSentence.value = null
     }
 
-    // ── Factory ───────────────────────────────────────────────────────────────
+    // ── Factory singleton ─────────────────────────────────────────────────────
+    // QUAN TRỌNG: dùng companion object để giữ 1 instance duy nhất trong suốt
+    // vòng đời app. Khi navigate ra/vào ReadingScreen, ViewModel KHÔNG bị recreate,
+    // do đó sentences, cachedReadingId, savedWordIds đều được giữ nguyên.
     class Factory(private val context: Context) : ViewModelProvider.Factory {
         override fun <T : ViewModel> create(modelClass: Class<T>): T {
-            val db   = ReadingDatabase.getInstance(context)
-            val dao  = ReadingDao(db.db, db.dictDb)
-            val repo = ReadingRepository(dao)
+            // Reuse instance nếu đã tạo — tránh recreate khi navigate
             @Suppress("UNCHECKED_CAST")
-            return ReadingViewModel(repo) as T
+            return (INSTANCE ?: synchronized(this) {
+                INSTANCE ?: run {
+                    val appCtx = context.applicationContext
+                    val db     = ReadingDatabase.getInstance(appCtx)
+                    val dao    = ReadingDao(db.db, db.dictDb)
+                    val repo   = ReadingRepository(dao)
+                    val userDb = UserDatabase.getInstance(appCtx)
+                    ReadingViewModel(repo, userDb).also { INSTANCE = it }
+                }
+            }) as T
+        }
+
+        companion object {
+            @Volatile private var INSTANCE: ReadingViewModel? = null
         }
     }
 }
