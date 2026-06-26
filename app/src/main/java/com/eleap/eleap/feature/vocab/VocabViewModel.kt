@@ -11,6 +11,7 @@ import com.eleap.eleap.feature.reading.ReadingViewModel
 import com.eleap.eleap.feature.reading.ui.UserVocabularyEntry
 import com.eleap.eleap.feature.vocab.data.VocabDictEntry
 import com.eleap.eleap.feature.vocab.data.VocabRepository
+import androidx.compose.ui.geometry.Rect
 import kotlinx.coroutines.flow.MutableStateFlow
 import kotlinx.coroutines.flow.StateFlow
 import kotlinx.coroutines.launch
@@ -38,6 +39,12 @@ class VocabViewModel(
 
     private val _isDictExpanded = MutableStateFlow(false)
     val isDictExpanded: StateFlow<Boolean> = _isDictExpanded
+
+    // ── Vị trí anchor cho popup (chia sẻ toàn app, 1 popup duy nhất) ────────
+    private val _anchorRect = MutableStateFlow<Rect?>(null)
+    val anchorRect: StateFlow<Rect?> = _anchorRect
+
+    fun setAnchorRect(rect: Rect?) { _anchorRect.value = rect }
 
     // ── Số từ đang được chọn trong VocabScreen ───────────────────────────────
     private val _selectedCount = MutableStateFlow(0)

@@ -26,6 +26,7 @@ import com.eleap.eleap.feature.vocab.VocabScreen
 import com.eleap.eleap.feature.vocab.VocabStudyScreen
 import com.eleap.eleap.feature.vocab.VocabReadingScreen
 import com.eleap.eleap.feature.vocab.VocabViewModel
+import com.eleap.eleap.feature.vocab.VocabPopup
 import com.eleap.eleap.feature.reading.ui.UserVocabularyEntry
 import kotlinx.coroutines.launch
 
@@ -78,6 +79,10 @@ fun MainScreen() {
     )
     val vocabList        by vm.vocabList.collectAsState()
     val readingVocabList by vm.readingVocabList.collectAsState()
+    val selectedEntry    by vm.selectedEntry.collectAsState()
+    val dictEntry        by vm.selectedDictEntry.collectAsState()
+    val isDictExpanded   by vm.isDictExpanded.collectAsState()
+    val anchorRect       by vm.anchorRect.collectAsState()
 
     fun goBack() { screen = previousScreenOf(screen) }
 
@@ -97,6 +102,18 @@ fun MainScreen() {
         offsetX.animateTo(widthPx, tween(TRANSITION_MS))
         goBack()
         offsetX.snapTo(0f)
+    }
+
+    // ── Popup từ vựng — 1 instance duy nhất cho toàn app ──────────────────
+    selectedEntry?.let { entry ->
+        VocabPopup(
+            entry                = entry,
+            dictEntry            = dictEntry,
+            isDictExpanded       = isDictExpanded,
+            anchorRect           = anchorRect,
+            onToggleDictExpanded = { vm.toggleDictExpanded() },
+            onDismiss            = { vm.dismissPopup() },
+        )
     }
 
     Box(

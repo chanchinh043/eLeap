@@ -14,7 +14,6 @@ import androidx.compose.material3.*
 import androidx.compose.runtime.*
 import androidx.compose.ui.Alignment
 import androidx.compose.ui.Modifier
-import androidx.compose.ui.geometry.Rect
 import androidx.compose.ui.layout.LayoutCoordinates
 import androidx.compose.ui.layout.boundsInWindow
 import androidx.compose.ui.layout.onGloballyPositioned
@@ -50,27 +49,12 @@ fun VocabReadingScreen(
 
     val vocabList      by vm.readingVocabList.collectAsState()
     val isLoading      by vm.isLoadingReadingVocab.collectAsState()
-    val selectedEntry  by vm.selectedEntry.collectAsState()
-    val dictEntry      by vm.selectedDictEntry.collectAsState()
-    val isDictExpanded by vm.isDictExpanded.collectAsState()
 
     val selectedCount = remember(vocabList) { vocabList.count { it.selected == 1 } }
 
-    var anchorRect by remember { mutableStateOf<Rect?>(null) }
 
     LaunchedEffect(readingId) { vm.loadVocabForReading(readingId) }
 
-    // Popup chi tiết từ
-    selectedEntry?.let { entry ->
-        VocabPopup(
-            entry                = entry,
-            dictEntry            = dictEntry,
-            isDictExpanded       = isDictExpanded,
-            anchorRect           = anchorRect,
-            onToggleDictExpanded = { vm.toggleDictExpanded() },
-            onDismiss            = { vm.dismissPopup() }
-        )
-    }
 
     Scaffold(
         topBar = {
@@ -137,7 +121,7 @@ fun VocabReadingScreen(
                             entry            = entry,
                             modifier         = Modifier.onGloballyPositioned { cardCoords = it },
                             onWordClick      = {
-                                anchorRect = cardCoords?.boundsInWindow()
+                                vm.setAnchorRect(cardCoords?.boundsInWindow())
                                 vm.onEntryClick(entry)
                             },
                             onToggleSelected = { vm.toggleSelectedInReading(entry) },

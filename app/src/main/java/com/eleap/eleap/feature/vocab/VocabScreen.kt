@@ -19,7 +19,6 @@ import androidx.compose.runtime.remember
 import androidx.compose.runtime.setValue
 import androidx.compose.ui.Alignment
 import androidx.compose.ui.Modifier
-import androidx.compose.ui.geometry.Rect
 import androidx.compose.ui.layout.LayoutCoordinates
 import androidx.compose.ui.layout.boundsInWindow
 import androidx.compose.ui.layout.onGloballyPositioned
@@ -41,25 +40,11 @@ fun VocabScreen(
     val vm: VocabViewModel = viewModel(viewModelStoreOwner = activity, factory = VocabViewModel.Factory(context))
     val vocabList      by vm.vocabList.collectAsState()
     val isLoading      by vm.isLoading.collectAsState()
-    val selectedEntry  by vm.selectedEntry.collectAsState()
-    val dictEntry      by vm.selectedDictEntry.collectAsState()
-    val isDictExpanded by vm.isDictExpanded.collectAsState()
     val selectedCount  by vm.selectedCount.collectAsState()
 
-    var anchorRect by remember { mutableStateOf<Rect?>(null) }
 
     LaunchedEffect(Unit) { vm.loadVocab() }
 
-    selectedEntry?.let { entry ->
-        VocabPopup(
-            entry                = entry,
-            dictEntry            = dictEntry,
-            isDictExpanded       = isDictExpanded,
-            anchorRect           = anchorRect,
-            onToggleDictExpanded = { vm.toggleDictExpanded() },
-            onDismiss            = { vm.dismissPopup() }
-        )
-    }
 
     Scaffold(
         topBar = {
@@ -124,7 +109,7 @@ fun VocabScreen(
                             entry            = entry,
                             modifier         = Modifier.onGloballyPositioned { cardCoords = it },
                             onWordClick      = {
-                                anchorRect = cardCoords?.boundsInWindow()
+                                vm.setAnchorRect(cardCoords?.boundsInWindow())
                                 vm.onEntryClick(entry)
                             },
                             onToggleSelected = { vm.toggleSelected(entry) },

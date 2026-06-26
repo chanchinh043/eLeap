@@ -45,23 +45,18 @@ fun VocabStudyScreen(
         viewModelStoreOwner = activity,
         factory = VocabViewModel.Factory(context)
     )
-    val selectedEntry  by vm.selectedEntry.collectAsState()
-    val dictEntry      by vm.selectedDictEntry.collectAsState()
-    val isDictExpanded by vm.isDictExpanded.collectAsState()
 
     // ── "Lịch sử" các từ đã hiện ra, dùng để bấm Trước quay lại ─────────────
-    var history      by remember { mutableStateOf<List<UserVocabularyEntry>>(emptyList()) }
-    var currentIndex by remember { mutableIntStateOf(-1) }
-    var goingForward by remember { mutableStateOf(true) }
-    var anchorRect   by remember { mutableStateOf<Rect?>(null) }
-
-    // Bốc từ đầu tiên khi pool có dữ liệu
-    LaunchedEffect(pool) {
-        if (pool.isNotEmpty() && history.isEmpty()) {
-            history = listOf(pool.random())
-            currentIndex = 0
-        }
+    // Key là danh sách ID — chỉ reset khi nội dung pool thực sự thay đổi,
+    // không bị reset do List object mới nhưng cùng nội dung (sau loadVocab()).
+    val poolIds = remember(pool) { pool.map { it.id } }
+    var history by remember(poolIds) {
+        mutableStateOf(if (pool.isNotEmpty()) listOf(pool.random()) else emptyList<UserVocabularyEntry>())
     }
+    var currentIndex by remember(poolIds) {
+        mutableIntStateOf(if (pool.isNotEmpty()) 0 else -1)
+    }
+    var goingForward by remember { mutableStateOf(true) }
 
     fun randomExcluding(excludeId: Int?): UserVocabularyEntry {
         if (pool.size <= 1) return pool.first()
@@ -70,17 +65,6 @@ fun VocabStudyScreen(
         return candidate
     }
 
-    // Popup nghĩa từ
-    selectedEntry?.let { entry ->
-        VocabPopup(
-            entry                = entry,
-            dictEntry            = dictEntry,
-            isDictExpanded       = isDictExpanded,
-            anchorRect           = anchorRect,
-            onToggleDictExpanded = { vm.toggleDictExpanded() },
-            onDismiss            = { vm.dismissPopup() }
-        )
-    }
 
     Scaffold(
         topBar = {
@@ -136,7 +120,7 @@ fun VocabStudyScreen(
                             FlashCard(
                                 entry = cardEntry,
                                 onWordClick = { rect ->
-                                    anchorRect = rect
+                                    vm.setAnchorRect(rect)
                                     vm.onEntryClick(cardEntry)
                                 }
                             )
