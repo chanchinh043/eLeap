@@ -38,7 +38,22 @@ class VocabViewModel(
     val selectedCount: StateFlow<Int> get() = _selectedCount
     private val _selectedCount = MutableStateFlow(0)
 
-    init { loadVocab() }
+    // ── Từ vựng theo bài đọc (VocabReadingScreen) ────────────────────────────
+    private val _readingVocabList = MutableStateFlow<List<UserVocabularyEntry>>(emptyList())
+    val readingVocabList: StateFlow<List<UserVocabularyEntry>> = _readingVocabList
+
+    private val _isLoadingReadingVocab = MutableStateFlow(false)
+    val isLoadingReadingVocab: StateFlow<Boolean> = _isLoadingReadingVocab
+
+    fun loadVocabForReading(readingId: Int) {
+        viewModelScope.launch {
+            _isLoadingReadingVocab.value = true
+            _readingVocabList.value = repository.getVocabByReadingId(readingId)
+            _isLoadingReadingVocab.value = false
+        }
+    }
+
+
 
     fun loadVocab() {
         viewModelScope.launch {

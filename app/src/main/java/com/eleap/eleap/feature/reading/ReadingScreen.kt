@@ -240,6 +240,10 @@ private fun WordClickableRow(
                 startIdx   = indexAt(down.position)
                 currentIdx = startIdx
 
+                // Chạm vào khoảng không (không trúng từ nào) → không xử lý gì,
+                // trả gesture về cho MainScreen để chuyển màn hình.
+                if (startIdx == null) return@awaitEachGesture
+
                 var horizontal: Boolean? = null
                 val dragStartX = down.position.x
                 var lastX = dragStartX
@@ -272,14 +276,9 @@ private fun WordClickableRow(
                                 // Kéo phải trong vùng chữ → đang chọn câu (drag-select)
                                 change.consume()
                                 indexAt(change.position)?.let { currentIdx = it }
-                            } else {
-                                // Kéo trái → không dùng để chọn câu ở đây. KHÔNG consume(),
-                                // để sự kiện "rơi" lên Box cha ở MainScreen, cho phép gesture
-                                // vuốt trái → VocabReadingScreen hoạt động mượt, không bị giật.
-                                startIdx   = null
-                                currentIdx = null
-                                return@awaitEachGesture
                             }
+                            // Kéo trái → MainScreen đã bắt bằng PointerEventPass.Initial,
+                            // đây chỉ cần không consume() và không reset để tránh giật.
                         }
                         false -> {
                             startIdx   = null

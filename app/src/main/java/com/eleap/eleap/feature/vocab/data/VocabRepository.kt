@@ -26,6 +26,7 @@ data class VocabDictEntry(
 class VocabRepository private constructor(
     private val userDb: UserDatabase,
     private val dictDb: SQLiteDatabase,
+    private val readingsDb: SQLiteDatabase,
 ) {
     private val dictCache = mutableMapOf<String, VocabDictEntry>()
 
@@ -84,7 +85,63 @@ class VocabRepository private constructor(
             list
         }
 
-    // ══ dict.db ═══════════════════════════════════════════════════════════════
+    // ── Lấy từ đã lưu của 1 bài đọc cụ thể (JOIN qua source_sentence_id) ────────
+    // Vì readings.db và users.db là 2 file DB khác nhau, không JOIN trực tiếp được.
+    // Bước 1: lấy tất cả sentence_id của bài đọc từ readings.db
+    // Bước 2: query user_vocabulary WHERE source_sentence_id IN (...) từ users.db
+    suspend fun getVocabByReadingId(readingId: Int, userId: Int = 0): List<UserVocabularyEntry> =
+        withContext(Dispatchers.IO) {
+            // Bước 1: lấy sentence_id của bài đọc
+            val sentenceIds = mutableListOf<Int>()
+            val cursor = readingsDb.rawQuery(
+                "SELECT sentence_id FROM reading_sentences WHERE reading_id = ?",
+                arrayOf(readingId.toString())
+            )
+            cursor.use {
+                while (it.moveToNext()) {
+                    sentenceIds.add(it.getInt(0))
+                }
+            }
+            if (sentenceIds.isEmpty()) return@withContext emptyList()
+
+            // Bước 2: query user_vocabulary theo sentence_id
+            val placeholders = sentenceIds.joinToString(",") { "?" }
+            val args = (listOf(userId) + sentenceIds).map { it.toString() }.toTypedArray()
+            val list = mutableListOf<UserVocabularyEntry>()
+            val vocabCursor = userDb.db.rawQuery(
+                """SELECT * FROM user_vocabulary
+                   WHERE user_id = ?
+                   AND source_sentence_id IN ($placeholders)
+                   ORDER BY created_at DESC""",
+                args
+            )
+            vocabCursor.use {
+                while (it.moveToNext()) {
+                    fun nullableInt(col: String): Int? {
+                        val idx = it.getColumnIndexOrThrow(col)
+                        return if (it.isNull(idx)) null else it.getInt(idx)
+                    }
+                    list.add(
+                        UserVocabularyEntry(
+                            id               = it.getInt(it.getColumnIndexOrThrow("id")),
+                            userId           = it.getInt(it.getColumnIndexOrThrow("user_id")),
+                            sourceSentenceId = nullableInt("source_sentence_id"),
+                            sourceWordId     = nullableInt("source_word_id"),
+                            sourcePhraseId   = nullableInt("source_phrase_id"),
+                            textEn           = it.getString(it.getColumnIndexOrThrow("text_en")),
+                            textVi           = it.getString(it.getColumnIndexOrThrow("text_vi")),
+                            selected         = it.getInt(it.getColumnIndexOrThrow("selected")),
+                            createdAt        = it.getString(it.getColumnIndexOrThrow("created_at")),
+                            count            = it.getInt(it.getColumnIndexOrThrow("count")),
+                            score            = it.getInt(it.getColumnIndexOrThrow("score")),
+                        )
+                    )
+                }
+            }
+            list
+        }
+
+
 
     suspend fun preloadDict(words: List<String>) = withContext(Dispatchers.IO) {
         val keysToLoad = words
@@ -148,11 +205,25 @@ class VocabRepository private constructor(
         fun getInstance(context: Context): VocabRepository =
             INSTANCE ?: synchronized(this) {
                 INSTANCE ?: run {
-                    val userDb = UserDatabase.getInstance(context)
-                    val dictDb = openDictDb(context.applicationContext)
-                    VocabRepository(userDb, dictDb).also { INSTANCE = it }
+                    val userDb     = UserDatabase.getInstance(context)
+                    val dictDb     = openDictDb(context.applicationContext)
+                    val readingsDb = openReadingsDb(context.applicationContext)
+                    VocabRepository(userDb, dictDb, readingsDb).also { INSTANCE = it }
                 }
             }
+
+        private fun openReadingsDb(context: Context): SQLiteDatabase {
+            val dbFile = File(context.getDatabasePath("readings.db").absolutePath)
+            if (!dbFile.exists()) {
+                dbFile.parentFile?.mkdirs()
+                context.assets.open("databases/readings.db").use { input ->
+                    FileOutputStream(dbFile).use { output -> input.copyTo(output) }
+                }
+            }
+            return SQLiteDatabase.openDatabase(
+                dbFile.absolutePath, null, SQLiteDatabase.OPEN_READONLY
+            )
+        }
 
         private fun openDictDb(context: Context): SQLiteDatabase {
             val dbFile = File(context.getDatabasePath("dict.db").absolutePath)
