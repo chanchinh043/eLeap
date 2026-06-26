@@ -23,6 +23,7 @@ import androidx.compose.ui.geometry.Rect
 import androidx.compose.ui.layout.LayoutCoordinates
 import androidx.compose.ui.layout.boundsInWindow
 import androidx.compose.ui.layout.onGloballyPositioned
+import androidx.activity.ComponentActivity
 import androidx.compose.ui.platform.LocalContext
 import androidx.compose.ui.text.style.TextAlign
 import androidx.compose.ui.unit.dp
@@ -36,7 +37,8 @@ fun VocabScreen(
     onStudyClick: () -> Unit,
 ) {
     val context = LocalContext.current
-    val vm: VocabViewModel = viewModel(factory = VocabViewModel.Factory(context))
+    val activity = context as ComponentActivity
+    val vm: VocabViewModel = viewModel(viewModelStoreOwner = activity, factory = VocabViewModel.Factory(context))
     val vocabList      by vm.vocabList.collectAsState()
     val isLoading      by vm.isLoading.collectAsState()
     val selectedEntry  by vm.selectedEntry.collectAsState()
@@ -94,7 +96,12 @@ fun VocabScreen(
                 .padding(padding)
         ) {
             when {
-                isLoading -> CircularProgressIndicator(modifier = Modifier.align(Alignment.Center))
+                // Chỉ hiện spinner khi CHƯA có dữ liệu nào để hiển thị (load lần đầu).
+                // Nếu vocabList đã có sẵn (vd quay lại màn này lần 2, VM share theo
+                // Activity nên data cũ vẫn còn), GIỮ NGUYÊN list trong lúc loadVocab()
+                // refresh ngầm phía sau — không cho isLoading=true (dù chỉ 1-2 frame)
+                // đè spinner lên list đang hiện, đó chính là nguyên nhân gây nháy.
+                isLoading && vocabList.isEmpty() -> CircularProgressIndicator(modifier = Modifier.align(Alignment.Center))
 
                 vocabList.isEmpty() -> Text(
                     text = "Chưa có từ nào được lưu.\nHãy lưu từ trong lúc đọc bài!",

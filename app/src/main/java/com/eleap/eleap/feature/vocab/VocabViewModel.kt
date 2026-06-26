@@ -7,6 +7,7 @@ import android.util.Log
 import androidx.lifecycle.ViewModel
 import androidx.lifecycle.ViewModelProvider
 import androidx.lifecycle.viewModelScope
+import com.eleap.eleap.feature.reading.ReadingViewModel
 import com.eleap.eleap.feature.reading.ui.UserVocabularyEntry
 import com.eleap.eleap.feature.vocab.data.VocabDictEntry
 import com.eleap.eleap.feature.vocab.data.VocabRepository
@@ -16,8 +17,12 @@ import kotlinx.coroutines.launch
 
 class VocabViewModel(
     private val repository: VocabRepository,
+    // ReadingViewModel singleton — để gọi refreshSavedWordIds() sau khi xóa từ,
+    // giúp màu từ trong ReadingScreen cập nhật ngay mà không cần sửa thêm file nào.
+    private val readingVm: ReadingViewModel,
 ) : ViewModel() {
 
+    // ── Toàn bộ từ vựng (VocabScreen) ────────────────────────────────────────
     private val _vocabList = MutableStateFlow<List<UserVocabularyEntry>>(emptyList())
     val vocabList: StateFlow<List<UserVocabularyEntry>> = _vocabList
 
@@ -34,17 +39,19 @@ class VocabViewModel(
     private val _isDictExpanded = MutableStateFlow(false)
     val isDictExpanded: StateFlow<Boolean> = _isDictExpanded
 
-    // ── Số từ đang được chọn để học ──────────────────────────────────────────
-    val selectedCount: StateFlow<Int> get() = _selectedCount
+    // ── Số từ đang được chọn trong VocabScreen ───────────────────────────────
     private val _selectedCount = MutableStateFlow(0)
+    val selectedCount: StateFlow<Int> = _selectedCount
 
     // ── Từ vựng theo bài đọc (VocabReadingScreen) ────────────────────────────
     private val _readingVocabList = MutableStateFlow<List<UserVocabularyEntry>>(emptyList())
     val readingVocabList: StateFlow<List<UserVocabularyEntry>> = _readingVocabList
 
-    private val _isLoadingReadingVocab = MutableStateFlow(false)
+    // Khởi tạo true → luôn hiện spinner trước, tránh flash "Chưa có từ nào"
+    private val _isLoadingReadingVocab = MutableStateFlow(true)
     val isLoadingReadingVocab: StateFlow<Boolean> = _isLoadingReadingVocab
 
+    // ── Load từ theo bài đọc ──────────────────────────────────────────────────
     fun loadVocabForReading(readingId: Int) {
         viewModelScope.launch {
             _isLoadingReadingVocab.value = true
@@ -53,8 +60,7 @@ class VocabViewModel(
         }
     }
 
-
-
+    // ── Load toàn bộ từ vựng ─────────────────────────────────────────────────
     fun loadVocab() {
         viewModelScope.launch {
             _isLoading.value = true
@@ -71,7 +77,7 @@ class VocabViewModel(
         }
     }
 
-    // ── Toggle checkbox chọn/bỏ chọn từ để học ───────────────────────────────
+    // ── Toggle selected trong VocabScreen (vocabList) ─────────────────────────
     fun toggleSelected(entry: UserVocabularyEntry) {
         val newSelected = if (entry.selected == 1) 0 else 1
         viewModelScope.launch {
@@ -84,7 +90,42 @@ class VocabViewModel(
         }
     }
 
-    // ── Mở popup ─────────────────────────────────────────────────────────────
+    // ── Toggle selected trong VocabReadingScreen (readingVocabList) ───────────
+    fun toggleSelectedInReading(entry: UserVocabularyEntry) {
+        val newSelected = if (entry.selected == 1) 0 else 1
+        viewModelScope.launch {
+            if (repository.updateSelected(entry.id, newSelected)) {
+                _readingVocabList.value = _readingVocabList.value.map {
+                    if (it.id == entry.id) it.copy(selected = newSelected) else it
+                }
+            }
+        }
+    }
+
+    // ── Xóa từ trong VocabScreen ──────────────────────────────────────────────
+    fun deleteWord(id: Int) {
+        viewModelScope.launch {
+            if (repository.deleteWord(id)) {
+                _vocabList.value = _vocabList.value.filterNot { it.id == id }
+                _selectedCount.value = _vocabList.value.count { it.selected == 1 }
+                // Sync màu từ trong ReadingScreen
+                readingVm.refreshSavedWordIds()
+            }
+        }
+    }
+
+    // ── Xóa từ trong VocabReadingScreen ──────────────────────────────────────
+    fun deleteWordFromReading(id: Int) {
+        viewModelScope.launch {
+            if (repository.deleteWord(id)) {
+                _readingVocabList.value = _readingVocabList.value.filterNot { it.id == id }
+                // Sync màu từ trong ReadingScreen — 1 dòng duy nhất cần thêm
+                readingVm.refreshSavedWordIds()
+            }
+        }
+    }
+
+    // ── Popup ─────────────────────────────────────────────────────────────────
     fun onEntryClick(entry: UserVocabularyEntry) {
         _selectedEntry.value = entry
         _isDictExpanded.value = false
@@ -103,19 +144,15 @@ class VocabViewModel(
         _isDictExpanded.value = !_isDictExpanded.value
     }
 
-    fun deleteWord(id: Int) {
-        viewModelScope.launch {
-            if (repository.deleteWord(id)) {
-                _vocabList.value = _vocabList.value.filterNot { it.id == id }
-                _selectedCount.value = _vocabList.value.count { it.selected == 1 }
-            }
-        }
-    }
-
+    // ── Factory ───────────────────────────────────────────────────────────────
     class Factory(private val context: Context) : ViewModelProvider.Factory {
         override fun <T : ViewModel> create(modelClass: Class<T>): T {
             @Suppress("UNCHECKED_CAST")
-            return VocabViewModel(VocabRepository.getInstance(context)) as T
+            return VocabViewModel(
+                repository = VocabRepository.getInstance(context),
+                // Dùng lại singleton của ReadingViewModel — cùng instance với ReadingScreen
+                readingVm  = ReadingViewModel.Factory(context).create(ReadingViewModel::class.java),
+            ) as T
         }
     }
 }
