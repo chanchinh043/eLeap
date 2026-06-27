@@ -21,7 +21,6 @@ import androidx.compose.ui.layout.boundsInWindow
 import androidx.compose.ui.layout.onGloballyPositioned
 import androidx.compose.ui.layout.positionInParent
 import androidx.compose.ui.platform.LocalContext
-import androidx.compose.ui.text.style.TextDecoration
 import androidx.compose.ui.unit.dp
 import androidx.compose.ui.unit.sp
 import androidx.compose.ui.unit.toSize
@@ -31,6 +30,11 @@ import com.eleap.eleap.feature.reading.data.SentenceWord
 import com.eleap.eleap.feature.reading.ui.PopupAnchorInfo
 import com.eleap.eleap.feature.reading.ui.SentencePopup
 import com.eleap.eleap.feature.reading.ui.WordPopup
+import kotlin.math.abs
+
+// ── Ngưỡng kéo ngang (dp) để kích hoạt bôi đen khi chưa sang từ kế tiếp ────
+// Tăng nếu muốn phải kéo xa hơn mới bôi đen.
+private const val HIGHLIGHT_THRESHOLD_DP = 12f
 
 @OptIn(ExperimentalMaterial3Api::class)
 @Composable
@@ -47,21 +51,14 @@ fun ReadingScreen(
     val selectedSentence  by vm.selectedSentence.collectAsState()
     val selectedDictEntry by vm.selectedDictEntry.collectAsState()
     val isDictExpanded    by vm.isDictExpanded.collectAsState()
+    val savedWordIds      by vm.savedWordIds.collectAsState()
 
-    // ── savedWordIds: đọc từ ViewModel — cập nhật reactive khi lưu/bỏ lưu từ ──
-    // Không còn cần LaunchedEffect poll DB nữa. ViewModel tự refresh khi
-    // SaveWordButton gọi vm.refreshSavedWordIds().
-    val savedWordIds by vm.savedWordIds.collectAsState()
-
-    // ── Cỡ chữ ───────────────────────────────────────────────────────────────
     val prefs = remember { context.getSharedPreferences("reading_settings", android.content.Context.MODE_PRIVATE) }
     var fontSize by remember { mutableStateOf(prefs.getInt("font_size", 16)) }
 
-    // ── Vị trí "mỏ neo" + khung hiển thị — dùng để đặt popup ────────────────
     var anchorInfo   by remember { mutableStateOf<PopupAnchorInfo?>(null) }
     var viewportRect by remember { mutableStateOf<Rect?>(null) }
 
-    // ── Load bài đọc (bỏ qua nếu đã cache trong ViewModel) ───────────────────
     LaunchedEffect(readingId) {
         vm.loadReading(readingId)
     }
@@ -76,7 +73,7 @@ fun ReadingScreen(
             anchorInfo           = anchorInfo,
             viewportRect         = viewportRect,
             onToggleDictExpanded = { vm.toggleDictExpanded() },
-            onSaveStateChanged   = { vm.refreshSavedWordIds() },  // ← mới: callback sau lưu/bỏ lưu
+            onSaveStateChanged   = { vm.refreshSavedWordIds() },
             onDismiss            = {
                 vm.dismissWordPopup()
                 anchorInfo = null
@@ -155,13 +152,13 @@ fun ReadingScreen(
                 ) {
                     items(sentences, key = { it.sentenceId }) { sentence ->
                         WordClickableRow(
-                            sentence         = sentence,
-                            selectedWord     = selectedWord,
-                            selectedSentence = selectedSentence,
-                            fontSize         = fontSize,
-                            savedWordIds     = savedWordIds,
-                            onWordClick      = { word -> vm.onWordClick(word, sentence) },
-                            onSentenceClick  = { vm.onSentenceClick(sentence) },
+                            sentence            = sentence,
+                            selectedWord        = selectedWord,
+                            selectedSentence    = selectedSentence,
+                            fontSize            = fontSize,
+                            savedWordIds        = savedWordIds,
+                            onWordClick         = { word -> vm.onWordClick(word, sentence) },
+                            onSentenceClick     = { vm.onSentenceClick(sentence) },
                             onAnchorInfoChanged = { info -> anchorInfo = info }
                         )
                     }
@@ -184,17 +181,19 @@ private fun WordClickableRow(
     onAnchorInfoChanged: (PopupAnchorInfo) -> Unit,
 ) {
     val words = sentence.words
-    val bounds       = remember(sentence.sentenceId) { mutableStateMapOf<Int, Rect>() }
+
+    // localBounds  : toạ độ trong FlowRow  → dùng để hit-test ngón tay
+    // windowBounds : toạ độ trong window   → dùng để tính PopupAnchorInfo
+    val localBounds  = remember(sentence.sentenceId) { mutableStateMapOf<Int, Rect>() }
     val windowBounds = remember(sentence.sentenceId) { mutableStateMapOf<Int, Rect>() }
-    var startIdx   by remember(sentence.sentenceId) { mutableStateOf<Int?>(null) }
-    var currentIdx by remember(sentence.sentenceId) { mutableStateOf<Int?>(null) }
 
-    val liveRange = remember(startIdx, currentIdx) {
-        val s = startIdx; val e = currentIdx
-        if (s != null && e != null && e > s) s..e else null
-    }
+    // liveRange    : phạm vi đang bôi đen trong khi kéo (realtime, chưa thả tay)
+    var liveRange by remember(sentence.sentenceId) { mutableStateOf<IntRange?>(null) }
 
-    val committedRange = remember(selectedWord?.wordId, selectedSentence?.sentenceId, sentence.sentenceId) {
+    // committedRange: phạm vi được xác nhận sau khi thả tay (phản ánh state ViewModel)
+    val committedRange = remember(
+        selectedWord?.wordId, selectedSentence?.sentenceId, sentence.sentenceId
+    ) {
         when {
             selectedSentence?.sentenceId == sentence.sentenceId ->
                 if (words.isNotEmpty()) 0..words.lastIndex else null
@@ -206,8 +205,10 @@ private fun WordClickableRow(
         }
     }
 
+    // Trong khi kéo ưu tiên liveRange; sau khi thả ưu tiên committedRange
     val highlightRange = liveRange ?: committedRange
 
+    // Tính anchor cho popup mỗi khi committedRange thay đổi
     val computedAnchor = committedRange?.let { range ->
         val rects = range.mapNotNull { windowBounds[it] }
         val unionRect = rects.reduceOrNull { acc, r ->
@@ -219,87 +220,122 @@ private fun WordClickableRow(
             )
         }
         val lineHeight = windowBounds[range.first]?.height
-        if (unionRect != null && lineHeight != null) {
+        if (unionRect != null && lineHeight != null)
             PopupAnchorInfo(rect = unionRect, lineHeightPx = lineHeight)
-        } else null
+        else null
     }
     LaunchedEffect(computedAnchor) {
         computedAnchor?.let(onAnchorInfoChanged)
     }
 
-    fun indexAt(pos: Offset): Int? =
-        bounds.entries.firstOrNull { it.value.contains(pos) }?.key
+    // ── HIT-TEST ──────────────────────────────────────────────────────────────
+    // Chỉ dùng để kiểm tra sự kiện DOWN: trả null nếu không chạm trúng từ nào.
+    // Đây là điểm mấu chốt — tap vào khoảng trống sẽ bị bỏ qua hoàn toàn.
+    fun indexAtExact(pos: Offset): Int? =
+        localBounds.entries.firstOrNull { it.value.contains(pos) }?.key
+
+    // Chỉ dùng khi đang kéo ngang: cho phép trượt qua khoảng cách giữa các từ.
+    // Ưu tiên hit trực tiếp; nếu không thì tìm từ cùng hàng gần nhất theo X.
+    fun indexNearestX(pos: Offset): Int? {
+        val entries = localBounds.entries.toList()
+        if (entries.isEmpty()) return null
+        val direct = entries.firstOrNull { it.value.contains(pos) }
+        if (direct != null) return direct.key
+        val sameRow = entries.filter { (_, r) -> pos.y >= r.top && pos.y <= r.bottom }
+        if (sameRow.isEmpty()) return null
+        return sameRow.minByOrNull { (_, r) -> abs(pos.x - (r.left + r.right) / 2f) }?.key
+    }
 
     FlowRow(
         horizontalArrangement = Arrangement.spacedBy(2.dp),
         verticalArrangement   = Arrangement.spacedBy(2.dp),
         modifier = Modifier.pointerInput(sentence.sentenceId) {
-            val slop = viewConfiguration.touchSlop
+            val highlightThresholdPx = HIGHLIGHT_THRESHOLD_DP * density
+
             awaitEachGesture {
                 val down = awaitFirstDown(requireUnconsumed = false)
-                startIdx   = indexAt(down.position)
-                currentIdx = startIdx
 
-                // Chạm vào khoảng không (không trúng từ nào) → không xử lý gì,
-                // trả gesture về cho MainScreen để chuyển màn hình.
-                if (startIdx == null) return@awaitEachGesture
+                // ── Tap vào khoảng trống → bỏ qua hoàn toàn ─────────────────
+                // indexAtExact chỉ trả về giá trị khi chạm trúng bounds của từ,
+                // khác với indexNearestX luôn tìm từ gần nhất ngay cả khi chạm trống.
+                val anchorIdx = indexAtExact(down.position) ?: return@awaitEachGesture
 
-                var horizontal: Boolean? = null
-                val dragStartX = down.position.x
-                var lastX = dragStartX
+                val startX = down.position.x
+
+                // direction: null = chưa rõ | true = ngang | false = dọc
+                var direction: Boolean? = null
+                // Đã kích hoạt chế độ bôi đen chưa?
+                var highlightActivated = false
 
                 while (true) {
                     val event  = awaitPointerEvent()
                     val change = event.changes.firstOrNull { it.id == down.id }
 
+                    // ── Thả tay ───────────────────────────────────────────────
                     if (change == null || !change.pressed) {
-                        if (horizontal == true) change?.consume()
-                        break
+                        val range = liveRange
+                        liveRange = null   // xoá live highlight
+
+                        when {
+                            // Tap (không kéo) hoặc bôi đúng 1 từ → dịch từ
+                            range == null || range.first == range.last ->
+                                onWordClick(words[anchorIdx])
+                            // Bôi 2+ từ → dịch câu
+                            else ->
+                                onSentenceClick()
+                        }
+                        return@awaitEachGesture
                     }
 
-                    lastX = change.position.x
+                    val dx  = change.position.x - startX
+                    val dy  = change.position.y - down.position.y
+                    val adx = abs(dx)
+                    val ady = abs(dy)
 
-                    if (horizontal == null) {
-                        val dx = kotlin.math.abs(change.position.x - down.position.x)
-                        val dy = kotlin.math.abs(change.position.y - down.position.y)
-                        horizontal = when {
-                            dx > slop && dx > dy -> true
-                            dy > slop            -> false
-                            else                 -> null
+                    // ── Xác định hướng kéo (chỉ lock 1 lần) ─────────────────
+                    if (direction == null) {
+                        val moved = adx > viewConfiguration.touchSlop ||
+                                ady > viewConfiguration.touchSlop
+                        if (moved) {
+                            direction = adx >= ady   // true = ngang, false = dọc
                         }
                     }
 
-                    when (horizontal) {
-                        true -> {
-                            val draggingRight = change.position.x >= dragStartX
-                            if (draggingRight) {
-                                // Kéo phải trong vùng chữ → đang chọn câu (drag-select)
-                                change.consume()
-                                indexAt(change.position)?.let { currentIdx = it }
-                            }
-                            // Kéo trái → MainScreen đã bắt bằng PointerEventPass.Initial,
-                            // đây chỉ cần không consume() và không reset để tránh giật.
-                        }
+                    when (direction) {
+
+                        // ── Dọc → trả gesture về cho LazyColumn cuộn ─────────
                         false -> {
-                            startIdx   = null
-                            currentIdx = null
+                            liveRange = null
                             return@awaitEachGesture
                         }
+
+                        // ── Ngang → chế độ bôi đen ───────────────────────────
+                        true -> {
+                            val currentIdx = indexNearestX(change.position)
+
+                            if (!highlightActivated) {
+                                // Kích hoạt khi kéo vượt ngưỡng DP,
+                                // HOẶC ngón tay đã sang từ khác (dù chưa đủ ngưỡng).
+                                val overThreshold  = adx >= highlightThresholdPx
+                                val movedToNewWord = currentIdx != null && currentIdx != anchorIdx
+                                if (overThreshold || movedToNewWord) {
+                                    highlightActivated = true
+                                }
+                            }
+
+                            if (highlightActivated) {
+                                val endIdx = currentIdx ?: anchorIdx
+                                val lo = minOf(anchorIdx, endIdx)
+                                val hi = maxOf(anchorIdx, endIdx)
+                                liveRange = lo..hi
+                                change.consume()   // ngăn LazyColumn scroll theo X
+                            }
+                        }
+
+                        // ── Chưa rõ hướng → chờ thêm ─────────────────────────
                         null -> Unit
                     }
                 }
-
-                val s = startIdx
-                val e = currentIdx
-                val draggedRightward = lastX > dragStartX
-                if (s != null && e != null) {
-                    when {
-                        horizontal == true && e > s && draggedRightward -> onSentenceClick()
-                        horizontal != true -> onWordClick(words[s])
-                    }
-                }
-                startIdx   = null
-                currentIdx = null
             }
         }
     ) {
@@ -316,7 +352,7 @@ private fun WordClickableRow(
                 },
                 modifier = Modifier
                     .onGloballyPositioned { c ->
-                        bounds[index]       = Rect(c.positionInParent(), c.size.toSize())
+                        localBounds[index]  = Rect(c.positionInParent(), c.size.toSize())
                         windowBounds[index] = c.boundsInWindow()
                     }
                     .background(
