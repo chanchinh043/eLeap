@@ -3,6 +3,7 @@
 package com.eleap.eleap.feature.vocab
 
 import android.content.Context
+import android.content.SharedPreferences
 import android.util.Log
 import androidx.lifecycle.ViewModel
 import androidx.lifecycle.ViewModelProvider
@@ -21,7 +22,31 @@ class VocabViewModel(
     // ReadingViewModel singleton — để gọi refreshSavedWordIds() sau khi xóa từ,
     // giúp màu từ trong ReadingScreen cập nhật ngay mà không cần sửa thêm file nào.
     private val readingVm: ReadingViewModel,
+    private val prefs: SharedPreferences,
 ) : ViewModel() {
+
+    // ── SharedPreferences key per tab: "reading_sel_<readingId>_<tab>" → "1,2,3" ──
+    private var currentReadingId: Int = -1
+
+    // Tab names dùng làm key — phải khớp với VocabReadingTab.name
+    private val TAB_KEYS = listOf("NEW", "RECENT", "ALL")
+
+    private fun prefsKey(readingId: Int, tabName: String) = "reading_sel_${readingId}_$tabName"
+
+    private fun saveTabSelection(readingId: Int, tabName: String, ids: Set<Int>) {
+        prefs.edit()
+            .putString(prefsKey(readingId, tabName), ids.joinToString(","))
+            .apply()
+    }
+
+    private fun loadTabSelection(readingId: Int, tabName: String): Set<Int> {
+        val raw = prefs.getString(prefsKey(readingId, tabName), "") ?: ""
+        return if (raw.isBlank()) emptySet()
+        else raw.split(",").mapNotNull { it.trim().toIntOrNull() }.toSet()
+    }
+
+    private fun loadAllTabSelections(readingId: Int): Map<String, Set<Int>> =
+        TAB_KEYS.associateWith { loadTabSelection(readingId, it) }
 
     // ── Toàn bộ từ vựng (VocabScreen) ────────────────────────────────────────
     private val _vocabList = MutableStateFlow<List<UserVocabularyEntry>>(emptyList())
@@ -46,6 +71,13 @@ class VocabViewModel(
 
     fun setAnchorRect(rect: Rect?) { _anchorRect.value = rect }
 
+    // ── Tab đang hiển thị trong VocabReadingScreen (nhớ khi back từ Study) ──
+    private val _readingActiveTab = MutableStateFlow("NEW")
+    val readingActiveTab: StateFlow<String> = _readingActiveTab
+
+    fun setReadingActiveTab(tabName: String) { _readingActiveTab.value = tabName }
+    fun resetReadingActiveTab() { _readingActiveTab.value = "NEW" }
+
     // ── Số từ đang được chọn trong VocabScreen ───────────────────────────────
     private val _selectedCount = MutableStateFlow(0)
     val selectedCount: StateFlow<Int> = _selectedCount
@@ -58,11 +90,28 @@ class VocabViewModel(
     private val _isLoadingReadingVocab = MutableStateFlow(true)
     val isLoadingReadingVocab: StateFlow<Boolean> = _isLoadingReadingVocab
 
+    // ── Selected theo từng tab — KHÔNG ghi DB, lưu vào SharedPreferences ─────
+    // Map<tabName, Set<Int>>: NEW / RECENT / ALL mỗi tab có selection riêng biệt.
+    // Tắt app bật lại vẫn còn, reset khi chuyển sang bài đọc khác.
+    private val _readingSelectedByTab = MutableStateFlow<Map<String, Set<Int>>>(emptyMap())
+    val readingSelectedByTab: StateFlow<Map<String, Set<Int>>> = _readingSelectedByTab
+
     // ── Load từ theo bài đọc ──────────────────────────────────────────────────
     fun loadVocabForReading(readingId: Int) {
         viewModelScope.launch {
             _isLoadingReadingVocab.value = true
-            _readingVocabList.value = repository.getVocabByReadingId(readingId)
+            if (readingId != currentReadingId) {
+                currentReadingId = readingId
+                _readingSelectedByTab.value = loadAllTabSelections(readingId)
+            }
+            val words = repository.getVocabByReadingId(readingId)
+            _readingVocabList.value = words
+
+            // Tab NEW: luôn select all khi mở lên
+            val newIds = words.filter { it.count < 30 }.map { it.id }.toSet()
+            _readingSelectedByTab.value = _readingSelectedByTab.value + ("NEW" to newIds)
+            saveTabSelection(readingId, "NEW", newIds)
+
             _isLoadingReadingVocab.value = false
         }
     }
@@ -84,7 +133,7 @@ class VocabViewModel(
         }
     }
 
-    // ── Toggle selected trong VocabScreen (vocabList) ─────────────────────────
+    // ── Toggle selected trong VocabScreen (vocabList) — vẫn ghi DB ───────────
     fun toggleSelected(entry: UserVocabularyEntry) {
         val newSelected = if (entry.selected == 1) 0 else 1
         viewModelScope.launch {
@@ -97,17 +146,18 @@ class VocabViewModel(
         }
     }
 
-    // ── Toggle selected trong VocabReadingScreen (readingVocabList) ───────────
-    fun toggleSelectedInReading(entry: UserVocabularyEntry) {
-        val newSelected = if (entry.selected == 1) 0 else 1
-        viewModelScope.launch {
-            if (repository.updateSelected(entry.id, newSelected)) {
-                _readingVocabList.value = _readingVocabList.value.map {
-                    if (it.id == entry.id) it.copy(selected = newSelected) else it
-                }
-            }
-        }
+    // ── Toggle selected tạm trong VocabReadingScreen theo tab — lưu SharedPreferences ──
+    fun toggleSelectedInReading(entry: UserVocabularyEntry, tabName: String) {
+        val currentMap = _readingSelectedByTab.value
+        val currentSet = currentMap[tabName] ?: emptySet()
+        val updatedSet = if (entry.id in currentSet) currentSet - entry.id else currentSet + entry.id
+        _readingSelectedByTab.value = currentMap + (tabName to updatedSet)
+        saveTabSelection(currentReadingId, tabName, updatedSet)
     }
+
+    // ── Lấy selected IDs của 1 tab cụ thể (dùng ở MainScreen để build pool) ──
+    fun getSelectedIdsForTab(tabName: String): Set<Int> =
+        _readingSelectedByTab.value[tabName] ?: emptySet()
 
     // ── Xóa từ trong VocabScreen ──────────────────────────────────────────────
     fun deleteWord(id: Int) {
@@ -126,7 +176,14 @@ class VocabViewModel(
         viewModelScope.launch {
             if (repository.deleteWord(id)) {
                 _readingVocabList.value = _readingVocabList.value.filterNot { it.id == id }
-                // Sync màu từ trong ReadingScreen — 1 dòng duy nhất cần thêm
+                // Xóa ID này khỏi tất cả các tab, đồng bộ vào prefs
+                val updated = _readingSelectedByTab.value.mapValues { (tabName, ids) ->
+                    val newSet = ids - id
+                    saveTabSelection(currentReadingId, tabName, newSet)
+                    newSet
+                }
+                _readingSelectedByTab.value = updated
+                // Sync màu từ trong ReadingScreen
                 readingVm.refreshSavedWordIds()
             }
         }
@@ -174,6 +231,9 @@ class VocabViewModel(
                 repository = VocabRepository.getInstance(context),
                 // Dùng lại singleton của ReadingViewModel — cùng instance với ReadingScreen
                 readingVm  = ReadingViewModel.Factory(context).create(ReadingViewModel::class.java),
+                prefs      = context.applicationContext.getSharedPreferences(
+                    "vocab_reading_selection", Context.MODE_PRIVATE
+                ),
             ) as T
         }
     }

@@ -32,27 +32,17 @@ private enum class VocabReadingTab(val label: String) {
 }
 
 private fun UserVocabularyEntry.readingTab(): VocabReadingTab = when {
-    count == 0 -> VocabReadingTab.NEW
-    count < 50 -> VocabReadingTab.RECENT
-    else       -> VocabReadingTab.ALL
+    count < 30  -> VocabReadingTab.NEW
+    count <= 70 -> VocabReadingTab.RECENT
+    else        -> VocabReadingTab.ALL
 }
 
-/**
- * Màn hình ôn từ vựng gắn với bài đọc.
- * Giống VocabScreen (checkbox chọn, xóa, nút Học từ) nhưng chỉ hiện
- * các từ được lưu từ bài đọc có [readingId] này.
- *
- * @param readingId    ID bài đọc hiện tại.
- * @param onBack       Callback quay lại.
- * @param onStudyClick Callback navigate sang VocabStudyScreen với pool là
- *                     các từ đang được chọn trong bài đọc này.
- */
 @OptIn(ExperimentalMaterial3Api::class)
 @Composable
 fun VocabReadingScreen(
     readingId: Int,
     onBack: () -> Unit,
-    onStudyClick: () -> Unit,
+    onStudyClick: (tabName: String) -> Unit,
 ) {
     val context  = LocalContext.current
     val activity = context as ComponentActivity
@@ -61,22 +51,32 @@ fun VocabReadingScreen(
         factory = VocabViewModel.Factory(context)
     )
 
-    val vocabList      by vm.readingVocabList.collectAsState()
-    val isLoading      by vm.isLoadingReadingVocab.collectAsState()
+    val vocabList          by vm.readingVocabList.collectAsState()
+    val isLoading          by vm.isLoadingReadingVocab.collectAsState()
+    val selectedByTab      by vm.readingSelectedByTab.collectAsState()
 
-    val selectedCount = remember(vocabList) { vocabList.count { it.selected == 1 } }
+    // ── Tab được nhớ trong ViewModel để giữ nguyên khi back từ Study ─────────
+    val activeTabName by vm.readingActiveTab.collectAsState()
+    var selectedTab by remember(activeTabName) {
+        mutableStateOf(
+            VocabReadingTab.entries.firstOrNull { it.name == activeTabName }
+                ?: VocabReadingTab.NEW
+        )
+    }
 
-    var selectedTab by remember { mutableStateOf(VocabReadingTab.NEW) }
+    val currentSelectedIds = selectedByTab[selectedTab.name] ?: emptySet()
+    val selectedCount      = currentSelectedIds.size
 
-    // Phân loại từ theo tab, sắp xếp mới lưu lên trước
     val byTab = remember(vocabList) {
         vocabList.sortedByDescending { it.createdAt }.groupBy { it.readingTab() }
     }
-    val currentList = byTab[selectedTab] ?: emptyList()
 
+    val currentList = when (selectedTab) {
+        VocabReadingTab.ALL -> vocabList.sortedByDescending { it.createdAt }
+        else                -> byTab[selectedTab] ?: emptyList()
+    }
 
     LaunchedEffect(readingId) { vm.loadVocabForReading(readingId) }
-
 
     Scaffold(
         topBar = {
@@ -93,7 +93,7 @@ fun VocabReadingScreen(
             if (selectedCount > 0) {
                 Surface(shadowElevation = 8.dp) {
                     Button(
-                        onClick = onStudyClick,
+                        onClick = { onStudyClick(selectedTab.name) },
                         modifier = Modifier
                             .fillMaxWidth()
                             .padding(horizontal = 16.dp, vertical = 12.dp)
@@ -128,10 +128,16 @@ fun VocabReadingScreen(
                     // ── Tab row ───────────────────────────────────────────────
                     TabRow(selectedTabIndex = selectedTab.ordinal) {
                         VocabReadingTab.entries.forEach { tab ->
-                            val count = byTab[tab]?.size ?: 0
+                            val count = when (tab) {
+                                VocabReadingTab.ALL -> vocabList.size
+                                else -> byTab[tab]?.size ?: 0
+                            }
                             Tab(
                                 selected = selectedTab == tab,
-                                onClick  = { selectedTab = tab },
+                                onClick  = {
+                                    selectedTab = tab
+                                    vm.setReadingActiveTab(tab.name)  // lưu vào VM
+                                },
                                 text     = { Text("${tab.label} ($count)") }
                             )
                         }
@@ -160,12 +166,15 @@ fun VocabReadingScreen(
                                 var cardCoords by remember { mutableStateOf<LayoutCoordinates?>(null) }
                                 VocabReadingCard(
                                     entry            = entry,
+                                    isSelected       = entry.id in currentSelectedIds,
                                     modifier         = Modifier.onGloballyPositioned { cardCoords = it },
                                     onWordClick      = {
                                         vm.setAnchorRect(cardCoords?.boundsInWindow())
                                         vm.onEntryClick(entry)
                                     },
-                                    onToggleSelected = { vm.toggleSelectedInReading(entry) },
+                                    onToggleSelected = {
+                                        vm.toggleSelectedInReading(entry, selectedTab.name)
+                                    },
                                     onDelete         = { vm.deleteWordFromReading(entry.id) }
                                 )
                             }
@@ -180,12 +189,12 @@ fun VocabReadingScreen(
 @Composable
 private fun VocabReadingCard(
     entry: UserVocabularyEntry,
+    isSelected: Boolean,
     onWordClick: () -> Unit,
     onToggleSelected: () -> Unit,
     onDelete: () -> Unit,
     modifier: Modifier = Modifier,
 ) {
-    val isSelected = entry.selected == 1
     Card(
         modifier  = modifier.fillMaxWidth(),
         elevation = CardDefaults.cardElevation(defaultElevation = 2.dp),
@@ -196,13 +205,11 @@ private fun VocabReadingCard(
                 .padding(horizontal = 16.dp, vertical = 12.dp),
             verticalAlignment = Alignment.CenterVertically,
         ) {
-            // ── Checkbox chọn từ để học ───────────────────────────────────────
             Checkbox(
                 checked         = isSelected,
                 onCheckedChange = { onToggleSelected() }
             )
 
-            // ── Nội dung từ ───────────────────────────────────────────────────
             Column(
                 modifier = Modifier
                     .weight(1f)
@@ -224,7 +231,6 @@ private fun VocabReadingCard(
                 }
             }
 
-            // ── Badge ×count ──────────────────────────────────────────────────
             Surface(
                 shape    = RoundedCornerShape(12.dp),
                 color    = MaterialTheme.colorScheme.secondaryContainer,
@@ -238,7 +244,6 @@ private fun VocabReadingCard(
                 )
             }
 
-            // ── Nút xoá ──────────────────────────────────────────────────────
             IconButton(onClick = onDelete) {
                 Icon(
                     Icons.Filled.Delete,

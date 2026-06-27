@@ -57,6 +57,7 @@ private val FLOAT_BUTTON_SCREENS = setOf(
 fun MainScreen() {
     var screen by remember { mutableStateOf(Screen.MAIN) }
     var selectedReadingId by remember { mutableStateOf<Int?>(null) }
+    var readingStudyTabName by remember { mutableStateOf("NEW") }
 
     val context  = LocalContext.current
     val activity = context as ComponentActivity
@@ -64,18 +65,18 @@ fun MainScreen() {
         viewModelStoreOwner = activity,
         factory = VocabViewModel.Factory(context)
     )
-    val vocabList        by vm.vocabList.collectAsState()
-    val readingVocabList by vm.readingVocabList.collectAsState()
-    val selectedEntry    by vm.selectedEntry.collectAsState()
-    val dictEntry        by vm.selectedDictEntry.collectAsState()
-    val isDictExpanded   by vm.isDictExpanded.collectAsState()
-    val anchorRect       by vm.anchorRect.collectAsState()
+    val vocabList          by vm.vocabList.collectAsState()
+    val readingVocabList   by vm.readingVocabList.collectAsState()
+    val readingSelectedByTab by vm.readingSelectedByTab.collectAsState()
+    val selectedEntry      by vm.selectedEntry.collectAsState()
+    val dictEntry          by vm.selectedDictEntry.collectAsState()
+    val isDictExpanded     by vm.isDictExpanded.collectAsState()
+    val anchorRect         by vm.anchorRect.collectAsState()
 
     fun goBack() { screen = previousScreenOf(screen) }
 
     BackHandler(enabled = screen != Screen.MAIN) { goBack() }
 
-    // ── Popup từ vựng — 1 instance duy nhất cho toàn app ──────────────────────
     selectedEntry?.let { entry ->
         VocabPopup(
             entry                = entry,
@@ -87,16 +88,25 @@ fun MainScreen() {
         )
     }
 
+    val readingStudyPool = remember(readingVocabList, readingSelectedByTab, readingStudyTabName) {
+        val selectedIds = readingSelectedByTab[readingStudyTabName] ?: emptySet()
+        readingVocabList.filter { it.id in selectedIds }
+    }
+
     Box(modifier = Modifier.fillMaxSize()) {
         ScreenContent(
             screen            = screen,
             selectedReadingId = selectedReadingId,
             vocabStudyPool    = vocabList.filter { it.selected == 1 },
-            readingStudyPool  = readingVocabList.filter { it.selected == 1 },
+            readingStudyPool  = readingStudyPool,
             onNavigateTo      = { screen = it },
             onSelectReading   = { id ->
                 selectedReadingId = id
                 screen = Screen.READING
+            },
+            onReadingStudyClick = { tabName, nextScreen ->
+                readingStudyTabName = tabName
+                screen = nextScreen
             },
             onBack = { goBack() }
         )
@@ -106,8 +116,12 @@ fun MainScreen() {
             FloatingVocabButton(
                 isOnVocabScreen = screen != Screen.READING,
                 onToggle = {
-                    screen = if (screen == Screen.READING) Screen.READING_VOCAB
-                    else Screen.READING
+                    if (screen == Screen.READING) {
+                        vm.resetReadingActiveTab()  // mở VocabReading → luôn về tab "Mới nhất"
+                        screen = Screen.READING_VOCAB
+                    } else {
+                        screen = Screen.READING
+                    }
                 }
             )
         }
@@ -122,6 +136,7 @@ private fun ScreenContent(
     readingStudyPool: List<UserVocabularyEntry>,
     onNavigateTo: (Screen) -> Unit,
     onSelectReading: (Int) -> Unit,
+    onReadingStudyClick: (tabName: String, nextScreen: Screen) -> Unit,
     onBack: () -> Unit,
 ) {
     when (screen) {
@@ -153,7 +168,9 @@ private fun ScreenContent(
         Screen.VOCAB_READING -> VocabReadingScreen(
             readingId    = selectedReadingId ?: return,
             onBack       = onBack,
-            onStudyClick = { onNavigateTo(Screen.VOCAB_READING_STUDY) }
+            onStudyClick = { tabName ->
+                onReadingStudyClick(tabName, Screen.VOCAB_READING_STUDY)
+            }
         )
 
         Screen.VOCAB_READING_STUDY -> VocabStudyScreen(
@@ -165,7 +182,9 @@ private fun ScreenContent(
         Screen.READING_VOCAB -> VocabReadingScreen(
             readingId    = selectedReadingId ?: return,
             onBack       = onBack,
-            onStudyClick = { onNavigateTo(Screen.READING_VOCAB_STUDY) }
+            onStudyClick = { tabName ->
+                onReadingStudyClick(tabName, Screen.READING_VOCAB_STUDY)
+            }
         )
 
         Screen.READING_VOCAB_STUDY -> VocabStudyScreen(
