@@ -64,9 +64,6 @@ fun VocabReadingScreen(
         )
     }
 
-    val currentSelectedIds = selectedByTab[selectedTab.name] ?: emptySet()
-    val selectedCount      = currentSelectedIds.size
-
     val byTab = remember(vocabList) {
         vocabList.sortedByDescending { it.createdAt }.groupBy { it.readingTab() }
     }
@@ -75,6 +72,12 @@ fun VocabReadingScreen(
         VocabReadingTab.ALL -> vocabList.sortedByDescending { it.createdAt }
         else                -> byTab[selectedTab] ?: emptyList()
     }
+
+    val rawSelectedIds     = selectedByTab[selectedTab.name] ?: emptySet()
+    // Chỉ tính những ID thực sự có trong danh sách hiện tại của tab
+    // (tránh ID cũ còn trong prefs sau khi từ bị xóa hoặc chuyển sang tab khác)
+    val currentSelectedIds = rawSelectedIds.intersect(currentList.map { it.id }.toSet())
+    val selectedCount      = currentSelectedIds.size
 
     // ── Trạng thái "Tự động chọn tất cả" — đọc từ VM, lưu vào SharedPreferences ─
     val autoSelectEnabled by vm.readingAutoSelect.collectAsState()

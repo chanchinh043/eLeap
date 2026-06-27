@@ -90,7 +90,14 @@ fun MainScreen() {
 
     val readingStudyPool = remember(readingVocabList, readingSelectedByTab, readingStudyTabName) {
         val selectedIds = readingSelectedByTab[readingStudyTabName] ?: emptySet()
-        readingVocabList.filter { it.id in selectedIds }
+        // Lọc từ thuộc đúng tab — dùng cùng ngưỡng với VocabReadingScreen.readingTab()
+        // tránh ID cũ còn trong prefs nhưng từ đã chuyển sang tab khác do count thay đổi
+        val tabWords = when (readingStudyTabName) {
+            "NEW"    -> readingVocabList.filter { it.count < 30 }
+            "RECENT" -> readingVocabList.filter { it.count in 30..70 }
+            else     -> readingVocabList  // "ALL"
+        }
+        tabWords.filter { it.id in selectedIds }
     }
 
     Box(modifier = Modifier.fillMaxSize()) {
