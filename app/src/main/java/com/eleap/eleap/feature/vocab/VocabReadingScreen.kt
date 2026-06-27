@@ -76,6 +76,19 @@ fun VocabReadingScreen(
         else                -> byTab[selectedTab] ?: emptyList()
     }
 
+    // ── Trạng thái "Tự động chọn tất cả" — đọc từ VM, lưu vào SharedPreferences ─
+    val autoSelectEnabled by vm.readingAutoSelect.collectAsState()
+
+    // Khi autoSelect bật và currentList thay đổi → tự select tất cả
+    LaunchedEffect(autoSelectEnabled, currentList) {
+        if (selectedTab == VocabReadingTab.NEW && autoSelectEnabled && currentList.isNotEmpty()) {
+            vm.setAllSelectedInReading(currentList.map { it.id }.toSet(), selectedTab.name)
+        }
+    }
+
+    // Tất cả đã được chọn chưa? (dùng cho nút Chọn tất cả / Bỏ chọn tất cả)
+    val allSelected = currentList.isNotEmpty() && currentList.all { it.id in currentSelectedIds }
+
     LaunchedEffect(readingId) { vm.loadVocabForReading(readingId) }
 
     Scaffold(
@@ -136,11 +149,49 @@ fun VocabReadingScreen(
                                 selected = selectedTab == tab,
                                 onClick  = {
                                     selectedTab = tab
-                                    vm.setReadingActiveTab(tab.name)  // lưu vào VM
+                                    vm.setReadingActiveTab(tab.name)
                                 },
                                 text     = { Text("${tab.label} ($count)") }
                             )
                         }
+                    }
+
+                    // ── Thanh công cụ chỉ hiện ở tab NEW ─────────────────────
+                    if (selectedTab == VocabReadingTab.NEW && currentList.isNotEmpty()) {
+                        Row(
+                            modifier = Modifier
+                                .fillMaxWidth()
+                                .padding(horizontal = 12.dp, vertical = 6.dp),
+                            horizontalArrangement = Arrangement.spacedBy(8.dp),
+                            verticalAlignment = Alignment.CenterVertically,
+                        ) {
+                            // Nút Tự động chọn tất cả (toggle)
+                            FilterChip(
+                                selected = autoSelectEnabled,
+                                onClick  = { vm.setAutoSelect(!autoSelectEnabled) },
+                                label    = { Text("Tự động chọn tất cả") },
+                            )
+
+                            // Nút Chọn tất cả / Bỏ chọn tất cả
+                            OutlinedButton(
+                                onClick = {
+                                    if (allSelected) {
+                                        vm.setAllSelectedInReading(emptySet(), selectedTab.name)
+                                        vm.setAutoSelect(false)
+                                    } else {
+                                        // Chọn tất cả
+                                        vm.setAllSelectedInReading(
+                                            currentList.map { it.id }.toSet(),
+                                            selectedTab.name
+                                        )
+                                    }
+                                },
+                                contentPadding = PaddingValues(horizontal = 12.dp, vertical = 6.dp),
+                            ) {
+                                Text(if (allSelected) "Bỏ chọn tất cả" else "Chọn tất cả")
+                            }
+                        }
+                        HorizontalDivider()
                     }
 
                     // ── Danh sách từ theo tab ─────────────────────────────────
@@ -173,6 +224,9 @@ fun VocabReadingScreen(
                                         vm.onEntryClick(entry)
                                     },
                                     onToggleSelected = {
+                                        if (selectedTab == VocabReadingTab.NEW) {
+                                            vm.setAutoSelect(false)
+                                        }
                                         vm.toggleSelectedInReading(entry, selectedTab.name)
                                     },
                                     onDelete         = { vm.deleteWordFromReading(entry.id) }
