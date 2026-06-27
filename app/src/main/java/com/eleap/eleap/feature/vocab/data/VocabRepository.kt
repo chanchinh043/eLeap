@@ -38,6 +38,18 @@ class VocabRepository private constructor(
     suspend fun deleteWord(id: Int): Boolean =
         withContext(Dispatchers.IO) { userDb.deleteWord(id) }
 
+    // ── Tăng count thêm 1 (ghi DB nền) ──────────────────────────────────────
+    suspend fun incrementCount(id: Int) = withContext(Dispatchers.IO) {
+        try {
+            userDb.db.execSQL(
+                "UPDATE user_vocabulary SET count = count + 1 WHERE id = ?",
+                arrayOf(id)
+            )
+        } catch (e: Exception) {
+            Log.e("VocabRepository", "incrementCount error", e)
+        }
+    }
+
     // ── Cập nhật selected (0 hoặc 1) cho 1 từ ────────────────────────────────
     suspend fun updateSelected(id: Int, selected: Int): Boolean =
         withContext(Dispatchers.IO) {

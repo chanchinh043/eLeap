@@ -58,6 +58,13 @@ fun VocabStudyScreen(
     }
     var goingForward by remember { mutableStateOf(true) }
 
+    // Tăng count cho từ đầu tiên khi pool load xong
+    LaunchedEffect(poolIds) {
+        if (history.isNotEmpty()) {
+            vm.incrementCount(history[0])
+        }
+    }
+
     fun randomExcluding(excludeId: Int?): UserVocabularyEntry {
         if (pool.size <= 1) return pool.first()
         var candidate = pool.random()
@@ -142,8 +149,10 @@ fun VocabStudyScreen(
                                 currentIndex++
                             } else {
                                 val excludeId = history.getOrNull(currentIndex)?.id
-                                history = history + randomExcluding(excludeId)
+                                val next = randomExcluding(excludeId)
+                                history = history + next
                                 currentIndex++
+                                vm.incrementCount(next)   // từ mới xuất hiện lần đầu
                             }
                         }
                     )

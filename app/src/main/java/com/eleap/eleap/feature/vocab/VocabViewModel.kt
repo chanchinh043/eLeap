@@ -141,6 +141,21 @@ class VocabViewModel(
         }
     }
 
+    // ── Tăng count mỗi lần từ xuất hiện khi quay flashcard ──────────────────
+    fun incrementCount(entry: UserVocabularyEntry) {
+        viewModelScope.launch {
+            repository.incrementCount(entry.id)
+            // Cập nhật local state để tab phân loại phản ánh ngay
+            val updated = entry.copy(count = entry.count + 1)
+            _vocabList.value = _vocabList.value.map {
+                if (it.id == entry.id) updated else it
+            }
+            _readingVocabList.value = _readingVocabList.value.map {
+                if (it.id == entry.id) updated else it
+            }
+        }
+    }
+
     fun dismissPopup() {
         _selectedEntry.value = null
         _selectedDictEntry.value = null

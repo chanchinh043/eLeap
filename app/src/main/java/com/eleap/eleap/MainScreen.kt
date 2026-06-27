@@ -13,12 +13,14 @@ import androidx.activity.ComponentActivity
 import androidx.lifecycle.viewmodel.compose.viewModel
 import com.eleap.eleap.feature.reading.ReadingListScreen
 import com.eleap.eleap.feature.reading.ReadingScreen
+
 import com.eleap.eleap.feature.vocab.VocabScreen
 import com.eleap.eleap.feature.vocab.VocabStudyScreen
 import com.eleap.eleap.feature.vocab.VocabReadingScreen
 import com.eleap.eleap.feature.vocab.VocabViewModel
 import com.eleap.eleap.feature.vocab.VocabPopup
 import com.eleap.eleap.feature.reading.ui.UserVocabularyEntry
+import com.eleap.eleap.ui.FloatingVocabButton
 
 private enum class Screen {
     MAIN,
@@ -28,6 +30,8 @@ private enum class Screen {
     VOCAB_STUDY,
     VOCAB_READING,
     VOCAB_READING_STUDY,
+    READING_VOCAB,          // VocabReadingScreen từ luồng reading
+    READING_VOCAB_STUDY,    // VocabStudyScreen từ luồng reading
 }
 
 private fun previousScreenOf(screen: Screen): Screen = when (screen) {
@@ -37,8 +41,17 @@ private fun previousScreenOf(screen: Screen): Screen = when (screen) {
     Screen.VOCAB_STUDY         -> Screen.VOCAB
     Screen.VOCAB_READING       -> Screen.READING
     Screen.VOCAB_READING_STUDY -> Screen.VOCAB_READING
+    Screen.READING_VOCAB       -> Screen.READING
+    Screen.READING_VOCAB_STUDY -> Screen.READING_VOCAB
     Screen.MAIN                -> Screen.MAIN
 }
+
+// ── Các màn hiện FloatingVocabButton (chỉ luồng từ Reading) ──────────────────
+private val FLOAT_BUTTON_SCREENS = setOf(
+    Screen.READING,
+    Screen.READING_VOCAB,
+    Screen.READING_VOCAB_STUDY,
+)
 
 @Composable
 fun MainScreen() {
@@ -87,6 +100,17 @@ fun MainScreen() {
             },
             onBack = { goBack() }
         )
+
+        // ── FloatingVocabButton: hiện ở READING, READING_VOCAB, READING_VOCAB_STUDY ──
+        if (screen in FLOAT_BUTTON_SCREENS) {
+            FloatingVocabButton(
+                isOnVocabScreen = screen != Screen.READING,
+                onToggle = {
+                    screen = if (screen == Screen.READING) Screen.READING_VOCAB
+                    else Screen.READING
+                }
+            )
+        }
     }
 }
 
@@ -133,6 +157,18 @@ private fun ScreenContent(
         )
 
         Screen.VOCAB_READING_STUDY -> VocabStudyScreen(
+            pool   = readingStudyPool,
+            onBack = onBack
+        )
+
+        // ── Màn từ vựng gắn với bài đọc (truy cập qua FloatingVocabButton) ──
+        Screen.READING_VOCAB -> VocabReadingScreen(
+            readingId    = selectedReadingId ?: return,
+            onBack       = onBack,
+            onStudyClick = { onNavigateTo(Screen.READING_VOCAB_STUDY) }
+        )
+
+        Screen.READING_VOCAB_STUDY -> VocabStudyScreen(
             pool   = readingStudyPool,
             onBack = onBack
         )

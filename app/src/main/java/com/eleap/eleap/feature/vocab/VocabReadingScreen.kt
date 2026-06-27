@@ -7,6 +7,7 @@ import androidx.compose.foundation.clickable
 import androidx.compose.foundation.layout.*
 import androidx.compose.foundation.lazy.LazyColumn
 import androidx.compose.foundation.lazy.items
+import androidx.compose.foundation.shape.RoundedCornerShape
 import androidx.compose.material.icons.Icons
 import androidx.compose.material.icons.automirrored.filled.ArrowBack
 import androidx.compose.material.icons.filled.Delete
@@ -22,6 +23,19 @@ import androidx.compose.ui.text.style.TextAlign
 import androidx.compose.ui.unit.dp
 import androidx.lifecycle.viewmodel.compose.viewModel
 import com.eleap.eleap.feature.reading.ui.UserVocabularyEntry
+
+// ── Phân loại từ theo số lần ôn ──────────────────────────────────────────────
+private enum class VocabReadingTab(val label: String) {
+    NEW("Mới nhất"),
+    RECENT("Gần đây"),
+    ALL("Tất cả từ"),
+}
+
+private fun UserVocabularyEntry.readingTab(): VocabReadingTab = when {
+    count == 0 -> VocabReadingTab.NEW
+    count < 50 -> VocabReadingTab.RECENT
+    else       -> VocabReadingTab.ALL
+}
 
 /**
  * Màn hình ôn từ vựng gắn với bài đọc.
@@ -51,6 +65,14 @@ fun VocabReadingScreen(
     val isLoading      by vm.isLoadingReadingVocab.collectAsState()
 
     val selectedCount = remember(vocabList) { vocabList.count { it.selected == 1 } }
+
+    var selectedTab by remember { mutableStateOf(VocabReadingTab.NEW) }
+
+    // Phân loại từ theo tab, sắp xếp mới lưu lên trước
+    val byTab = remember(vocabList) {
+        vocabList.sortedByDescending { it.createdAt }.groupBy { it.readingTab() }
+    }
+    val currentList = byTab[selectedTab] ?: emptyList()
 
 
     LaunchedEffect(readingId) { vm.loadVocabForReading(readingId) }
@@ -102,31 +124,52 @@ fun VocabReadingScreen(
                     color = MaterialTheme.colorScheme.onSurfaceVariant
                 )
 
-                else -> LazyColumn(
-                    contentPadding = PaddingValues(16.dp),
-                    verticalArrangement = Arrangement.spacedBy(8.dp),
-                    modifier = Modifier.fillMaxSize()
-                ) {
-                    item {
-                        Text(
-                            text = "${vocabList.size} từ đã lưu",
-                            style = MaterialTheme.typography.labelMedium,
-                            color = MaterialTheme.colorScheme.outline,
-                            modifier = Modifier.padding(bottom = 4.dp)
-                        )
+                else -> Column(modifier = Modifier.fillMaxSize()) {
+                    // ── Tab row ───────────────────────────────────────────────
+                    TabRow(selectedTabIndex = selectedTab.ordinal) {
+                        VocabReadingTab.entries.forEach { tab ->
+                            val count = byTab[tab]?.size ?: 0
+                            Tab(
+                                selected = selectedTab == tab,
+                                onClick  = { selectedTab = tab },
+                                text     = { Text("${tab.label} ($count)") }
+                            )
+                        }
                     }
-                    items(vocabList, key = { it.id }) { entry ->
-                        var cardCoords by remember { mutableStateOf<LayoutCoordinates?>(null) }
-                        VocabReadingCard(
-                            entry            = entry,
-                            modifier         = Modifier.onGloballyPositioned { cardCoords = it },
-                            onWordClick      = {
-                                vm.setAnchorRect(cardCoords?.boundsInWindow())
-                                vm.onEntryClick(entry)
-                            },
-                            onToggleSelected = { vm.toggleSelectedInReading(entry) },
-                            onDelete         = { vm.deleteWordFromReading(entry.id) }
-                        )
+
+                    // ── Danh sách từ theo tab ─────────────────────────────────
+                    if (currentList.isEmpty()) {
+                        Box(
+                            modifier = Modifier.fillMaxSize(),
+                            contentAlignment = Alignment.Center
+                        ) {
+                            Text(
+                                text  = "Không có từ nào trong mục này",
+                                style = MaterialTheme.typography.bodyLarge,
+                                color = MaterialTheme.colorScheme.onSurfaceVariant,
+                                textAlign = TextAlign.Center,
+                            )
+                        }
+                    } else {
+                        LazyColumn(
+                            contentPadding = PaddingValues(16.dp),
+                            verticalArrangement = Arrangement.spacedBy(8.dp),
+                            modifier = Modifier.fillMaxSize()
+                        ) {
+                            items(currentList, key = { it.id }) { entry ->
+                                var cardCoords by remember { mutableStateOf<LayoutCoordinates?>(null) }
+                                VocabReadingCard(
+                                    entry            = entry,
+                                    modifier         = Modifier.onGloballyPositioned { cardCoords = it },
+                                    onWordClick      = {
+                                        vm.setAnchorRect(cardCoords?.boundsInWindow())
+                                        vm.onEntryClick(entry)
+                                    },
+                                    onToggleSelected = { vm.toggleSelectedInReading(entry) },
+                                    onDelete         = { vm.deleteWordFromReading(entry.id) }
+                                )
+                            }
+                        }
                     }
                 }
             }
@@ -144,19 +187,13 @@ private fun VocabReadingCard(
 ) {
     val isSelected = entry.selected == 1
     Card(
-        modifier = modifier.fillMaxWidth(),
+        modifier  = modifier.fillMaxWidth(),
         elevation = CardDefaults.cardElevation(defaultElevation = 2.dp),
-        colors = CardDefaults.cardColors(
-            containerColor = if (isSelected)
-                MaterialTheme.colorScheme.primaryContainer
-            else
-                MaterialTheme.colorScheme.surface
-        )
     ) {
         Row(
             modifier = Modifier
                 .fillMaxWidth()
-                .padding(horizontal = 8.dp, vertical = 12.dp),
+                .padding(horizontal = 16.dp, vertical = 12.dp),
             verticalAlignment = Alignment.CenterVertically,
         ) {
             // ── Checkbox chọn từ để học ───────────────────────────────────────
@@ -172,27 +209,33 @@ private fun VocabReadingCard(
                     .padding(start = 4.dp)
             ) {
                 Text(
-                    text = entry.textEn ?: "",
-                    style = MaterialTheme.typography.titleMedium,
-                    color = if (isSelected)
-                        MaterialTheme.colorScheme.onPrimaryContainer
-                    else
-                        MaterialTheme.colorScheme.primary,
+                    text     = entry.textEn ?: "",
+                    style    = MaterialTheme.typography.titleMedium,
+                    color    = MaterialTheme.colorScheme.primary,
                     modifier = Modifier.clickable(onClick = onWordClick)
                 )
                 entry.textVi?.let {
                     Spacer(modifier = Modifier.height(2.dp))
                     Text(
-                        text = it,
+                        text  = it,
                         style = MaterialTheme.typography.bodyMedium,
                         color = MaterialTheme.colorScheme.onSurfaceVariant
                     )
                 }
-                Spacer(modifier = Modifier.height(6.dp))
-                Row(horizontalArrangement = Arrangement.spacedBy(8.dp)) {
-                    AssistChip(onClick = {}, label = { Text("Đã ôn: ${entry.count}") })
-                    AssistChip(onClick = {}, label = { Text("Điểm: ${entry.score}") })
-                }
+            }
+
+            // ── Badge ×count ──────────────────────────────────────────────────
+            Surface(
+                shape    = RoundedCornerShape(12.dp),
+                color    = MaterialTheme.colorScheme.secondaryContainer,
+                modifier = Modifier.padding(start = 8.dp)
+            ) {
+                Text(
+                    text     = "×${entry.count}",
+                    style    = MaterialTheme.typography.labelMedium,
+                    color    = MaterialTheme.colorScheme.onSecondaryContainer,
+                    modifier = Modifier.padding(horizontal = 10.dp, vertical = 4.dp)
+                )
             }
 
             // ── Nút xoá ──────────────────────────────────────────────────────
