@@ -66,11 +66,13 @@ fun ReadingScreen(
         vm.loadReading(readingId)
     }
 
-    // Khi AI xử lý xong bài đang mở → force reload để hiển thị dữ liệu đầy đủ
+    // Khi AI xử lý xong bài đang mở → âm thầm reload để hiển thị dữ liệu đầy đủ
+    // (silent = true: không hiện loading spinner, không nháy UI, user không
+    // nhận ra là đã reload — chỉ thấy phần tiếng Việt/giải thích tự "hiện ra")
     LaunchedEffect(aiCompletedId) {
         if (aiCompletedId == readingId) {
-            Log.d("ReadingScreen", "AI xong readingId=$readingId → reload")
-            vm.loadReading(readingId)   // cachedReadingId đã bị xoá bởi notifyAiCompleted
+            Log.d("ReadingScreen", "AI xong readingId=$readingId → reload ngầm")
+            vm.loadReading(readingId, silent = true)
             vm.consumeAiCompleted()
         }
     }

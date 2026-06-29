@@ -19,7 +19,10 @@ import com.eleap.eleap.feature.userreading.processSingleReading
 import com.eleap.eleap.feature.userreading.processUnhandledReadings
 import kotlinx.coroutines.Dispatchers
 import kotlinx.coroutines.flow.MutableStateFlow
+import kotlinx.coroutines.flow.SharingStarted
 import kotlinx.coroutines.flow.StateFlow
+import kotlinx.coroutines.flow.combine
+import kotlinx.coroutines.flow.stateIn
 import kotlinx.coroutines.launch
 import kotlinx.coroutines.withContext
 
@@ -37,14 +40,34 @@ class ReadingViewModel(
     private val _isLoadingReading = MutableStateFlow(false)
     val isLoadingReading: StateFlow<Boolean> = _isLoadingReading
 
-    private val _selectedWord = MutableStateFlow<SentenceWord?>(null)
-    val selectedWord: StateFlow<SentenceWord?> = _selectedWord
+    // ── Selection: CHỈ lưu ID, không lưu snapshot object ─────────────────────
+    // Đây là nguồn sự thật DUY NHẤT cho việc "đang chọn từ/câu nào". Object
+    // SentenceWord/ReadingSentence/SentencePhrase tương ứng được DERIVE (tính
+    // lại) từ _sentences mỗi khi _sentences đổi — nhờ vậy khi AI ghi xong và
+    // _sentences được reload, popup đang mở LUÔN tự thấy đúng data mới nhất,
+    // không có khe hở thời gian nào khiến nó "lỡ" giữ instance cũ.
+    private val _selectedWordId = MutableStateFlow<Int?>(null)
+    private val _selectedSentenceId = MutableStateFlow<Int?>(null)
 
-    private val _selectedPhrase = MutableStateFlow<SentencePhrase?>(null)
-    val selectedPhrase: StateFlow<SentencePhrase?> = _selectedPhrase
+    val selectedWord: StateFlow<SentenceWord?> =
+        combine(_sentences, _selectedWordId) { sentences, wordId ->
+            if (wordId == null) null
+            else sentences.firstNotNullOfOrNull { s -> s.words.find { it.wordId == wordId } }
+        }.stateIn(viewModelScope, SharingStarted.Eagerly, null)
 
-    private val _selectedSentence = MutableStateFlow<ReadingSentence?>(null)
-    val selectedSentence: StateFlow<ReadingSentence?> = _selectedSentence
+    val selectedSentence: StateFlow<ReadingSentence?> =
+        combine(_sentences, _selectedSentenceId) { sentences, sentenceId ->
+            if (sentenceId == null) null
+            else sentences.find { it.sentenceId == sentenceId }
+        }.stateIn(viewModelScope, SharingStarted.Eagerly, null)
+
+    // Phrase được derive theo selectedWord (chứ không lưu riêng) — luôn khớp
+    // 100% với word đang chọn, không thể lệch pha.
+    val selectedPhrase: StateFlow<SentencePhrase?> =
+        combine(_sentences, selectedWord) { sentences, word ->
+            val pid = word?.phraseId ?: return@combine null
+            sentences.firstNotNullOfOrNull { s -> s.phrases.find { it.phraseId == pid } }
+        }.stateIn(viewModelScope, SharingStarted.Eagerly, null)
 
     private val _selectedDictEntry = MutableStateFlow<DictEntry?>(null)
     val selectedDictEntry: StateFlow<DictEntry?> = _selectedDictEntry
@@ -67,6 +90,8 @@ class ReadingViewModel(
 
     fun notifyAiCompleted(readingId: Int) {
         invalidateReadingCache(readingId)
+        // emit qua StateFlow — ReadingScreen (nếu đang mở đúng bài) sẽ tự
+        // âm thầm reload lại dữ liệu, không hiện loading spinner.
         _aiCompletedReadingId.value = readingId
     }
 
@@ -81,6 +106,7 @@ class ReadingViewModel(
         repository.invalidateReadingCache(readingId)
     }
 
+    @Volatile
     private var cachedReadingId: Int = -1
 
     init {
@@ -145,23 +171,40 @@ class ReadingViewModel(
     // Reading detail
     // ─────────────────────────────────────────────────────────────────────────
 
-    fun loadReading(readingId: Int) {
-        if (readingId == cachedReadingId) {
+    /**
+     * Tải nội dung bài đọc.
+     *
+     * @param silent true khi đây là reload ngầm (ví dụ: AI vừa xử lý xong bài
+     *   đang mở) — không hiện loading spinner, không clear danh sách câu cũ
+     *   trước khi có data mới, để tránh nháy UI khi đang đọc.
+     *   false khi đây là lần load đầu tiên mở bài (cần hiện spinner vì
+     *   chưa có gì hiển thị).
+     */
+    fun loadReading(readingId: Int, silent: Boolean = false) {
+        if (!silent && readingId == cachedReadingId) {
             Log.d("ReadingVM", "readingId=$readingId đã cache, bỏ qua loadReading()")
             return
         }
         viewModelScope.launch {
-            _isLoadingReading.value = true
+            if (!silent) _isLoadingReading.value = true
 
             val before  = System.currentTimeMillis()
             val result  = repository.getReading(readingId)
             val elapsed = System.currentTimeMillis() - before
 
-            Log.d("ReadingVM", "readingId=$readingId | sentences=${result.size} | time=${elapsed}ms")
+            Log.d("ReadingVM", "readingId=$readingId | sentences=${result.size} | time=${elapsed}ms | silent=$silent")
 
+            // Cập nhật _sentences.value chỉ 1 lần, sau khi đã có đủ data mới.
+            // Compose chỉ recompose lại các phần dữ liệu thực sự đổi (Vietnamese
+            // text, explanation, pos, lemma...) — phần khung câu/word không đổi
+            // vị trí nên không có hiệu ứng giật/nháy.
             _sentences.value        = result
             cachedReadingId         = readingId
             _isLoadingReading.value = false
+
+            // Không cần resync popup thủ công nữa: selectedWord / selectedSentence /
+            // selectedPhrase đều là derived StateFlow tính từ _sentences, nên khi
+            // _sentences đổi ở trên, chúng tự động phát ra giá trị mới ngay lập tức.
 
             launch { repository.preloadDictForReading(result) }
         }
@@ -197,15 +240,11 @@ class ReadingViewModel(
     }
 
     fun onWordClick(word: SentenceWord, sentence: ReadingSentence) {
-        _selectedWord.value = word
-        _selectedPhrase.value = word.phraseId?.let { pid ->
-            sentence.phrases.find { it.phraseId == pid }
-        }
+        _selectedSentenceId.value = null   // đảm bảo không mở đồng thời 2 loại popup
+        _selectedWordId.value = word.wordId
         _selectedDictEntry.value = repository.getDictEntry(word.textEn)
         _isDictExpanded.value = false
-        Log.d("ReadingVM",
-            "wordClick: \"${word.textEn}\" (id=${word.wordId})" +
-                    (_selectedPhrase.value?.let { " → phrase=\"${it.textEn}\"" } ?: " → no phrase"))
+        Log.d("ReadingVM", "wordClick: \"${word.textEn}\" (id=${word.wordId})")
     }
 
     fun toggleDictExpanded() {
@@ -213,19 +252,19 @@ class ReadingViewModel(
     }
 
     fun dismissWordPopup() {
-        _selectedWord.value      = null
-        _selectedPhrase.value    = null
+        _selectedWordId.value    = null
         _selectedDictEntry.value = null
         _isDictExpanded.value    = false
     }
 
     fun onSentenceClick(sentence: ReadingSentence) {
-        _selectedSentence.value = sentence
+        _selectedWordId.value = null   // đảm bảo không mở đồng thời 2 loại popup
+        _selectedSentenceId.value = sentence.sentenceId
         Log.d("ReadingVM", "sentenceClick: sentenceId=${sentence.sentenceId}")
     }
 
     fun dismissSentencePopup() {
-        _selectedSentence.value = null
+        _selectedSentenceId.value = null
     }
 
     // ─────────────────────────────────────────────────────────────────────────
