@@ -210,16 +210,14 @@ class UserReadingRepository private constructor(context: Context) {
     private val dao: UserReadingDao
 
     init {
-        // Đảm bảo ReadingDatabase đã copy readings.db từ assets về thiết bị
-        ReadingDatabase.getInstance(context)
-
-        val dbPath = context.getDatabasePath("readings.db").absolutePath
-        val db = SQLiteDatabase.openDatabase(
-            dbPath,
-            null,
-            SQLiteDatabase.OPEN_READWRITE
-        )
-        dao = UserReadingDao(db)
+        // QUAN TRỌNG: dùng CHUNG connection ghi-được (readWrite + WAL) mà
+        // ReadingDatabase đã mở, KHÔNG tự mở thêm 1 SQLiteDatabase.openDatabase()
+        // riêng tới cùng file readings.db. Hai connection riêng tới cùng file
+        // sẽ tranh khoá nhau (SQLiteDatabaseLockedException) hoặc cho phép đọc
+        // dữ liệu nửa-vá khi ghi đang diễn ra — đây chính là nguyên nhân lỗi
+        // khi user đang mở bài đọc lúc AI/insert đang chạy.
+        val readingDb = ReadingDatabase.getInstance(context)
+        dao = UserReadingDao(readingDb.db)
     }
 
     /**

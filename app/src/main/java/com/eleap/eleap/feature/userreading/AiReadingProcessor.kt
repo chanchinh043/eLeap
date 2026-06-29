@@ -6,6 +6,7 @@ import android.content.Context
 import android.database.sqlite.SQLiteDatabase
 import android.util.Log
 import com.eleap.eleap.feature.reading.ReadingViewModel
+import com.eleap.eleap.feature.reading.data.ReadingDatabase
 import com.eleap.eleap.feature.reading.data.ReadingRepository
 import kotlinx.coroutines.Dispatchers
 import kotlinx.coroutines.sync.Mutex
@@ -161,18 +162,16 @@ private fun writeAiResultToDb(
 // 3. Shared helpers
 // ─────────────────────────────────────────────────────────────────────────────
 
-// Mở writable DB, thực thi block, rồi đóng lại
+// Lấy connection ghi-được DUY NHẤT mà toàn app dùng chung (ReadingDatabase.db,
+// đã mở readWrite + WAL). KHÔNG tự mở SQLiteDatabase.openDatabase() riêng tới
+// cùng file readings.db — làm vậy sẽ tạo ra 2 connection tranh khoá nhau,
+// gây lỗi hoặc đọc dữ liệu nửa-vá khi user đang mở bài đọc cùng lúc AI ghi.
 private suspend fun <T> withWritableDb(
     context: Context,
     block: suspend (SQLiteDatabase) -> T,
 ): T = withContext(Dispatchers.IO) {
-    val dbPath = context.getDatabasePath("readings.db").absolutePath
-    val db = SQLiteDatabase.openDatabase(dbPath, null, SQLiteDatabase.OPEN_READWRITE)
-    try {
-        block(db)
-    } finally {
-        db.close()
-    }
+    val db = ReadingDatabase.getInstance(context.applicationContext).db
+    block(db)
 }
 
 // Notify ViewModel hoặc invalidate cache thủ công khi AI xử lý xong 1 bài

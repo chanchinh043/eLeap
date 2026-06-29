@@ -72,7 +72,7 @@ data class DictEntry(
 // ═════════════════════════════════════════════════════════════════════════════
 
 class ReadingDao(
-    private val db: SQLiteDatabase,
+    val db: SQLiteDatabase,
     private val dictDb: SQLiteDatabase,
 ) {
     fun getAllReadings(): List<Reading> {
@@ -212,11 +212,30 @@ class ReadingDatabase private constructor(context: Context) {
     val dictDb: SQLiteDatabase
 
     init {
-        db     = openDatabase(context, "readings.db")
-        dictDb = openDatabase(context, "dict.db")
+        db     = openDatabase(context, "readings.db", readWrite = true)
+        dictDb = openDatabase(context, "dict.db", readWrite = false)
     }
 
-    private fun openDatabase(context: Context, fileName: String): SQLiteDatabase {
+    /**
+     * Mở database từ assets, copy lại nếu checksum thay đổi.
+     *
+     * QUAN TRỌNG: "readings.db" cần là READWRITE + WAL vì cả app (đọc) và
+     * AiReadingProcessor / UserReadingData (ghi) đều phải dùng CHUNG MỘT
+     * connection này. Trước đây mỗi bên tự mở connection riêng tới cùng file
+     * → 2 connection tranh khoá file SQLite, gây SQLiteDatabaseLockedException
+     * hoặc đọc dữ liệu nửa-vá khi AI đang ghi đúng lúc user đang mở bài đọc.
+     *
+     * WAL (Write-Ahead Logging) cho phép nhiều reader đọc đồng thời với
+     * đúng 1 writer mà không bị khoá nhau — đây là cách giải quyết gốc,
+     * không phải chỉ né tránh bằng delay/lock ở tầng app.
+     *
+     * "dict.db" chỉ đọc, không ai ghi → vẫn mở READONLY như cũ.
+     */
+    private fun openDatabase(
+        context: Context,
+        fileName: String,
+        readWrite: Boolean = false,
+    ): SQLiteDatabase {
         val prefs     = context.getSharedPreferences("db_checksums", Context.MODE_PRIVATE)
         val prefKey   = "md5_$fileName"
         val assetPath = "databases/$fileName"
@@ -248,11 +267,17 @@ class ReadingDatabase private constructor(context: Context) {
             Log.d("ReadingDB", "$fileName | DB đã mới nhất, bỏ qua copy")
         }
 
-        return SQLiteDatabase.openDatabase(
-            dbFile.absolutePath,
-            null,
-            SQLiteDatabase.OPEN_READONLY
-        )
+        val flags = if (readWrite) SQLiteDatabase.OPEN_READWRITE else SQLiteDatabase.OPEN_READONLY
+        val database = SQLiteDatabase.openDatabase(dbFile.absolutePath, null, flags)
+
+        if (readWrite) {
+            // Bật WAL: reader (app đang hiển thị bài đọc) và writer (AI processor)
+            // không còn khoá lẫn nhau nữa.
+            database.enableWriteAheadLogging()
+            Log.d("ReadingDB", "$fileName | đã bật WAL mode")
+        }
+
+        return database
     }
 
     private fun md5OfStream(stream: java.io.InputStream): String {
