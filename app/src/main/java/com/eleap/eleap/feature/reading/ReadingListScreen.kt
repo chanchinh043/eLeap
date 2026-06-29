@@ -27,13 +27,24 @@ fun ReadingListScreen(
     val context = LocalContext.current
     val vm: ReadingViewModel = viewModel(factory = ReadingViewModel.Factory(context))
     val readings by vm.readings.collectAsState()
+    val aiStatusMessage by vm.aiStatusMessage.collectAsState()
 
-    // Bài đang chờ xác nhận xoá — null nghĩa là dialog đóng
     var pendingDeleteReading by remember { mutableStateOf<Reading?>(null) }
 
-    // Reload mỗi khi màn hình này được hiển thị — bắt được bài mới user vừa thêm
+    val snackbarHostState = remember { SnackbarHostState() }
+
+    // Hiển thị thông báo từ AI processing (chạy trong viewModelScope)
+    LaunchedEffect(aiStatusMessage) {
+        val msg = aiStatusMessage ?: return@LaunchedEffect
+        snackbarHostState.showSnackbar(message = msg, duration = SnackbarDuration.Short)
+        vm.consumeAiStatusMessage()
+    }
+
+    // Reload danh sách + kích hoạt AI xử lý ngầm mỗi khi màn hình được hiển thị
     LaunchedEffect(Unit) {
         vm.reloadReadings()
+        // triggerAiProcessing dùng viewModelScope → không bị cancel khi navigate
+        vm.triggerAiProcessing(context)
     }
 
     // ── Confirm dialog xoá ────────────────────────────────────────────────────
@@ -63,6 +74,7 @@ fun ReadingListScreen(
     }
 
     Scaffold(
+        snackbarHost = { SnackbarHost(snackbarHostState) },
         topBar = {
             TopAppBar(
                 title = { Text("Reading") },
@@ -103,7 +115,7 @@ fun ReadingListScreen(
 private fun ReadingCard(
     reading: Reading,
     onClick: () -> Unit,
-    onDelete: (() -> Unit)?,        // null = không hiện nút xoá (bài có sẵn)
+    onDelete: (() -> Unit)?,
 ) {
     Card(
         modifier = Modifier
@@ -117,7 +129,6 @@ private fun ReadingCard(
                 .padding(start = 16.dp, top = 16.dp, bottom = 16.dp, end = 8.dp),
             verticalAlignment = Alignment.CenterVertically,
         ) {
-            // ── Nội dung chính ───────────────────────────────────────────────
             Column(modifier = Modifier.weight(1f)) {
                 Text(
                     text  = reading.titleEn ?: "",
@@ -137,7 +148,6 @@ private fun ReadingCard(
                 }
             }
 
-            // ── Nút xoá — chỉ hiện với bài user tự tạo ──────────────────────
             if (onDelete != null) {
                 IconButton(onClick = onDelete) {
                     Icon(

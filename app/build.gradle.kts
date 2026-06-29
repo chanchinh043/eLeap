@@ -6,6 +6,17 @@ plugins {
     alias(libs.plugins.hilt)
 }
 
+fun getLocalProperty(key: String): String {
+    val file = rootProject.file("local.properties")
+    return if (file.exists()) {
+        file.readLines()
+            .firstOrNull { it.startsWith("$key=") }
+            ?.substringAfter("=")
+            ?.trim()
+            ?: ""
+    } else ""
+}
+
 android {
     namespace = "com.eleap.eleap"
     compileSdk = 36
@@ -18,6 +29,12 @@ android {
         versionName = "1.0"
 
         testInstrumentationRunner = "androidx.test.runner.AndroidJUnitRunner"
+
+        buildConfigField(
+            "String",
+            "OPENAI_API_KEY",
+            "\"${getLocalProperty("OPENAI_API_KEY")}\""
+        )
     }
 
     buildTypes {
@@ -35,11 +52,6 @@ android {
         targetCompatibility = JavaVersion.VERSION_17
     }
 
-    compileOptions {
-        sourceCompatibility = JavaVersion.VERSION_17
-        targetCompatibility = JavaVersion.VERSION_17
-    }
-
     kotlin {
         compilerOptions {
             jvmTarget.set(org.jetbrains.kotlin.gradle.dsl.JvmTarget.JVM_17)
@@ -48,6 +60,7 @@ android {
 
     buildFeatures {
         compose = true
+        buildConfig = true
     }
 }
 

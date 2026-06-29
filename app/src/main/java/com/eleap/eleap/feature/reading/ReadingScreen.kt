@@ -1,5 +1,6 @@
 package com.eleap.eleap.feature.reading
 
+import android.util.Log
 import androidx.compose.foundation.background
 import androidx.compose.foundation.gestures.awaitEachGesture
 import androidx.compose.foundation.gestures.awaitFirstDown
@@ -52,6 +53,7 @@ fun ReadingScreen(
     val selectedDictEntry by vm.selectedDictEntry.collectAsState()
     val isDictExpanded    by vm.isDictExpanded.collectAsState()
     val savedWordIds      by vm.savedWordIds.collectAsState()
+    val aiCompletedId     by vm.aiCompletedReadingId.collectAsState()
 
     val prefs = remember { context.getSharedPreferences("reading_settings", android.content.Context.MODE_PRIVATE) }
     var fontSize by remember { mutableStateOf(prefs.getInt("font_size", 16)) }
@@ -59,8 +61,18 @@ fun ReadingScreen(
     var anchorInfo   by remember { mutableStateOf<PopupAnchorInfo?>(null) }
     var viewportRect by remember { mutableStateOf<Rect?>(null) }
 
+    // Load bài lần đầu
     LaunchedEffect(readingId) {
         vm.loadReading(readingId)
+    }
+
+    // Khi AI xử lý xong bài đang mở → force reload để hiển thị dữ liệu đầy đủ
+    LaunchedEffect(aiCompletedId) {
+        if (aiCompletedId == readingId) {
+            Log.d("ReadingScreen", "AI xong readingId=$readingId → reload")
+            vm.loadReading(readingId)   // cachedReadingId đã bị xoá bởi notifyAiCompleted
+            vm.consumeAiCompleted()
+        }
     }
 
     // ── WordPopup ─────────────────────────────────────────────────────────────

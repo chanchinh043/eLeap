@@ -15,6 +15,8 @@ import com.eleap.eleap.feature.reading.data.SentencePhrase
 import com.eleap.eleap.feature.reading.data.SentenceWord
 import com.eleap.eleap.feature.reading.ui.UserDatabase
 import com.eleap.eleap.feature.userreading.UserReadingRepository
+import com.eleap.eleap.feature.userreading.processSingleReading
+import com.eleap.eleap.feature.userreading.processUnhandledReadings
 import kotlinx.coroutines.Dispatchers
 import kotlinx.coroutines.flow.MutableStateFlow
 import kotlinx.coroutines.flow.StateFlow
@@ -53,28 +55,84 @@ class ReadingViewModel(
     private val _savedWordIds = MutableStateFlow<Set<Int>>(emptySet())
     val savedWordIds: StateFlow<Set<Int>> = _savedWordIds
 
+    // Snackbar message từ AI processing — UI collect để hiển thị
+    private val _aiStatusMessage = MutableStateFlow<String?>(null)
+    val aiStatusMessage: StateFlow<String?> = _aiStatusMessage
+
+    fun consumeAiStatusMessage() { _aiStatusMessage.value = null }
+
+    // ── Notify ReadingScreen khi AI xử lý xong bài đang mở ───────────────────
+    private val _aiCompletedReadingId = MutableStateFlow<Int>(-1)
+    val aiCompletedReadingId: StateFlow<Int> = _aiCompletedReadingId
+
+    fun notifyAiCompleted(readingId: Int) {
+        invalidateReadingCache(readingId)
+        _aiCompletedReadingId.value = readingId
+    }
+
+    fun consumeAiCompleted() {
+        _aiCompletedReadingId.value = -1
+    }
+
+    private fun invalidateReadingCache(readingId: Int) {
+        if (cachedReadingId == readingId) {
+            cachedReadingId = -1
+        }
+        repository.invalidateReadingCache(readingId)
+    }
+
     private var cachedReadingId: Int = -1
 
-    // Context lưu lại để khởi tạo UserReadingRepository khi cần xoá bài
-    private var appContext: Context? = null
-
     init {
-        // Đăng ký instance để UserReadingRepository có thể gọi invalidateCache()
         ReadingRepository.instance = repository
         loadReadings()
         refreshSavedWordIds()
     }
 
-    // ── Tải danh sách bài đọc — luôn reload khi được gọi ─────────────────────
-    // ReadingListScreen gọi hàm này mỗi lần compose, nhưng Repository có cache
-    // nên chỉ thực sự query DB khi cache bị xoá (sau khi user thêm / xoá bài).
+    // ─────────────────────────────────────────────────────────────────────────
+    // AI processing
+    // ─────────────────────────────────────────────────────────────────────────
+
+    /**
+     * Xử lý DUY NHẤT 1 bài vừa insert — gọi ngay sau saveUserReading() trả về readingId.
+     * Không scan toàn bảng, gọi API đúng 1 lần, không bao giờ bỏ sót (withLock).
+     * viewModelScope → không bị cancel khi navigate.
+     */
+    fun processSingleReading(context: Context, readingId: Int) {
+        val appCtx = context.applicationContext
+        viewModelScope.launch(Dispatchers.IO) {
+            processSingleReading(appCtx, readingId) { msg ->
+                _aiStatusMessage.value = msg
+            }
+        }
+    }
+
+    /**
+     * Safety-net: quét toàn bộ bài tồn đọng (is_ai_processed = 0).
+     * Gọi từ ReadingListScreen.LaunchedEffect để xử lý bài bị bỏ sót
+     * do crash, mất mạng, v.v. Dùng tryLock nên bỏ qua nếu đang bận —
+     * bài mới đã được processSingleReading lo rồi.
+     * viewModelScope → không bị cancel khi navigate.
+     */
+    fun triggerAiProcessing(context: Context) {
+        val appCtx = context.applicationContext
+        viewModelScope.launch(Dispatchers.IO) {
+            processUnhandledReadings(appCtx) { msg ->
+                _aiStatusMessage.value = msg
+            }
+        }
+    }
+
+    // ─────────────────────────────────────────────────────────────────────────
+    // Readings list
+    // ─────────────────────────────────────────────────────────────────────────
+
     fun loadReadings() {
         viewModelScope.launch {
             _readings.value = repository.getAllReadings()
         }
     }
 
-    // ── Reload danh sách từ DB (bỏ qua cache) — gọi sau khi thêm / xoá bài ──
     fun reloadReadings() {
         viewModelScope.launch {
             repository.invalidateListCache()
@@ -82,6 +140,10 @@ class ReadingViewModel(
             Log.d("ReadingVM", "reloadReadings: ${_readings.value.size} bài")
         }
     }
+
+    // ─────────────────────────────────────────────────────────────────────────
+    // Reading detail
+    // ─────────────────────────────────────────────────────────────────────────
 
     fun loadReading(readingId: Int) {
         if (readingId == cachedReadingId) {
@@ -97,31 +159,24 @@ class ReadingViewModel(
 
             Log.d("ReadingVM", "readingId=$readingId | sentences=${result.size} | time=${elapsed}ms")
 
-            _sentences.value    = result
-            cachedReadingId     = readingId
+            _sentences.value        = result
+            cachedReadingId         = readingId
             _isLoadingReading.value = false
 
             launch { repository.preloadDictForReading(result) }
         }
     }
 
-    // ── Xoá bài đọc do user tự tạo ───────────────────────────────────────────
-    /**
-     * Chỉ gọi cho bài có isAiProcessed = false (bài user tự tạo).
-     * Sau khi xoá xong, tự reload danh sách để UI cập nhật ngay.
-     */
     fun deleteReading(readingId: Int, context: Context) {
         viewModelScope.launch {
             val ctx  = context.applicationContext
             val repo = UserReadingRepository.getInstance(ctx)
             val ok   = repo.deleteUserReading(readingId)
             if (ok) {
-                // Xoá cached sentences của bài vừa xoá nếu đang hiển thị
                 if (cachedReadingId == readingId) {
-                    _sentences.value  = emptyList()
-                    cachedReadingId   = -1
+                    _sentences.value = emptyList()
+                    cachedReadingId  = -1
                 }
-                // Reload danh sách (cache đã bị invalidate bên trong deleteUserReading)
                 _readings.value = repository.getAllReadings()
                 Log.d("ReadingVM", "deleteReading OK: readingId=$readingId")
             } else {
@@ -129,6 +184,10 @@ class ReadingViewModel(
             }
         }
     }
+
+    // ─────────────────────────────────────────────────────────────────────────
+    // Word / sentence interaction
+    // ─────────────────────────────────────────────────────────────────────────
 
     fun refreshSavedWordIds() {
         viewModelScope.launch {
@@ -154,10 +213,10 @@ class ReadingViewModel(
     }
 
     fun dismissWordPopup() {
-        _selectedWord.value     = null
-        _selectedPhrase.value   = null
+        _selectedWord.value      = null
+        _selectedPhrase.value    = null
         _selectedDictEntry.value = null
-        _isDictExpanded.value   = false
+        _isDictExpanded.value    = false
     }
 
     fun onSentenceClick(sentence: ReadingSentence) {
@@ -168,6 +227,10 @@ class ReadingViewModel(
     fun dismissSentencePopup() {
         _selectedSentence.value = null
     }
+
+    // ─────────────────────────────────────────────────────────────────────────
+    // Factory (singleton)
+    // ─────────────────────────────────────────────────────────────────────────
 
     class Factory(private val context: Context) : ViewModelProvider.Factory {
         override fun <T : ViewModel> create(modelClass: Class<T>): T {
@@ -186,6 +249,8 @@ class ReadingViewModel(
 
         companion object {
             @Volatile private var INSTANCE: ReadingViewModel? = null
+
+            fun getInstance(): ReadingViewModel? = INSTANCE
         }
     }
 }

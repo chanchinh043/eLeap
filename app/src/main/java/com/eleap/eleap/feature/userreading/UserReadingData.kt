@@ -226,14 +226,17 @@ class UserReadingRepository private constructor(context: Context) {
      * Tách nội dung thành câu rồi lưu vào readings.db.
      * Sau khi lưu xong, invalidate cache của ReadingRepository để
      * ReadingListScreen tải lại danh sách và hiển thị bài mới.
+     *
+     * Trả về reading_id mới (Long), hoặc -1L nếu thất bại.
+     * Caller dùng readingId này để gọi processSingleReading() ngay lập tức.
      */
-    suspend fun saveUserReading(title: String, content: String): Boolean =
+    suspend fun saveUserReading(title: String, content: String): Long =
         withContext(Dispatchers.IO) {
             try {
                 val sentences = parseContent(content)
                 if (sentences.isEmpty()) {
                     Log.w("UserReadingRepo", "Nội dung không có câu nào sau khi tách")
-                    return@withContext false
+                    return@withContext -1L
                 }
                 val now = SimpleDateFormat("yyyy-MM-dd HH:mm:ss", Locale.getDefault())
                     .format(Date())
@@ -249,10 +252,10 @@ class UserReadingRepository private constructor(context: Context) {
                     Log.d("UserReadingRepo",
                         "saveUserReading OK: reading_id=$id, sentences=${sentences.size}")
                 }
-                id != -1L
+                id
             } catch (e: Exception) {
                 Log.e("UserReadingRepo", "saveUserReading error", e)
-                false
+                -1L
             }
         }
 
