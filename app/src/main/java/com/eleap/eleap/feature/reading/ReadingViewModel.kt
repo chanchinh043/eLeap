@@ -18,10 +18,12 @@ import com.eleap.eleap.feature.userreading.UserReadingRepository
 import com.eleap.eleap.feature.userreading.processSingleReading
 import com.eleap.eleap.feature.userreading.processUnhandledReadings
 import kotlinx.coroutines.Dispatchers
+import kotlinx.coroutines.channels.Channel
 import kotlinx.coroutines.flow.MutableStateFlow
 import kotlinx.coroutines.flow.SharingStarted
 import kotlinx.coroutines.flow.StateFlow
 import kotlinx.coroutines.flow.combine
+import kotlinx.coroutines.flow.receiveAsFlow
 import kotlinx.coroutines.flow.stateIn
 import kotlinx.coroutines.launch
 import kotlinx.coroutines.withContext
@@ -78,11 +80,14 @@ class ReadingViewModel(
     private val _savedWordIds = MutableStateFlow<Set<Int>>(emptySet())
     val savedWordIds: StateFlow<Set<Int>> = _savedWordIds
 
-    // Snackbar message từ AI processing — UI collect để hiển thị
-    private val _aiStatusMessage = MutableStateFlow<String?>(null)
-    val aiStatusMessage: StateFlow<String?> = _aiStatusMessage
-
-    fun consumeAiStatusMessage() { _aiStatusMessage.value = null }
+    // Thông báo trạng thái AI (snackbar) — dùng Channel, KHÔNG dùng StateFlow.
+    // StateFlow luôn replay giá trị hiện tại cho collector mới → nếu user back
+    // ra giữa lúc snackbar đang hiện (chưa kịp tiêu thụ xong giá trị), giá trị
+    // cũ vẫn còn trong StateFlow và hiện lại ngay khi quay lại màn hình.
+    // Channel chỉ gửi value cho ĐÚNG 1 collector, 1 lần duy nhất, không lưu lại
+    // sau khi đã nhận — đúng bản chất "sự kiện one-shot" của thông báo này.
+    private val _aiStatusEvents = Channel<String>(capacity = Channel.BUFFERED)
+    val aiStatusEvents = _aiStatusEvents.receiveAsFlow()
 
     // ── Notify ReadingScreen khi AI xử lý xong bài đang mở ───────────────────
     private val _aiCompletedReadingId = MutableStateFlow<Int>(-1)
@@ -128,7 +133,7 @@ class ReadingViewModel(
         val appCtx = context.applicationContext
         viewModelScope.launch(Dispatchers.IO) {
             processSingleReading(appCtx, readingId) { msg ->
-                _aiStatusMessage.value = msg
+                _aiStatusEvents.send(msg)
             }
         }
     }
@@ -144,7 +149,7 @@ class ReadingViewModel(
         val appCtx = context.applicationContext
         viewModelScope.launch(Dispatchers.IO) {
             processUnhandledReadings(appCtx) { msg ->
-                _aiStatusMessage.value = msg
+                _aiStatusEvents.send(msg)
             }
         }
     }

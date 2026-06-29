@@ -27,17 +27,20 @@ fun ReadingListScreen(
     val context = LocalContext.current
     val vm: ReadingViewModel = viewModel(factory = ReadingViewModel.Factory(context))
     val readings by vm.readings.collectAsState()
-    val aiStatusMessage by vm.aiStatusMessage.collectAsState()
 
     var pendingDeleteReading by remember { mutableStateOf<Reading?>(null) }
 
     val snackbarHostState = remember { SnackbarHostState() }
 
-    // Hiển thị thông báo từ AI processing (chạy trong viewModelScope)
-    LaunchedEffect(aiStatusMessage) {
-        val msg = aiStatusMessage ?: return@LaunchedEffect
-        snackbarHostState.showSnackbar(message = msg, duration = SnackbarDuration.Short)
-        vm.consumeAiStatusMessage()
+    // Hiển thị thông báo từ AI processing — collect trực tiếp từ Flow event
+    // one-shot (Channel), KHÔNG dùng collectAsState(). Mỗi message chỉ được
+    // gửi và nhận đúng 1 lần; Channel không "replay" giá trị cũ cho collector
+    // mới như StateFlow, nên dù back ra/vào màn hình nhiều lần, mỗi thông báo
+    // cũng chỉ hiện đúng 1 lần duy nhất.
+    LaunchedEffect(Unit) {
+        vm.aiStatusEvents.collect { msg ->
+            snackbarHostState.showSnackbar(message = msg, duration = SnackbarDuration.Short)
+        }
     }
 
     // Reload danh sách + kích hoạt AI xử lý ngầm mỗi khi màn hình được hiển thị
