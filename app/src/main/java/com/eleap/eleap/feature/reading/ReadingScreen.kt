@@ -340,27 +340,66 @@ private fun WordClickableRow(
         }
     ) {
         words.forEachIndexed { index, word ->
+            val token = word.textEn ?: ""
+
+            // Tách dấu kết câu (. ? !) dính ở cuối token ra khỏi phần "từ" thật.
+            // Nếu token toàn là dấu câu (hiếm gặp) thì không tách, giữ nguyên.
+            val punctSuffix = Regex("[.?!]+$").find(token)?.value ?: ""
+            val core  = token.removeSuffix(punctSuffix).ifEmpty { token }
+            val punct = if (core == token) "" else punctSuffix
+
             val selected = highlightRange?.contains(index) == true
-            val isSaved  = word.wordId in savedWordIds
-            Text(
-                text  = word.textEn ?: "",
-                style = MaterialTheme.typography.bodyLarge.copy(fontSize = fontSize.sp),
-                color = when {
-                    selected -> MaterialTheme.colorScheme.onPrimary
-                    isSaved  -> MaterialTheme.colorScheme.tertiary
-                    else     -> MaterialTheme.colorScheme.primary
-                },
+            // Đang bôi đen CẢ câu (2+ từ, tức là tra câu) hay chỉ 1 từ (tra từ)?
+            val isSentenceHighlight = highlightRange?.let { it.first != it.last } == true
+            val isSaved = word.wordId in savedWordIds
+
+            val coreColor = when {
+                selected -> MaterialTheme.colorScheme.onPrimary
+                isSaved  -> MaterialTheme.colorScheme.tertiary
+                else     -> MaterialTheme.colorScheme.primary
+            }
+            val coreBg = if (selected) MaterialTheme.colorScheme.primary else Color.Transparent
+
+            // Dấu . ? ! chỉ được tô nền khi đang bôi cả câu (tra câu).
+            // Khi chỉ chọn riêng từ này (tra từ) thì dấu câu giữ màu chữ thường.
+            val punctSelected = selected && isSentenceHighlight
+            val punctColor = if (punctSelected) MaterialTheme.colorScheme.onPrimary
+            else MaterialTheme.colorScheme.primary
+            val punctBg = if (punctSelected) MaterialTheme.colorScheme.primary else Color.Transparent
+
+            Row(
+                verticalAlignment = Alignment.CenterVertically,
                 modifier = Modifier
                     .onGloballyPositioned { c ->
+                        // Bounds gộp cả core + punct → hit-test/anchor không đổi so với trước
                         localBounds[index]  = Rect(c.positionInParent(), c.size.toSize())
                         windowBounds[index] = c.boundsInWindow()
                     }
-                    .background(
-                        if (selected) MaterialTheme.colorScheme.primary else Color.Transparent,
-                        RoundedCornerShape(4.dp)
+            ) {
+                Text(
+                    text  = core,
+                    style = MaterialTheme.typography.bodyLarge.copy(fontSize = fontSize.sp),
+                    color = coreColor,
+                    modifier = Modifier
+                        .background(coreBg, RoundedCornerShape(4.dp))
+                        .padding(
+                            start  = 2.dp,
+                            top    = 2.dp,
+                            bottom = 2.dp,
+                            end    = if (punct.isEmpty()) 2.dp else 0.dp
+                        )
+                )
+                if (punct.isNotEmpty()) {
+                    Text(
+                        text  = punct,
+                        style = MaterialTheme.typography.bodyLarge.copy(fontSize = fontSize.sp),
+                        color = punctColor,
+                        modifier = Modifier
+                            .background(punctBg, RoundedCornerShape(4.dp))
+                            .padding(start = 0.dp, top = 2.dp, bottom = 2.dp, end = 2.dp)
                     )
-                    .padding(horizontal = 2.dp, vertical = 2.dp)
-            )
+                }
+            }
         }
     }
 }

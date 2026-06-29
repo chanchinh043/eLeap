@@ -13,6 +13,7 @@ import androidx.activity.ComponentActivity
 import androidx.lifecycle.viewmodel.compose.viewModel
 import com.eleap.eleap.feature.reading.ReadingListScreen
 import com.eleap.eleap.feature.reading.ReadingScreen
+import com.eleap.eleap.feature.userreading.UserReadingScreen
 
 import com.eleap.eleap.feature.vocab.VocabScreen
 import com.eleap.eleap.feature.vocab.VocabStudyScreen
@@ -26,17 +27,19 @@ private enum class Screen {
     MAIN,
     READING_LIST,
     READING,
+    ADD_READING,            // ← mới: UserReadingScreen
     VOCAB,
     VOCAB_STUDY,
     VOCAB_READING,
     VOCAB_READING_STUDY,
-    READING_VOCAB,          // VocabReadingScreen từ luồng reading
-    READING_VOCAB_STUDY,    // VocabStudyScreen từ luồng reading
+    READING_VOCAB,
+    READING_VOCAB_STUDY,
 }
 
 private fun previousScreenOf(screen: Screen): Screen = when (screen) {
     Screen.READING_LIST        -> Screen.MAIN
     Screen.READING             -> Screen.READING_LIST
+    Screen.ADD_READING         -> Screen.READING_LIST  // ← quay về danh sách
     Screen.VOCAB               -> Screen.MAIN
     Screen.VOCAB_STUDY         -> Screen.VOCAB
     Screen.VOCAB_READING       -> Screen.READING
@@ -46,7 +49,6 @@ private fun previousScreenOf(screen: Screen): Screen = when (screen) {
     Screen.MAIN                -> Screen.MAIN
 }
 
-// ── Các màn hiện FloatingVocabButton (chỉ luồng từ Reading) ──────────────────
 private val FLOAT_BUTTON_SCREENS = setOf(
     Screen.READING,
     Screen.READING_VOCAB,
@@ -90,12 +92,10 @@ fun MainScreen() {
 
     val readingStudyPool = remember(readingVocabList, readingSelectedByTab, readingStudyTabName) {
         val selectedIds = readingSelectedByTab[readingStudyTabName] ?: emptySet()
-        // Lọc từ thuộc đúng tab — dùng cùng ngưỡng với VocabReadingScreen.readingTab()
-        // tránh ID cũ còn trong prefs nhưng từ đã chuyển sang tab khác do count thay đổi
         val tabWords = when (readingStudyTabName) {
             "NEW"    -> readingVocabList.filter { it.count < 30 }
             "RECENT" -> readingVocabList.filter { it.count in 30..70 }
-            else     -> readingVocabList  // "ALL"
+            else     -> readingVocabList
         }
         tabWords.filter { it.id in selectedIds }
     }
@@ -118,13 +118,12 @@ fun MainScreen() {
             onBack = { goBack() }
         )
 
-        // ── FloatingVocabButton: hiện ở READING, READING_VOCAB, READING_VOCAB_STUDY ──
         if (screen in FLOAT_BUTTON_SCREENS) {
             FloatingVocabButton(
                 isOnVocabScreen = screen != Screen.READING,
                 onToggle = {
                     if (screen == Screen.READING) {
-                        vm.resetReadingActiveTab()  // mở VocabReading → luôn về tab "Mới nhất"
+                        vm.resetReadingActiveTab()
                         screen = Screen.READING_VOCAB
                     } else {
                         screen = Screen.READING
@@ -153,13 +152,19 @@ private fun ScreenContent(
         )
 
         Screen.READING_LIST -> ReadingListScreen(
-            onBack         = onBack,
-            onReadingClick = { readingId -> onSelectReading(readingId) }
+            onBack            = onBack,
+            onReadingClick    = { readingId -> onSelectReading(readingId) },
+            onAddReadingClick = { onNavigateTo(Screen.ADD_READING) }   // ← mới
         )
 
         Screen.READING -> ReadingScreen(
             readingId = selectedReadingId ?: return,
             onBack    = onBack
+        )
+
+        Screen.ADD_READING -> UserReadingScreen(         // ← mới
+            onBack  = onBack,
+            onSaved = onBack                             // sau khi lưu → quay về danh sách
         )
 
         Screen.VOCAB -> VocabScreen(
@@ -185,7 +190,6 @@ private fun ScreenContent(
             onBack = onBack
         )
 
-        // ── Màn từ vựng gắn với bài đọc (truy cập qua FloatingVocabButton) ──
         Screen.READING_VOCAB -> VocabReadingScreen(
             readingId    = selectedReadingId ?: return,
             onBack       = onBack,

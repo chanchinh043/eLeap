@@ -1,8 +1,4 @@
 // ReadingRepository.kt
-// File gộp từ: Entities.kt, ReadingDao.kt, ReadingDatabase.kt, ReadingRepository.kt
-// Vẫn nằm trong package com.eleap.eleap.feature.reading.data (thư mục data/)
-// → Các file khác (ReadingViewModel, ReadingListScreen, ReadingScreen, WordPopup, SaveWord,
-//   SentencePopup) KHÔNG cần đổi import gì cả.
 package com.eleap.eleap.feature.reading.data
 
 import android.content.Context
@@ -15,10 +11,9 @@ import kotlinx.coroutines.Dispatchers
 import kotlinx.coroutines.withContext
 
 // ═════════════════════════════════════════════════════════════════════════════
-// 1. ENTITIES (trước đây ở Entities.kt)
+// 1. ENTITIES
 // ═════════════════════════════════════════════════════════════════════════════
 
-// ── readings ──────────────────────────────────────────────────────────────────
 data class Reading(
     val readingId: Int,
     val titleEn: String?,
@@ -27,9 +22,9 @@ data class Reading(
     val topic: String?,
     val createdAt: String?,
     val updatedAt: String?,
+    val userId: Int? = null,              // null = bài hệ thống; có giá trị = bài user tạo → hiện nút xoá
 )
 
-// ── reading_sentences ─────────────────────────────────────────────────────────
 data class ReadingSentence(
     val sentenceId: Int,
     val readingId: Int,
@@ -38,10 +33,9 @@ data class ReadingSentence(
     val sentenceExplanation: String?,
     val sentenceOrder: Int,
     val phrases: List<SentencePhrase> = emptyList(),
-    val words: List<SentenceWord>   = emptyList(),
+    val words: List<SentenceWord>     = emptyList(),
 )
 
-// ── sentence_phrases ──────────────────────────────────────────────────────────
 data class SentencePhrase(
     val phraseId: Int,
     val sentenceId: Int,
@@ -52,7 +46,6 @@ data class SentencePhrase(
     val endWordOrder: Int,
 )
 
-// ── sentence_words ────────────────────────────────────────────────────────────
 data class SentenceWord(
     val wordId: Int,
     val sentenceId: Int,
@@ -66,7 +59,6 @@ data class SentenceWord(
     val wordFormExplanation: String?,
 )
 
-// ── dict (dict.db) ────────────────────────────────────────────────────────────
 data class DictEntry(
     val word: String,
     val ipa: String?,
@@ -76,20 +68,19 @@ data class DictEntry(
 )
 
 // ═════════════════════════════════════════════════════════════════════════════
-// 2. DAO (trước đây ở ReadingDao.kt)
+// 2. DAO
 // ═════════════════════════════════════════════════════════════════════════════
 
 class ReadingDao(
     private val db: SQLiteDatabase,
     private val dictDb: SQLiteDatabase,
 ) {
-
-    // ── Flow 2: danh sách bài đọc ─────────────────────────────────────────────
     fun getAllReadings(): List<Reading> {
         val list = mutableListOf<Reading>()
         val cursor = db.rawQuery("SELECT * FROM readings ORDER BY reading_id ASC", null)
         cursor.use {
             while (it.moveToNext()) {
+                val userIdIdx = it.getColumnIndex("user_id")
                 list.add(
                     Reading(
                         readingId = it.getInt(it.getColumnIndexOrThrow("reading_id")),
@@ -99,6 +90,9 @@ class ReadingDao(
                         topic     = it.getString(it.getColumnIndexOrThrow("topic")),
                         createdAt = it.getString(it.getColumnIndexOrThrow("created_at")),
                         updatedAt = it.getString(it.getColumnIndexOrThrow("updated_at")),
+                        // user_id NULL = bài hệ thống; có giá trị = bài user tạo
+                        userId    = if (userIdIdx == -1 || it.isNull(userIdIdx)) null
+                        else it.getInt(userIdIdx),
                     )
                 )
             }
@@ -106,7 +100,6 @@ class ReadingDao(
         return list
     }
 
-    // ── Flow 3: load sentences của 1 bài ─────────────────────────────────────
     fun getSentencesByReadingId(readingId: Int): List<ReadingSentence> {
         val list = mutableListOf<ReadingSentence>()
         val cursor = db.rawQuery(
@@ -130,7 +123,6 @@ class ReadingDao(
         return list
     }
 
-    // ── Flow 3: load phrases của 1 sentence ──────────────────────────────────
     fun getPhrasesBySentenceId(sentenceId: Int): List<SentencePhrase> {
         val list = mutableListOf<SentencePhrase>()
         val cursor = db.rawQuery(
@@ -141,13 +133,13 @@ class ReadingDao(
             while (it.moveToNext()) {
                 list.add(
                     SentencePhrase(
-                        phraseId           = it.getInt(it.getColumnIndexOrThrow("phrase_id")),
-                        sentenceId         = it.getInt(it.getColumnIndexOrThrow("sentence_id")),
-                        textEn             = it.getString(it.getColumnIndexOrThrow("text_en")),
-                        textVi             = it.getString(it.getColumnIndexOrThrow("text_vi")),
-                        phraseExplanation  = it.getString(it.getColumnIndexOrThrow("phrase_explanation")),
-                        startWordOrder     = it.getInt(it.getColumnIndexOrThrow("start_word_order")),
-                        endWordOrder       = it.getInt(it.getColumnIndexOrThrow("end_word_order")),
+                        phraseId          = it.getInt(it.getColumnIndexOrThrow("phrase_id")),
+                        sentenceId        = it.getInt(it.getColumnIndexOrThrow("sentence_id")),
+                        textEn            = it.getString(it.getColumnIndexOrThrow("text_en")),
+                        textVi            = it.getString(it.getColumnIndexOrThrow("text_vi")),
+                        phraseExplanation = it.getString(it.getColumnIndexOrThrow("phrase_explanation")),
+                        startWordOrder    = it.getInt(it.getColumnIndexOrThrow("start_word_order")),
+                        endWordOrder      = it.getInt(it.getColumnIndexOrThrow("end_word_order")),
                     )
                 )
             }
@@ -155,7 +147,6 @@ class ReadingDao(
         return list
     }
 
-    // ── Flow 3: load words của 1 sentence ────────────────────────────────────
     fun getWordsBySentenceId(sentenceId: Int): List<SentenceWord> {
         val list = mutableListOf<SentenceWord>()
         val cursor = db.rawQuery(
@@ -184,12 +175,9 @@ class ReadingDao(
         return list
     }
 
-    // ── Background: tra nghĩa từ điển cho danh sách từ (dict.db) ─────────────
     fun getDictEntries(words: List<String>): List<DictEntry> {
         if (words.isEmpty()) return emptyList()
         val list = mutableListOf<DictEntry>()
-
-        // Chia batch để không vượt giới hạn placeholder của SQLite (~999)
         words.chunked(500).forEach { chunk ->
             val placeholders = chunk.joinToString(",") { "?" }
             val cursor = dictDb.rawQuery(
@@ -215,43 +203,25 @@ class ReadingDao(
 }
 
 // ═════════════════════════════════════════════════════════════════════════════
-// 3. DATABASE (trước đây ở ReadingDatabase.kt)
+// 3. DATABASE
 // ═════════════════════════════════════════════════════════════════════════════
 
-/**
- * Mở readings.db và dict.db từ assets bằng SQLite thuần — không dùng Room.
- *
- * Cơ chế tự động cập nhật:
- *   - Tính MD5 của file trong assets và file đang dùng trên thiết bị.
- *   - Nếu khác nhau (DB đã được thay bằng file mới) → tự động copy đè, không cần xóa app.
- *   - Hash được lưu trong SharedPreferences để tránh tính lại mỗi lần khởi động.
- *
- * Lưu ý: readings.db và dict.db là DB chỉ đọc từ assets — không chứa dữ liệu người dùng.
- * Dữ liệu người dùng (từ đã lưu, v.v.) nằm trong users.db — không bị ảnh hưởng.
- */
 class ReadingDatabase private constructor(context: Context) {
 
-    val db: SQLiteDatabase       // readings.db
-    val dictDb: SQLiteDatabase   // dict.db
+    val db: SQLiteDatabase
+    val dictDb: SQLiteDatabase
 
     init {
         db     = openDatabase(context, "readings.db")
         dictDb = openDatabase(context, "dict.db")
     }
 
-    /**
-     * Mở một DB từ assets.
-     * Tự động copy lại từ assets nếu:
-     *   1. File chưa tồn tại trên thiết bị (lần đầu cài app), hoặc
-     *   2. MD5 của file assets khác với MD5 đã lưu (DB đã được cập nhật trong APK mới).
-     */
     private fun openDatabase(context: Context, fileName: String): SQLiteDatabase {
-        val prefs      = context.getSharedPreferences("db_checksums", Context.MODE_PRIVATE)
-        val prefKey    = "md5_$fileName"
-        val assetPath  = "databases/$fileName"
-        val dbFile     = File(context.getDatabasePath(fileName).absolutePath)
+        val prefs     = context.getSharedPreferences("db_checksums", Context.MODE_PRIVATE)
+        val prefKey   = "md5_$fileName"
+        val assetPath = "databases/$fileName"
+        val dbFile    = File(context.getDatabasePath(fileName).absolutePath)
 
-        // ── Tính MD5 của file trong assets ───────────────────────────────────
         val assetMd5 = context.assets.open(assetPath).use { md5OfStream(it) }
         Log.d("ReadingDB", "$fileName | asset MD5  = $assetMd5")
 
@@ -263,9 +233,11 @@ class ReadingDatabase private constructor(context: Context) {
         if (needsCopy) {
             Log.d("ReadingDB", "$fileName | DB thay đổi → copy lại từ assets")
             dbFile.parentFile?.mkdirs()
-            // Đóng DB cũ nếu đang mở (trường hợp singleton bị tái tạo)
-            try { SQLiteDatabase.openDatabase(dbFile.absolutePath, null, SQLiteDatabase.OPEN_READONLY).close() }
-            catch (_: Exception) { }
+            try {
+                SQLiteDatabase.openDatabase(
+                    dbFile.absolutePath, null, SQLiteDatabase.OPEN_READONLY
+                ).close()
+            } catch (_: Exception) { }
 
             context.assets.open(assetPath).use { input ->
                 FileOutputStream(dbFile).use { output -> input.copyTo(output) }
@@ -283,7 +255,6 @@ class ReadingDatabase private constructor(context: Context) {
         )
     }
 
-    /** Tính MD5 của một InputStream, trả về chuỗi hex 32 ký tự. */
     private fun md5OfStream(stream: java.io.InputStream): String {
         val digest = MessageDigest.getInstance("MD5")
         val buffer = ByteArray(8192)
@@ -305,19 +276,14 @@ class ReadingDatabase private constructor(context: Context) {
 }
 
 // ═════════════════════════════════════════════════════════════════════════════
-// 4. REPOSITORY (trước đây ở ReadingRepository.kt)
+// 4. REPOSITORY
 // ═════════════════════════════════════════════════════════════════════════════
 
 class ReadingRepository(private val dao: ReadingDao) {
 
-    // ── Cache RAM ─────────────────────────────────────────────────────────────
     private var readingListCache: List<Reading>? = null
-
-    // key = readingId, value = danh sách sentence (đã gắn phrases + words)
     private val readingCache = mutableMapOf<Int, List<ReadingSentence>>()
-
-    // key = word đã normalize (lowercase, trim), value = DictEntry (dict.db)
-    private val dictCache = mutableMapOf<String, DictEntry>()
+    private val dictCache    = mutableMapOf<String, DictEntry>()
 
     // ── Flow 2 ────────────────────────────────────────────────────────────────
     suspend fun getAllReadings(): List<Reading> = withContext(Dispatchers.IO) {
@@ -341,8 +307,6 @@ class ReadingRepository(private val dao: ReadingDao) {
         }
     }
 
-    // ── Background: nạp Dict RAM cho các từ xuất hiện trong bài đọc ──────────
-    // Gọi sau khi bài đọc đã hiển thị, không chặn UI.
     suspend fun preloadDictForReading(sentences: List<ReadingSentence>) =
         withContext(Dispatchers.IO) {
             val keysToLoad = sentences
@@ -358,16 +322,38 @@ class ReadingRepository(private val dao: ReadingDao) {
             }
         }
 
-    // ── Flow 6: lookup nghĩa từ điển từ Dict RAM (không truy cập DB) ─────────
     fun getDictEntry(textEn: String?): DictEntry? =
         normalizeWord(textEn)?.let { dictCache[it] }
 
-    // ── Chuẩn hoá từ để tra cứu: lowercase, bỏ khoảng trắng + dấu câu ở 2 đầu ──
     private fun normalizeWord(text: String?): String? {
         val cleaned = text
             ?.trim()
             ?.lowercase()
             ?.replace(Regex("^[^a-z']+|[^a-z']+$"), "")
         return cleaned?.ifEmpty { null }
+    }
+
+    // ── Xoá cache để force reload sau khi user thêm / xoá bài ───────────────
+    fun invalidateListCache() {
+        readingListCache = null
+        Log.d("ReadingRepository", "invalidateListCache: danh sách sẽ được tải lại")
+    }
+
+    fun invalidateReadingCache(readingId: Int) {
+        readingCache.remove(readingId)
+        Log.d("ReadingRepository", "invalidateReadingCache: readingId=$readingId")
+    }
+
+    companion object {
+        // Trỏ đến instance đang dùng — được set bởi ReadingViewModel.Factory
+        @Volatile var instance: ReadingRepository? = null
+
+        /**
+         * Xoá toàn bộ list cache từ bên ngoài (UserReadingRepository gọi sau khi insert/delete).
+         * ViewModel sẽ tự reload khi màn hình ReadingList được hiển thị lại.
+         */
+        fun invalidateCache() {
+            instance?.invalidateListCache()
+        }
     }
 }
