@@ -13,6 +13,8 @@ import androidx.activity.ComponentActivity
 import androidx.lifecycle.viewmodel.compose.viewModel
 import com.eleap.eleap.feature.reading.ReadingListScreen
 import com.eleap.eleap.feature.reading.ReadingScreen
+import com.eleap.eleap.feature.myreading.MyReadingListScreen
+import com.eleap.eleap.feature.myreading.AddMyReadingScreen
 
 import com.eleap.eleap.feature.vocab.VocabScreen
 import com.eleap.eleap.feature.vocab.VocabStudyScreen
@@ -26,6 +28,8 @@ private enum class Screen {
     MAIN,
     READING_LIST,
     READING,
+    MY_READING,              // "Bài đọc của tôi" — mở từ menu danh mục ở ReadingListScreen
+    ADD_MY_READING,          // "Thêm bài đọc" — mở từ menu ở MyReadingListScreen
     VOCAB,
     VOCAB_STUDY,
     VOCAB_READING,
@@ -34,9 +38,15 @@ private enum class Screen {
     READING_VOCAB_STUDY,    // VocabStudyScreen từ luồng reading
 }
 
+// ── Các màn được coi là "điểm vào" của luồng Reading từ trang chủ ───────────
+// Bấm back ở các màn này sẽ về MAIN (không quay lại lẫn nhau).
+private val READING_ENTRY_SCREENS = setOf(Screen.READING_LIST, Screen.MY_READING)
+
 private fun previousScreenOf(screen: Screen): Screen = when (screen) {
     Screen.READING_LIST        -> Screen.MAIN
     Screen.READING             -> Screen.READING_LIST
+    Screen.MY_READING          -> Screen.MAIN   // ← back từ MyReading về thẳng trang chủ
+    Screen.ADD_MY_READING      -> Screen.MY_READING
     Screen.VOCAB               -> Screen.MAIN
     Screen.VOCAB_STUDY         -> Screen.VOCAB
     Screen.VOCAB_READING       -> Screen.READING
@@ -53,6 +63,25 @@ private val FLOAT_BUTTON_SCREENS = setOf(
     Screen.READING_VOCAB_STUDY,
 )
 
+// ── Persist lastReadingEntryScreen qua SharedPreferences ─────────────────────
+// Để khi tắt app mở lại, bấm "Reading" từ trang chủ vẫn vào đúng màn
+// (READING_LIST hoặc MY_READING) đã ghé thăm gần nhất ở lần dùng app trước.
+private const val PREFS_NAME = "main_screen_prefs"
+private const val KEY_LAST_READING_ENTRY_SCREEN = "last_reading_entry_screen"
+
+private fun loadLastReadingEntryScreen(context: android.content.Context): Screen {
+    val prefs = context.getSharedPreferences(PREFS_NAME, android.content.Context.MODE_PRIVATE)
+    val saved = prefs.getString(KEY_LAST_READING_ENTRY_SCREEN, Screen.READING_LIST.name)
+    val parsed = runCatching { Screen.valueOf(saved ?: Screen.READING_LIST.name) }
+        .getOrDefault(Screen.READING_LIST)
+    return if (parsed in READING_ENTRY_SCREENS) parsed else Screen.READING_LIST
+}
+
+private fun saveLastReadingEntryScreen(context: android.content.Context, screen: Screen) {
+    val prefs = context.getSharedPreferences(PREFS_NAME, android.content.Context.MODE_PRIVATE)
+    prefs.edit().putString(KEY_LAST_READING_ENTRY_SCREEN, screen.name).apply()
+}
+
 @Composable
 fun MainScreen() {
     var screen by remember { mutableStateOf(Screen.MAIN) }
@@ -61,6 +90,14 @@ fun MainScreen() {
 
     val context  = LocalContext.current
     val activity = context as ComponentActivity
+
+    // ── Nhớ lần cuối vào luồng Reading là READING_LIST hay MY_READING ───────
+    // Đọc từ SharedPreferences khi khởi tạo → giữ nguyên qua lần tắt/mở app.
+    // Mặc định READING_LIST. Cập nhật (kèm lưu prefs) mỗi khi vào 1 trong 2
+    // màn này, dùng làm đích đến khi bấm "Reading" từ trang chủ.
+    var lastReadingEntryScreen by remember {
+        mutableStateOf(loadLastReadingEntryScreen(context))
+    }
     val vm: VocabViewModel = viewModel(
         viewModelStoreOwner = activity,
         factory = VocabViewModel.Factory(context)
@@ -72,6 +109,14 @@ fun MainScreen() {
     val dictEntry          by vm.selectedDictEntry.collectAsState()
     val isDictExpanded     by vm.isDictExpanded.collectAsState()
     val anchorRect         by vm.anchorRect.collectAsState()
+
+    fun navigateTo(target: Screen) {
+        if (target in READING_ENTRY_SCREENS) {
+            lastReadingEntryScreen = target
+            saveLastReadingEntryScreen(context, target)   // ← lưu prefs, sống sót qua tắt/mở app
+        }
+        screen = target
+    }
 
     fun goBack() { screen = previousScreenOf(screen) }
 
@@ -102,12 +147,13 @@ fun MainScreen() {
 
     Box(modifier = Modifier.fillMaxSize()) {
         ScreenContent(
-            screen            = screen,
-            selectedReadingId = selectedReadingId,
-            vocabStudyPool    = vocabList.filter { it.selected == 1 },
-            readingStudyPool  = readingStudyPool,
-            onNavigateTo      = { screen = it },
-            onSelectReading   = { id ->
+            screen                  = screen,
+            selectedReadingId       = selectedReadingId,
+            vocabStudyPool          = vocabList.filter { it.selected == 1 },
+            readingStudyPool        = readingStudyPool,
+            lastReadingEntryScreen  = lastReadingEntryScreen,
+            onNavigateTo            = { navigateTo(it) },
+            onSelectReading         = { id ->
                 selectedReadingId = id
                 screen = Screen.READING
             },
@@ -141,6 +187,7 @@ private fun ScreenContent(
     selectedReadingId: Int?,
     vocabStudyPool: List<UserVocabularyEntry>,
     readingStudyPool: List<UserVocabularyEntry>,
+    lastReadingEntryScreen: Screen,
     onNavigateTo: (Screen) -> Unit,
     onSelectReading: (Int) -> Unit,
     onReadingStudyClick: (tabName: String, nextScreen: Screen) -> Unit,
@@ -148,18 +195,31 @@ private fun ScreenContent(
 ) {
     when (screen) {
         Screen.MAIN -> MainContent(
-            onReadingClick = { onNavigateTo(Screen.READING_LIST) },
+            // ── Bấm "Reading" từ trang chủ → vào màn đã ghé thăm gần nhất
+            //    (READING_LIST hoặc MY_READING) ──────────────────────────────
+            onReadingClick = { onNavigateTo(lastReadingEntryScreen) },
             onVocabClick   = { onNavigateTo(Screen.VOCAB) }
         )
 
         Screen.READING_LIST -> ReadingListScreen(
-            onBack         = onBack,
-            onReadingClick = { readingId -> onSelectReading(readingId) }
+            onBack           = onBack,
+            onReadingClick   = { readingId -> onSelectReading(readingId) },
+            onMyReadingClick = { onNavigateTo(Screen.MY_READING) }
         )
 
         Screen.READING -> ReadingScreen(
             readingId = selectedReadingId ?: return,
             onBack    = onBack
+        )
+
+        Screen.MY_READING -> MyReadingListScreen(
+            onBack            = onBack,
+            onAddClick        = { onNavigateTo(Screen.READING_LIST) },
+            onAddReadingClick = { onNavigateTo(Screen.ADD_MY_READING) }
+        )
+
+        Screen.ADD_MY_READING -> AddMyReadingScreen(
+            onBack = onBack
         )
 
         Screen.VOCAB -> VocabScreen(
