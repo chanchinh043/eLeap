@@ -15,6 +15,28 @@ private const val OPENAI_MODEL = "gpt-4.1-mini"
 private const val OPENAI_URL   = "https://api.openai.com/v1/chat/completions"
 private const val MAX_TOKENS   = 16000
 
+// Logcat cắt bớt mỗi dòng log dài (~4000 ký tự), nên prompt/response dài phải
+// được chia nhỏ thành nhiều dòng Log.d liên tiếp mới xem được đầy đủ trong
+// adb logcat / Android Studio Logcat.
+private const val LOG_CHUNK_SIZE = 3500
+
+internal fun logLong(tag: String, label: String, content: String) {
+    if (content.isEmpty()) {
+        Log.d(tag, "$label: (rỗng)")
+        return
+    }
+    if (content.length <= LOG_CHUNK_SIZE) {
+        Log.d(tag, "$label (${content.length} ký tự):\n$content")
+        return
+    }
+    val chunks = content.chunked(LOG_CHUNK_SIZE)
+    Log.d(tag, "$label (${content.length} ký tự, chia ${chunks.size} phần để log) ↓↓↓")
+    chunks.forEachIndexed { i, chunk ->
+        Log.d(tag, "$label [${i + 1}/${chunks.size}]:\n$chunk")
+    }
+    Log.d(tag, "$label ↑↑↑ (hết)")
+}
+
 // ─────────────────────────────────────────────────────────────────────────────
 // 1. Raw data classes — kết quả parse từ JSON trả về của AI
 // ─────────────────────────────────────────────────────────────────────────────
@@ -124,7 +146,9 @@ Quy tắc bắt buộc:
 // 3. Gọi OpenAI API — trả về nội dung text thô của message
 // ─────────────────────────────────────────────────────────────────────────────
 
-internal suspend fun callOpenAI(prompt: String): String = withContext(Dispatchers.IO) {
+internal suspend fun callOpenAI(prompt: String, logLabel: String = ""): String = withContext(Dispatchers.IO) {
+    val tagLabel = if (logLabel.isBlank()) "" else " [$logLabel]"
+
     val requestBody = JSONObject().apply {
         put("model", OPENAI_MODEL)
         put("max_tokens", MAX_TOKENS)
@@ -136,6 +160,10 @@ internal suspend fun callOpenAI(prompt: String): String = withContext(Dispatcher
         })
     }.toString()
 
+    // ── Log toàn bộ PROMPT trước khi gửi ────────────────────────────────────
+    Log.d(TAG, "═══ GỬI REQUEST đến OpenAI$tagLabel | model=$OPENAI_MODEL | lúc=${nowStr()} ═══")
+    logLong(TAG, "PROMPT gửi đi$tagLabel", prompt)
+
     val url  = URL(OPENAI_URL)
     val conn = url.openConnection() as HttpURLConnection
     conn.requestMethod = "POST"
@@ -145,30 +173,65 @@ internal suspend fun callOpenAI(prompt: String): String = withContext(Dispatcher
     conn.connectTimeout = 30_000
     conn.readTimeout    = 120_000
 
-    conn.outputStream.use { it.write(requestBody.toByteArray(Charsets.UTF_8)) }
+    val startedAt = System.currentTimeMillis()
 
-    val responseCode = conn.responseCode
-    val stream = if (responseCode in 200..299) conn.inputStream else conn.errorStream
-    val response = stream.bufferedReader(Charsets.UTF_8).use { it.readText() }
-    conn.disconnect()
+    val responseCode: Int
+    val response: String
+    try {
+        conn.outputStream.use { it.write(requestBody.toByteArray(Charsets.UTF_8)) }
+
+        responseCode = conn.responseCode
+        val stream = if (responseCode in 200..299) conn.inputStream else conn.errorStream
+        response = stream.bufferedReader(Charsets.UTF_8).use { it.readText() }
+    } catch (e: Exception) {
+        val elapsed = System.currentTimeMillis() - startedAt
+        Log.e(TAG, "═══ LỖI KẾT NỐI khi gọi OpenAI$tagLabel sau ${elapsed}ms: ${e.javaClass.simpleName}: ${e.message} ═══", e)
+        throw e
+    } finally {
+        conn.disconnect()
+    }
+
+    val elapsed = System.currentTimeMillis() - startedAt
+
+    // ── Log toàn bộ RESPONSE thô nhận về (dù thành công hay lỗi HTTP) ──────
+    Log.d(TAG, "═══ NHẬN RESPONSE từ OpenAI$tagLabel | HTTP $responseCode | ${elapsed}ms | lúc=${nowStr()} ═══")
+    logLong(TAG, "RESPONSE thô (raw body)$tagLabel", response)
 
     if (responseCode !in 200..299) {
+        Log.e(TAG, "═══ OpenAI trả lỗi HTTP $responseCode$tagLabel — xem RESPONSE thô phía trên ═══")
         throw RuntimeException("OpenAI HTTP $responseCode: $response")
     }
 
-    JSONObject(response)
+    val content = JSONObject(response)
         .getJSONArray("choices")
         .getJSONObject(0)
         .getJSONObject("message")
         .getString("content")
         .trim()
+
+    // ── Log riêng phần "content" (chính là JSON bài đọc AI trả về) ──────────
+    logLong(TAG, "NỘI DUNG AI TRẢ VỀ (message.content)$tagLabel", content)
+
+    content
 }
+
+private fun nowStr(): String =
+    java.text.SimpleDateFormat("HH:mm:ss.SSS", java.util.Locale.getDefault())
+        .format(java.util.Date())
 
 // ─────────────────────────────────────────────────────────────────────────────
 // 4. Parse JSON trả về của AI → AiReading
 // ─────────────────────────────────────────────────────────────────────────────
 
-internal fun parseAiResponse(raw: String): AiReading {
+internal fun parseAiResponse(raw: String): AiReading = try {
+    parseAiResponseInternal(raw)
+} catch (e: Exception) {
+    Log.e(TAG, "═══ LỖI PARSE JSON từ AI: ${e.javaClass.simpleName}: ${e.message} ═══", e)
+    logLong(TAG, "RAW gây lỗi parse", raw)
+    throw e
+}
+
+private fun parseAiResponseInternal(raw: String): AiReading {
     val cleaned = raw
         .removePrefix("```json").removePrefix("```")
         .removeSuffix("```")

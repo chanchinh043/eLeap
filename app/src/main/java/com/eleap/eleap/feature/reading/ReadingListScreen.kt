@@ -30,18 +30,12 @@ fun ReadingListScreen(
 
     var pendingDeleteReading by remember { mutableStateOf<Reading?>(null) }
 
-    val snackbarHostState = remember { SnackbarHostState() }
-
-    // Hiển thị thông báo từ AI processing — collect trực tiếp từ Flow event
-    // one-shot (Channel), KHÔNG dùng collectAsState(). Mỗi message chỉ được
-    // gửi và nhận đúng 1 lần; Channel không "replay" giá trị cũ cho collector
-    // mới như StateFlow, nên dù back ra/vào màn hình nhiều lần, mỗi thông báo
-    // cũng chỉ hiện đúng 1 lần duy nhất.
-    LaunchedEffect(Unit) {
-        vm.aiStatusEvents.collect { msg ->
-            snackbarHostState.showSnackbar(message = msg, duration = SnackbarDuration.Short)
-        }
-    }
+    // Lưu ý: thông báo trạng thái AI ("Đang dịch...", "Đã dịch xong...") KHÔNG
+    // còn được collect/hiện snackbar ở đây nữa — đã chuyển lên MainScreen
+    // (root composable) để snackbar hiện được ở BẤT KỲ màn hình nào, không
+    // chỉ riêng màn hình danh sách này. aiStatusEvents là Channel one-shot,
+    // chỉ 1 collector trong toàn app nhận được mỗi message, nên không được
+    // collect lại ở đây kẻo giành mất message của collector global.
 
     // Reload danh sách + kích hoạt AI xử lý ngầm mỗi khi màn hình được hiển thị
     LaunchedEffect(Unit) {
@@ -77,7 +71,6 @@ fun ReadingListScreen(
     }
 
     Scaffold(
-        snackbarHost = { SnackbarHost(snackbarHostState) },
         topBar = {
             TopAppBar(
                 title = { Text("Reading") },

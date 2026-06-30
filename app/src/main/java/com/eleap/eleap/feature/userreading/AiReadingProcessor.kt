@@ -23,6 +23,47 @@ private const val TAG = "AiReadingProcessor"
 private val processingMutex = Mutex()
 
 // ─────────────────────────────────────────────────────────────────────────────
+// 0. Cooldown chống "bão request" khi 1 bài cứ lỗi liên tục
+// ─────────────────────────────────────────────────────────────────────────────
+//
+// Watchdog ở MainScreen gọi processUnhandledReadings mỗi ~15s. Không có cơ
+// chế này, 1 bài lỗi mãi (API key sai, AI luôn trả JSON sai cấu trúc, mạng
+// down kéo dài...) sẽ bị gọi lại OpenAI MỖI 15 GIÂY vô thời hạn → tốn phí +
+// token vô ích, đồng thời snackbar lỗi cứ hiện liên tục gây phiền.
+//
+// Backoff tăng dần (exponential) theo số lần lỗi LIÊN TIẾP của từng
+// readingId: lần 1 → chờ 30s, lần 2 → 1 phút, lần 3 → 2 phút, ..., tối đa
+// 10 phút. Chỉ lưu trong RAM (mất khi app bị kill) — chấp nhận được vì mục
+// đích chỉ là chặn spam trong 1 phiên chạy, không cần bền vững qua các lần
+// mở app (mở lại app thì được thử lại ngay, không bị "phạt" oan).
+private data class FailureState(val consecutiveFailures: Int, val retryAfterMs: Long)
+
+private val failureState = mutableMapOf<Int, FailureState>()
+private const val FAILURE_COOLDOWN_BASE_MS = 30_000L        // 30 giây
+private const val FAILURE_COOLDOWN_MAX_MS  = 10 * 60_000L   // tối đa 10 phút
+
+private fun cooldownRemainingMs(readingId: Int): Long {
+    val state = failureState[readingId] ?: return 0L
+    return (state.retryAfterMs - System.currentTimeMillis()).coerceAtLeast(0L)
+}
+
+private fun isInCooldown(readingId: Int): Boolean = cooldownRemainingMs(readingId) > 0L
+
+private fun recordFailure(readingId: Int) {
+    val attempts = (failureState[readingId]?.consecutiveFailures ?: 0) + 1
+    val delayMs = (FAILURE_COOLDOWN_BASE_MS * (1L shl (attempts - 1).coerceAtMost(10)))
+        .coerceAtMost(FAILURE_COOLDOWN_MAX_MS)
+    failureState[readingId] = FailureState(attempts, System.currentTimeMillis() + delayMs)
+    Log.w(TAG, "reading_id=$readingId lỗi lần thứ $attempts liên tiếp → tạm ngừng thử lại bài này trong ${delayMs / 1000}s")
+}
+
+private fun clearFailure(readingId: Int) {
+    if (failureState.remove(readingId) != null) {
+        Log.d(TAG, "reading_id=$readingId xử lý thành công → đã xoá trạng thái cooldown trước đó")
+    }
+}
+
+// ─────────────────────────────────────────────────────────────────────────────
 // 1. DB helpers: đọc dữ liệu cần thiết từ readings.db
 // ─────────────────────────────────────────────────────────────────────────────
 
@@ -191,23 +232,28 @@ private suspend fun processOneReading(
     titleEn: String,
     onStatus: suspend (String) -> Unit,
 ) {
+    val label = "reading_id=$readingId"
     val sentences = getSentencesForReading(db, readingId)
     if (sentences.isEmpty()) {
-        Log.w(TAG, "reading_id=$readingId không có câu nào, bỏ qua.")
+        Log.w(TAG, "$label không có câu nào, bỏ qua.")
         return
     }
 
-    val rawJson = callOpenAI(buildPrompt(titleEn, sentences))
-    Log.d(TAG, "AI response length=${rawJson.length} for reading_id=$readingId")
+    Log.d(TAG, "▶▶▶ BẮT ĐẦU xử lý AI cho $label '$titleEn' (${sentences.size} câu)")
+
+    val prompt  = buildPrompt(titleEn, sentences)
+    val rawJson = callOpenAI(prompt, logLabel = label)
+    Log.d(TAG, "AI response length=${rawJson.length} for $label")
 
     val aiData = parseAiResponse(rawJson)
     writeAiResultToDb(db, readingId, aiData)
+    clearFailure(readingId)
     notifyCompleted(readingId)
 
     withContext(Dispatchers.Main) {
         onStatus("✓ Đã dịch xong: ${aiData.titleVi ?: titleEn}")
     }
-    Log.d(TAG, "processOneReading OK: reading_id=$readingId")
+    Log.d(TAG, "◀◀◀ HOÀN TẤT xử lý AI cho $label")
 }
 
 // ─────────────────────────────────────────────────────────────────────────────
@@ -227,6 +273,7 @@ suspend fun processSingleReading(
     readingId: Int,
     onStatus: suspend (String) -> Unit = {},
 ) = withContext(Dispatchers.IO) {
+    Log.d(TAG, "processSingleReading() được GỌI cho reading_id=$readingId (đang chờ mutex nếu có tác vụ khác đang chạy)")
     processingMutex.withLock {
         withWritableDb(context) { db ->
             // Idempotent check — tránh gọi API 2 lần nếu bài đã xử lý
@@ -237,6 +284,15 @@ suspend fun processSingleReading(
 
             if (alreadyDone) {
                 Log.d(TAG, "processSingleReading: reading_id=$readingId đã xử lý, bỏ qua.")
+                return@withWritableDb
+            }
+
+            // Cooldown check — nếu bài này vừa lỗi liên tiếp gần đây, chưa
+            // đến giờ thử lại thì bỏ qua (watchdog sẽ tự thử lại sau khi hết
+            // cooldown, không cần làm gì thêm ở đây).
+            if (isInCooldown(readingId)) {
+                val remainingSec = cooldownRemainingMs(readingId) / 1000
+                Log.d(TAG, "processSingleReading: reading_id=$readingId đang cooldown (còn ${remainingSec}s) do lỗi liên tiếp trước đó, bỏ qua.")
                 return@withWritableDb
             }
 
@@ -251,8 +307,10 @@ suspend fun processSingleReading(
             try {
                 processOneReading(db, readingId, titleEn, onStatus)
             } catch (e: Exception) {
-                Log.e(TAG, "processSingleReading error: reading_id=$readingId", e)
-                withContext(Dispatchers.Main) { onStatus("Lỗi dịch bài, sẽ thử lại sau.") }
+                Log.e(TAG, "✗✗✗ processSingleReading LỖI: reading_id=$readingId | ${e.javaClass.simpleName}: ${e.message}", e)
+                recordFailure(readingId)
+                val waitSec = cooldownRemainingMs(readingId) / 1000
+                withContext(Dispatchers.Main) { onStatus("Lỗi dịch bài, sẽ thử lại sau ${waitSec}s.") }
             }
         }
     }
@@ -283,9 +341,20 @@ suspend fun processUnhandledReadings(
 
     try {
         withWritableDb(context) { db ->
-            val pending = getPendingReadings(db)
+            val allPending = getPendingReadings(db)
+            // Lọc bỏ những bài đang trong cooldown do lỗi liên tiếp trước đó —
+            // tránh gọi OpenAI lặp lại vô ích cho bài chắc chắn sẽ lỗi tiếp.
+            val pending = allPending.filterNot { isInCooldown(it.readingId) }
+            val skippedByCooldown = allPending.size - pending.size
+
+            if (skippedByCooldown > 0) {
+                Log.d(TAG, "processUnhandledReadings: bỏ qua $skippedByCooldown bài đang cooldown do lỗi liên tiếp: " +
+                        allPending.filter { isInCooldown(it.readingId) }
+                            .joinToString { "${it.readingId}(còn ${cooldownRemainingMs(it.readingId) / 1000}s)" })
+            }
+
             if (pending.isEmpty()) {
-                Log.d(TAG, "processUnhandledReadings: không có bài nào tồn đọng.")
+                Log.d(TAG, "processUnhandledReadings: không có bài nào tồn đọng (ngoài cooldown).")
                 return@withWritableDb
             }
             Log.d(TAG, "processUnhandledReadings: ${pending.size} bài tồn đọng: ${pending.map { it.readingId }}")
@@ -297,8 +366,10 @@ suspend fun processUnhandledReadings(
                 try {
                     processOneReading(db, pr.readingId, pr.titleEn, onStatus)
                 } catch (e: Exception) {
-                    Log.e(TAG, "Lỗi xử lý reading_id=${pr.readingId}", e)
-                    withContext(Dispatchers.Main) { onStatus("Lỗi dịch bài: ${pr.titleEn}") }
+                    Log.e(TAG, "✗✗✗ processUnhandledReadings LỖI: reading_id=${pr.readingId} | ${e.javaClass.simpleName}: ${e.message}", e)
+                    recordFailure(pr.readingId)
+                    val waitSec = cooldownRemainingMs(pr.readingId) / 1000
+                    withContext(Dispatchers.Main) { onStatus("Lỗi dịch bài: ${pr.titleEn} (thử lại sau ${waitSec}s)") }
                     continue
                 }
             }

@@ -10,10 +10,15 @@ import androidx.compose.ui.Modifier
 import androidx.compose.ui.platform.LocalContext
 import androidx.compose.ui.unit.dp
 import androidx.activity.ComponentActivity
+import androidx.lifecycle.Lifecycle
+import androidx.lifecycle.compose.LocalLifecycleOwner
+import androidx.lifecycle.repeatOnLifecycle
 import androidx.lifecycle.viewmodel.compose.viewModel
 import com.eleap.eleap.feature.reading.ReadingListScreen
 import com.eleap.eleap.feature.reading.ReadingScreen
+import com.eleap.eleap.feature.reading.ReadingViewModel
 import com.eleap.eleap.feature.userreading.UserReadingScreen
+import kotlinx.coroutines.delay
 
 import com.eleap.eleap.feature.vocab.VocabScreen
 import com.eleap.eleap.feature.vocab.VocabStudyScreen
@@ -22,6 +27,14 @@ import com.eleap.eleap.feature.vocab.VocabViewModel
 import com.eleap.eleap.feature.vocab.VocabPopup
 import com.eleap.eleap.feature.reading.ui.UserVocabularyEntry
 import com.eleap.eleap.ui.FloatingVocabButton
+
+// Watchdog quét bài tồn đọng (is_ai_processed = 0) định kỳ — chạy nền cho
+// TOÀN BỘ app, không phụ thuộc đang đứng ở màn hình nào. Trước đây việc này
+// chỉ được kích hoạt trong LaunchedEffect(Unit) của ReadingListScreen, nên
+// nếu user thêm bài rồi rời khỏi màn hình danh sách trước khi AI xử lý xong
+// (hoặc lần gọi đầu tiên thất bại vì lỗi mạng/API), bài đó "im" cho tới khi
+// user quay lại đúng màn hình ReadingListScreen mới được thử lại.
+private const val AI_WATCHDOG_INTERVAL_MS = 15_000L
 
 private enum class Screen {
     MAIN,
@@ -74,6 +87,56 @@ fun MainScreen() {
     val dictEntry          by vm.selectedDictEntry.collectAsState()
     val isDictExpanded     by vm.isDictExpanded.collectAsState()
     val anchorRect         by vm.anchorRect.collectAsState()
+
+    // ReadingViewModel là singleton (Factory tự cache instance, xem
+    // ReadingViewModel.Factory) nên lấy ở đây cũng CHÍNH LÀ instance được
+    // ReadingListScreen / ReadingScreen / UserReadingScreen dùng — không tạo
+    // thêm state riêng, chỉ mượn để gọi triggerAiProcessing() ở tầng app.
+    val readingVm: ReadingViewModel = viewModel(
+        viewModelStoreOwner = activity,
+        factory = ReadingViewModel.Factory(context)
+    )
+
+    // ── Watchdog AI xử lý bài đọc — chạy ở cấp MainScreen (root composable),
+    //    tồn tại suốt vòng đời app, KHÔNG phụ thuộc đang ở screen nào. ───────
+    //    - Lần đầu chạy ngay khi mở app → bắt các bài tồn đọng từ phiên trước.
+    //    - Sau đó lặp lại mỗi AI_WATCHDOG_INTERVAL_MS → nếu lần gọi
+    //      processSingleReading ngay sau khi lưu bài bị lỗi (mất mạng, AI trả
+    //      JSON sai định dạng, v.v.) thì watchdog này sẽ tự động thử lại sau
+    //      tối đa ~15s, dù user đang ở màn hình Reading, Vocab, hay bất cứ
+    //      đâu — không cần quay lại ReadingListScreen mới chịu chạy lại.
+    //    - triggerAiProcessing() dùng tryLock nội bộ nên gọi dồn dập vẫn an
+    //      toàn, không bao giờ chạy chồng 2 lần cùng lúc.
+    //    - Bọc trong repeatOnLifecycle(STARTED): khi app bị đưa xuống nền
+    //      (home, khoá máy, app khác che lên...) vòng lặp TỰ ĐỘNG bị huỷ —
+    //      không gọi OpenAI hay query DB vô ích lúc user không nhìn vào app.
+    //      Khi quay lại foreground, repeatOnLifecycle tự khởi động lại vòng
+    //      lặp từ đầu (kích hoạt ngay 1 lần, không cần đợi đủ 15s).
+    val lifecycleOwner = LocalLifecycleOwner.current
+    LaunchedEffect(lifecycleOwner, readingVm) {
+        lifecycleOwner.lifecycle.repeatOnLifecycle(Lifecycle.State.STARTED) {
+            while (true) {
+                readingVm.triggerAiProcessing(context)
+                delay(AI_WATCHDOG_INTERVAL_MS)
+            }
+        }
+    }
+
+    // ── Snackbar trạng thái AI ("Đang dịch...", "Đã dịch xong...") — hiển thị
+    //    Ở CẤP MAINSCREEN (root), nên dù đang đứng ở màn hình nào (Reading,
+    //    Vocab, ADD_READING...) snackbar vẫn nổi lên trên cùng, không còn bị
+    //    "câm" chỉ vì không đứng ở ReadingListScreen. ───────────────────────
+    //    LƯU Ý: aiStatusEvents là Channel (one-shot, chỉ 1 consumer nhận được
+    //    mỗi message) → CHỈ collect ở DUY NHẤT một nơi trong toàn app (ở đây).
+    //    Nếu còn nơi khác cũng collect (vd ReadingListScreen) thì 2 collector
+    //    sẽ giành nhau message, snackbar hiện thất thường tuỳ nơi nào "nhanh
+    //    tay" nhận được — nên đã bỏ phần collect riêng ở ReadingListScreen.
+    val snackbarHostState = remember { SnackbarHostState() }
+    LaunchedEffect(Unit) {
+        readingVm.aiStatusEvents.collect { msg ->
+            snackbarHostState.showSnackbar(message = msg, duration = SnackbarDuration.Short)
+        }
+    }
 
     fun goBack() { screen = previousScreenOf(screen) }
 
@@ -131,6 +194,13 @@ fun MainScreen() {
                 }
             )
         }
+
+        // Snackbar AI status nổi trên TẤT CẢ màn hình con, vì nó là phần tử
+        // cuối cùng trong Box gốc của MainScreen (luôn vẽ đè lên trên cùng).
+        SnackbarHost(
+            hostState = snackbarHostState,
+            modifier  = Modifier.align(Alignment.BottomCenter)
+        )
     }
 }
 
