@@ -41,6 +41,9 @@ class ReadingViewModel(
     val selectedWord: StateFlow<SentenceWord?> = _selectedWord
 
     // ── Flow 6 (phrase): cụm từ chứa từ đang click ───────────────────────────
+    // State này dùng cho 2 vai trò khác nhau, phân biệt bởi selectedWord:
+    //   - selectedWord != null  → đây là phrase context bên trong WordPopup
+    //   - selectedWord == null  → đây là PhrasePopup độc lập (chế độ "P")
     private val _selectedPhrase = MutableStateFlow<SentencePhrase?>(null)
     val selectedPhrase: StateFlow<SentencePhrase?> = _selectedPhrase
 
@@ -158,6 +161,42 @@ class ReadingViewModel(
     // ── Flow 9: đóng SentencePopup ───────────────────────────────────────────
     fun dismissSentencePopup() {
         _selectedSentence.value = null
+    }
+
+    // ── Chế độ "P": kéo bôi đen ≥2 từ, TOÀN BỘ nằm trong 1 phrase → dịch cụm từ ──
+    // anchorWord: từ nơi ngón tay bắt đầu kéo (words[anchorIdx] ở ReadingScreen).
+    // ReadingScreen đã kiểm tra containment (mọi từ trong range cùng phraseId với
+    // anchorWord) trước khi gọi hàm này, nên ở đây chỉ cần tra phrase tương ứng.
+    // Nếu vì lý do nào đó không tìm thấy phrase (dữ liệu thiếu) → không làm gì cả,
+    // không mở popup nào (không còn fallback về WordPopup).
+    fun onPhraseRangeSelect(anchorWord: SentenceWord, sentence: ReadingSentence) {
+        val phrase = anchorWord.phraseId?.let { pid ->
+            sentence.phrases.find { it.phraseId == pid }
+        }
+
+        if (phrase == null) {
+            Log.d(
+                "ReadingVM",
+                "phraseRangeSelect: \"${anchorWord.textEn}\" không có phrase hợp lệ → bỏ qua"
+            )
+            return
+        }
+
+        // Đảm bảo không lẫn với vai trò "phrase context trong WordPopup"
+        _selectedWord.value = null
+        _selectedDictEntry.value = null
+        _isDictExpanded.value = false
+
+        _selectedPhrase.value = phrase
+        Log.d(
+            "ReadingVM",
+            "phraseRangeSelect: \"${anchorWord.textEn}\" → phrase=\"${phrase.textEn}\" (id=${phrase.phraseId})"
+        )
+    }
+
+    // ── Đóng PhrasePopup độc lập (chế độ "P") ─────────────────────────────────
+    fun dismissPhrasePopup() {
+        _selectedPhrase.value = null
     }
 
     // ── Factory singleton ─────────────────────────────────────────────────────
