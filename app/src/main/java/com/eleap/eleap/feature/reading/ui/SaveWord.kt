@@ -12,6 +12,8 @@ import androidx.compose.runtime.*
 import androidx.compose.ui.platform.LocalContext
 import com.eleap.eleap.feature.reading.data.SentenceWord
 import com.eleap.eleap.feature.reading.data.SentencePhrase
+import com.eleap.eleap.feature.reading.data.ReadingSentence
+import com.eleap.eleap.feature.reading.ReadingViewModel
 import java.text.SimpleDateFormat
 import java.util.*
 
@@ -31,6 +33,11 @@ data class UserVocabularyEntry(
     val createdAt: String,
     val count: Int = 0,
     val score: Int = 0,
+    // ── Snapshot ngữ cảnh tại thời điểm lưu — dùng để hiện trong VocabPopup ──
+    val phraseTextEn: String? = null,
+    val phraseTextVi: String? = null,
+    val sentenceTextEn: String? = null,
+    val sentenceTextVi: String? = null,
 )
 
 // ─────────────────────────────────────────────────────────────────────────────
@@ -73,6 +80,10 @@ class UserDatabase private constructor(context: Context) {
                     created_at         TEXT NOT NULL,
                     count       INTEGER NOT NULL DEFAULT 0,
                     score      INTEGER NOT NULL DEFAULT 0,
+                    phrase_text_en     TEXT,
+                    phrase_text_vi     TEXT,
+                    sentence_text_en   TEXT,
+                    sentence_text_vi   TEXT,
                     FOREIGN KEY (user_id) REFERENCES users(user_id)
                 )
                 """.trimIndent()
@@ -84,9 +95,15 @@ class UserDatabase private constructor(context: Context) {
                 db.execSQL("ALTER TABLE user_vocabulary ADD COLUMN count  INTEGER NOT NULL DEFAULT 0")
                 db.execSQL("ALTER TABLE user_vocabulary ADD COLUMN score INTEGER NOT NULL DEFAULT 0")
             }
+            if (oldVersion < 3) {
+                db.execSQL("ALTER TABLE user_vocabulary ADD COLUMN phrase_text_en   TEXT")
+                db.execSQL("ALTER TABLE user_vocabulary ADD COLUMN phrase_text_vi   TEXT")
+                db.execSQL("ALTER TABLE user_vocabulary ADD COLUMN sentence_text_en TEXT")
+                db.execSQL("ALTER TABLE user_vocabulary ADD COLUMN sentence_text_vi TEXT")
+            }
         }
 
-        companion object { const val DB_VERSION = 2 }
+        companion object { const val DB_VERSION = 3 }
     }
 
     fun saveWord(entry: UserVocabularyEntry): Boolean {
@@ -102,6 +119,10 @@ class UserDatabase private constructor(context: Context) {
                 put("created_at",         entry.createdAt)
                 put("count",       entry.count)
                 put("score",      entry.score)
+                put("phrase_text_en",     entry.phraseTextEn)
+                put("phrase_text_vi",     entry.phraseTextVi)
+                put("sentence_text_en",   entry.sentenceTextEn)
+                put("sentence_text_vi",   entry.sentenceTextVi)
             }
             val rowId = db.insert("user_vocabulary", null, cv)
             Log.d("UserDB", "saveWord: \"${entry.textEn}\" → rowId=$rowId")
@@ -132,6 +153,10 @@ class UserDatabase private constructor(context: Context) {
                     val idx = it.getColumnIndexOrThrow(col)
                     return if (it.isNull(idx)) null else it.getInt(idx)
                 }
+                fun nullableString(col: String): String? {
+                    val idx = it.getColumnIndexOrThrow(col)
+                    return if (it.isNull(idx)) null else it.getString(idx)
+                }
                 list.add(
                     UserVocabularyEntry(
                         id                = it.getInt(it.getColumnIndexOrThrow("id")),
@@ -145,6 +170,10 @@ class UserDatabase private constructor(context: Context) {
                         createdAt         = it.getString(it.getColumnIndexOrThrow("created_at")),
                         count             = it.getInt(it.getColumnIndexOrThrow("count")),
                         score             = it.getInt(it.getColumnIndexOrThrow("score")),
+                        phraseTextEn      = nullableString("phrase_text_en"),
+                        phraseTextVi      = nullableString("phrase_text_vi"),
+                        sentenceTextEn    = nullableString("sentence_text_en"),
+                        sentenceTextVi    = nullableString("sentence_text_vi"),
                     )
                 )
             }
@@ -202,9 +231,28 @@ class UserDatabase private constructor(context: Context) {
 // 3. SaveWordButton
 // ─────────────────────────────────────────────────────────────────────────────
 
+// ── Tự lấy text_en/text_vi của câu chứa word, giống hệt cách `phrase` đang ──
+// lấy dữ liệu: tìm trong danh sách `sentences` đã có sẵn trong RAM của
+// ReadingViewModel (đã load khi mở bài đọc), KHÔNG query lại DB.
+// Dùng khi caller không truyền sẵn `sentence` — tránh phải sửa WordPopup.kt
+// hay bất kỳ nơi nào khác đang gọi SaveWordButton.
+private fun findSentenceTexts(context: Context, sentenceId: Int): Pair<String?, String?>? {
+    return try {
+        val readingVm = ReadingViewModel.Factory(context).create(ReadingViewModel::class.java)
+        readingVm.sentences.value
+            .find { it.sentenceId == sentenceId }
+            ?.let { it.textEn to it.textVi }
+    } catch (e: Exception) {
+        Log.e("SaveWordButton", "findSentenceTexts error", e)
+        null
+    }
+}
+
 /**
  * @param word               Từ đang hiển thị trong popup
  * @param phrase             Cụm từ chứa từ đó (có thể null)
+ * @param sentence           Câu chứa từ đó (có thể null) — nếu không truyền,
+ *                           sẽ tự lấy từ readings.db theo word.sentenceId
  * @param onSaveStateChanged Callback gọi sau khi lưu hoặc bỏ lưu thành công —
  *                           dùng để ViewModel refresh savedWordIds → màu từ đổi ngay
  */
@@ -212,6 +260,7 @@ class UserDatabase private constructor(context: Context) {
 fun SaveWordButton(
     word: SentenceWord,
     phrase: SentencePhrase?,
+    sentence: ReadingSentence? = null,     // ← mặc định null, ưu tiên dùng nếu có
     onSaveStateChanged: () -> Unit = {},   // ← mới, mặc định rỗng để không break code cũ
 ) {
     val context = LocalContext.current
@@ -231,6 +280,11 @@ fun SaveWordButton(
         } else {
             val now = SimpleDateFormat("yyyy-MM-dd HH:mm:ss", Locale.getDefault())
                 .format(Date())
+            // Ưu tiên sentence được truyền sẵn; nếu không có thì tự tìm trong
+            // sentences (RAM) của ReadingViewModel theo word.sentenceId —
+            // giống hệt cách phrase đang lấy dữ liệu, không cần sửa nơi gọi.
+            val sentenceTexts = sentence?.let { it.textEn to it.textVi }
+                ?: findSentenceTexts(context, word.sentenceId)
             val entry = UserVocabularyEntry(
                 userId           = 0,
                 sourceSentenceId = word.sentenceId,
@@ -240,6 +294,10 @@ fun SaveWordButton(
                 textVi           = word.textVi,
                 selected         = 1,
                 createdAt        = now,
+                phraseTextEn     = phrase?.textEn,
+                phraseTextVi     = phrase?.textVi,
+                sentenceTextEn   = sentenceTexts?.first,
+                sentenceTextVi   = sentenceTexts?.second,
             )
             val saved = userDb.saveWord(entry)
             if (saved) {

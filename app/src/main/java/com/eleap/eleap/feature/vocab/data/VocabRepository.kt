@@ -77,6 +77,10 @@ class VocabRepository private constructor(
                         val idx = it.getColumnIndexOrThrow(col)
                         return if (it.isNull(idx)) null else it.getInt(idx)
                     }
+                    fun nullableString(col: String): String? {
+                        val idx = it.getColumnIndexOrThrow(col)
+                        return if (it.isNull(idx)) null else it.getString(idx)
+                    }
                     list.add(
                         UserVocabularyEntry(
                             id               = it.getInt(it.getColumnIndexOrThrow("id")),
@@ -90,6 +94,10 @@ class VocabRepository private constructor(
                             createdAt        = it.getString(it.getColumnIndexOrThrow("created_at")),
                             count            = it.getInt(it.getColumnIndexOrThrow("count")),
                             score            = it.getInt(it.getColumnIndexOrThrow("score")),
+                            phraseTextEn     = nullableString("phrase_text_en"),
+                            phraseTextVi     = nullableString("phrase_text_vi"),
+                            sentenceTextEn   = nullableString("sentence_text_en"),
+                            sentenceTextVi   = nullableString("sentence_text_vi"),
                         )
                     )
                 }
@@ -133,6 +141,10 @@ class VocabRepository private constructor(
                         val idx = it.getColumnIndexOrThrow(col)
                         return if (it.isNull(idx)) null else it.getInt(idx)
                     }
+                    fun nullableString(col: String): String? {
+                        val idx = it.getColumnIndexOrThrow(col)
+                        return if (it.isNull(idx)) null else it.getString(idx)
+                    }
                     list.add(
                         UserVocabularyEntry(
                             id               = it.getInt(it.getColumnIndexOrThrow("id")),
@@ -146,6 +158,10 @@ class VocabRepository private constructor(
                             createdAt        = it.getString(it.getColumnIndexOrThrow("created_at")),
                             count            = it.getInt(it.getColumnIndexOrThrow("count")),
                             score            = it.getInt(it.getColumnIndexOrThrow("score")),
+                            phraseTextEn     = nullableString("phrase_text_en"),
+                            phraseTextVi     = nullableString("phrase_text_vi"),
+                            sentenceTextEn   = nullableString("sentence_text_en"),
+                            sentenceTextVi   = nullableString("sentence_text_vi"),
                         )
                     )
                 }

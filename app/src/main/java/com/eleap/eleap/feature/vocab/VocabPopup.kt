@@ -175,6 +175,58 @@ fun VocabPopup(
                     )
                 }
 
+                // ── Cụm từ (phrase) chứa từ này ────────────────────────────
+                if (!entry.phraseTextEn.isNullOrBlank() || !entry.phraseTextVi.isNullOrBlank()) {
+                    HorizontalDivider()
+                    Column(verticalArrangement = Arrangement.spacedBy(2.dp)) {
+                        Text(
+                            text = "Cụm từ",
+                            style = MaterialTheme.typography.labelMedium,
+                            color = MaterialTheme.colorScheme.outline
+                        )
+                        entry.phraseTextEn?.takeIf { it.isNotBlank() }?.let {
+                            Text(
+                                text = it,
+                                style = MaterialTheme.typography.bodyMedium,
+                                fontStyle = FontStyle.Italic
+                            )
+                        }
+                        entry.phraseTextVi?.takeIf { it.isNotBlank() }?.let {
+                            Text(
+                                text = it,
+                                style = MaterialTheme.typography.bodyMedium,
+                                color = MaterialTheme.colorScheme.onSurfaceVariant
+                            )
+                        }
+                    }
+                }
+
+                // ── Câu (sentence) chứa từ này ──────────────────────────────
+                if (!entry.sentenceTextEn.isNullOrBlank() || !entry.sentenceTextVi.isNullOrBlank()) {
+                    HorizontalDivider()
+                    Column(verticalArrangement = Arrangement.spacedBy(2.dp)) {
+                        Text(
+                            text = "Câu ví dụ",
+                            style = MaterialTheme.typography.labelMedium,
+                            color = MaterialTheme.colorScheme.outline
+                        )
+                        entry.sentenceTextEn?.takeIf { it.isNotBlank() }?.let {
+                            Text(
+                                text = it,
+                                style = MaterialTheme.typography.bodyMedium,
+                                fontStyle = FontStyle.Italic
+                            )
+                        }
+                        entry.sentenceTextVi?.takeIf { it.isNotBlank() }?.let {
+                            Text(
+                                text = it,
+                                style = MaterialTheme.typography.bodyMedium,
+                                color = MaterialTheme.colorScheme.onSurfaceVariant
+                            )
+                        }
+                    }
+                }
+
                 // ── Từ điển ──────────────────────────────────────────────
                 if (dictEntry != null) {
                     HorizontalDivider()
