@@ -270,6 +270,9 @@ private class MyReadingDao(private val db: SQLiteDatabase) {
                 put("title_en",   titleEn)
                 put("created_at", now)
                 put("updated_at", now)
+                // Bài mới tạo trong app → chưa qua xử lý AI, luôn để false.
+                // Sẽ được đổi thành true ở bước xử lý AI riêng sau này.
+                put("is_ai_processed", false)
                 // title_vi, level, topic: chưa có → để NULL (chưa qua xử lý AI)
             }
             val readingRowId = db.insert("readings", null, cv)
