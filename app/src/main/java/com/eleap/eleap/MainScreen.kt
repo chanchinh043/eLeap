@@ -219,7 +219,8 @@ private fun ScreenContent(
         )
 
         Screen.ADD_MY_READING -> AddMyReadingScreen(
-            onBack = onBack
+            onBack  = onBack,
+            onSaved = { onNavigateTo(Screen.MY_READING) }
         )
 
         Screen.VOCAB -> VocabScreen(

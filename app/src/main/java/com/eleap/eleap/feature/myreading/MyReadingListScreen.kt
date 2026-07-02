@@ -11,23 +11,27 @@ import androidx.compose.foundation.background
 import androidx.compose.foundation.clickable
 import androidx.compose.foundation.interaction.MutableInteractionSource
 import androidx.compose.foundation.layout.*
+import androidx.compose.foundation.lazy.LazyColumn
+import androidx.compose.foundation.lazy.items
 import androidx.compose.material.icons.Icons
 import androidx.compose.material.icons.automirrored.filled.ArrowBack
 import androidx.compose.material.icons.filled.Add
+import androidx.compose.material.icons.filled.Delete
 import androidx.compose.material.icons.filled.Menu
 import androidx.compose.material3.*
-import androidx.compose.runtime.Composable
-import androidx.compose.runtime.mutableStateOf
-import androidx.compose.runtime.remember
-import androidx.compose.runtime.setValue
-import androidx.compose.runtime.getValue
+import androidx.compose.runtime.*
 import androidx.compose.ui.Alignment
 import androidx.compose.ui.Modifier
 import androidx.compose.ui.graphics.Color
+import androidx.compose.ui.platform.LocalContext
 import androidx.compose.ui.unit.dp
+import com.eleap.eleap.feature.myreading.data.MyReading
+import com.eleap.eleap.feature.myreading.data.MyReadingRepository
+import kotlinx.coroutines.launch
 
-// Khung màn hình "Bài đọc của tôi" — chỉ điều hướng trước,
-// nội dung/logic (danh sách bài đọc đã lưu, v.v.) sẽ thêm sau.
+// Màn "Bài đọc của tôi" — hiển thị danh sách bài đọc lấy từ myreading.db
+// qua MyReadingRepository. Bấm vào 1 bài chỉ log tạm (chưa có màn đọc riêng
+// cho MyReading — sẽ nối onReadingClick khi có màn đó).
 @OptIn(ExperimentalMaterial3Api::class)
 @Composable
 fun MyReadingListScreen(
@@ -35,6 +39,27 @@ fun MyReadingListScreen(
     onAddClick: () -> Unit,          // nút (+) FAB → chuyển sang ReadingListScreen
     onAddReadingClick: () -> Unit,   // ← mới: mục đầu tiên trong menu → AddMyReadingScreen
 ) {
+    val context = LocalContext.current
+    val scope   = rememberCoroutineScope()
+    val repo    = remember { MyReadingRepository.getInstance(context) }
+
+    var readings  by remember { mutableStateOf<List<MyReading>>(emptyList()) }
+    var isLoading by remember { mutableStateOf(true) }
+
+    // Load lại mỗi khi màn này được vào (kể cả sau khi quay lại từ AddMyReadingScreen,
+    // vì navigate trong MainScreen tạo lại composable này từ đầu).
+    LaunchedEffect(Unit) {
+        isLoading = true
+        readings  = repo.getAllReadings()
+        isLoading = false
+    }
+
+    fun reload() {
+        scope.launch {
+            readings = repo.getAllReadings()
+        }
+    }
+
     // Menu danh mục — mở từ icon ở TopAppBar (góc trên-phải), giống ReadingListScreen
     var showMenu by remember { mutableStateOf(false) }
 
@@ -61,25 +86,43 @@ fun MyReadingListScreen(
                 }
             }
         ) { padding ->
-            // TODO: khi có danh sách bài đọc thật, thay isEmpty bằng readings.isEmpty()
-            val isEmpty = true
-
-            if (isEmpty) {
-                EmptyMyReadingContent(
-                    modifier = Modifier
-                        .fillMaxSize()
-                        .padding(padding),
-                    onAddReadingClick = onAddReadingClick,
-                )
-            } else {
-                Box(
+            when {
+                isLoading && readings.isEmpty() -> Box(
                     modifier = Modifier
                         .fillMaxSize()
                         .padding(padding),
                     contentAlignment = Alignment.Center
                 ) {
-                    // TODO: danh sách bài đọc của tôi sẽ thêm sau
-                    Text("Chưa có nội dung")
+                    CircularProgressIndicator()
+                }
+
+                readings.isEmpty() -> EmptyMyReadingContent(
+                    modifier = Modifier
+                        .fillMaxSize()
+                        .padding(padding),
+                    onAddReadingClick = onAddReadingClick,
+                )
+
+                else -> LazyColumn(
+                    contentPadding = PaddingValues(16.dp),
+                    verticalArrangement = Arrangement.spacedBy(8.dp),
+                    modifier = Modifier
+                        .fillMaxSize()
+                        .padding(padding)
+                ) {
+                    items(readings, key = { it.readingId }) { reading ->
+                        MyReadingCard(
+                            reading  = reading,
+                            onClick  = { /* TODO: mở màn đọc MyReading khi có */ },
+                            onDelete = {
+                                scope.launch {
+                                    if (repo.deleteMyReading(reading.readingId)) {
+                                        reload()
+                                    }
+                                }
+                            }
+                        )
+                    }
                 }
             }
         }
@@ -92,6 +135,57 @@ fun MyReadingListScreen(
                 onAddReadingClick()
             }
         )
+    }
+}
+
+// ── Thẻ 1 bài đọc trong danh sách ────────────────────────────────────────────
+@Composable
+private fun MyReadingCard(
+    reading: MyReading,
+    onClick: () -> Unit,
+    onDelete: () -> Unit,
+) {
+    Card(
+        modifier = Modifier
+            .fillMaxWidth()
+            .clickable(onClick = onClick),
+        elevation = CardDefaults.cardElevation(defaultElevation = 2.dp)
+    ) {
+        Row(
+            modifier = Modifier
+                .fillMaxWidth()
+                .padding(horizontal = 16.dp, vertical = 12.dp),
+            verticalAlignment = Alignment.CenterVertically,
+        ) {
+            Column(modifier = Modifier.weight(1f)) {
+                Text(
+                    text  = reading.titleEn ?: "",
+                    style = MaterialTheme.typography.titleMedium
+                )
+                reading.titleVi?.let {
+                    Spacer(modifier = Modifier.height(4.dp))
+                    Text(
+                        text  = it,
+                        style = MaterialTheme.typography.bodyMedium,
+                        color = MaterialTheme.colorScheme.onSurfaceVariant
+                    )
+                }
+                if (reading.level != null || reading.topic != null) {
+                    Spacer(modifier = Modifier.height(4.dp))
+                    Row(horizontalArrangement = Arrangement.spacedBy(8.dp)) {
+                        reading.level?.let { AssistChip(onClick = {}, label = { Text(it) }) }
+                        reading.topic?.let { AssistChip(onClick = {}, label = { Text(it) }) }
+                    }
+                }
+            }
+            IconButton(onClick = onDelete) {
+                Icon(
+                    Icons.Filled.Delete,
+                    contentDescription = "Xoá bài đọc",
+                    tint = MaterialTheme.colorScheme.error
+                )
+            }
+        }
     }
 }
 
