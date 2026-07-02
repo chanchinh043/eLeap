@@ -423,6 +423,135 @@ class MyReadingDao(private val db: SQLiteDatabase) {
         Log.d(TAG, "migrateOwnership: $fromUserId → $toUserId, $rows row(s)")
         return rows
     }
+
+    // ─────────────────────────────────────────────────────────────────────
+    // AI processing — quét bài của user (user_id != NULL) chưa được AI xử
+    // lý (is_ai_processed = 0), lấy câu để build prompt, và ghi kết quả AI.
+    // ─────────────────────────────────────────────────────────────────────
+
+    /**
+     * Danh sách (reading_id, title_en) của các bài THUỘC USER (user_id không
+     * null) mà chưa được AI xử lý — dùng cho watchdog quét ngầm.
+     */
+    fun getPendingAiReadings(): List<Pair<String, String>> {
+        val list = mutableListOf<Pair<String, String>>()
+        db.rawQuery(
+            "SELECT reading_id, title_en FROM readings " +
+                    "WHERE user_id IS NOT NULL AND is_ai_processed = 0",
+            null
+        ).use { c ->
+            while (c.moveToNext()) {
+                list.add(c.getString(0) to (c.getString(1) ?: ""))
+            }
+        }
+        return list
+    }
+
+    /** (sentence_order, text_en) của 1 bài, dùng để build prompt gửi AI. */
+    fun getSentenceOrdersAndText(readingId: String): List<Pair<Int, String>> {
+        val list = mutableListOf<Pair<Int, String>>()
+        db.rawQuery(
+            "SELECT sentence_order, text_en FROM reading_sentences " +
+                    "WHERE reading_id = ? ORDER BY sentence_order ASC",
+            arrayOf(readingId)
+        ).use { c ->
+            while (c.moveToNext()) {
+                list.add(c.getInt(0) to (c.getString(1) ?: ""))
+            }
+        }
+        return list
+    }
+
+    /**
+     * Ghi kết quả AI vào readings / reading_sentences / sentence_phrases /
+     * sentence_words trong 1 transaction.
+     *
+     * LƯU Ý: đây là dữ liệu MỚI HOÀN TOÀN (bài vừa insert, chưa từng có
+     * phrase nào) nên chỉ cần INSERT phrase — không cần xoá/insert-lại như
+     * luồng xử lý-lại của readings.db.
+     *
+     * words đã tồn tại sẵn (từ insertReadingWithSentences) nên chỉ UPDATE
+     * theo (sentence_id, word_order).
+     */
+    fun writeAiResult(readingId: String, aiData: MyAiReading): Boolean {
+        val now = nowIso8601()
+        db.beginTransaction()
+        return try {
+            val rcv = ContentValues().apply {
+                aiData.titleVi?.let { put("title_vi", it) }
+                aiData.level?.let { put("level", it) }
+                aiData.topic?.let { put("topic", it) }
+                put("is_ai_processed", 1)
+                put("updated_at", now)
+            }
+            db.update("readings", rcv, "reading_id = ?", arrayOf(readingId))
+
+            for (s in aiData.sentences) {
+                val sentenceId = db.rawQuery(
+                    "SELECT sentence_id FROM reading_sentences " +
+                            "WHERE reading_id = ? AND sentence_order = ?",
+                    arrayOf(readingId, s.sentenceOrder.toString())
+                ).use { c -> if (c.moveToFirst()) c.getString(0) else null }
+
+                if (sentenceId == null) {
+                    Log.w(TAG, "writeAiResult: không tìm thấy câu #${s.sentenceOrder} (reading_id=$readingId)")
+                    continue
+                }
+
+                val scv = ContentValues().apply {
+                    s.textVi?.let { put("text_vi", it) }
+                    s.explanation?.let { put("sentence_explanation", it) }
+                }
+                db.update("reading_sentences", scv, "sentence_id = ?", arrayOf(sentenceId))
+
+                // Insert toàn bộ phrase mới (bài mới hoàn toàn → không có phrase cũ để xoá)
+                val phraseIdMap = mutableMapOf<String, String>()
+                for (p in s.phrases) {
+                    val phraseId = UuidV7.generate()
+                    val pcv = ContentValues().apply {
+                        put("phrase_id", phraseId)
+                        put("sentence_id", sentenceId)
+                        put("text_en", p.textEn)
+                        p.textVi?.let { put("text_vi", it) }
+                        p.explanation?.let { put("phrase_explanation", it) }
+                        put("start_word_order", p.startWordOrder)
+                        put("end_word_order", p.endWordOrder)
+                    }
+                    val rowId = db.insert("sentence_phrases", null, pcv)
+                    if (rowId != -1L) phraseIdMap[p.id] = phraseId
+                }
+
+                // Update từng word (đã tồn tại sẵn từ lúc insert ban đầu)
+                for (w in s.words) {
+                    val dbPhraseId = phraseIdMap[w.phraseId]
+                    val wcv = ContentValues().apply {
+                        w.textVi?.let { put("text_vi", it) }
+                        w.pos?.let { put("pos", it) }
+                        w.lemma?.let { put("lemma", it) }
+                        w.explanation?.let { put("word_explanation", it) }
+                        w.formExplanation?.let { put("word_form_explanation", it) }
+                        if (dbPhraseId != null) put("phrase_id", dbPhraseId) else putNull("phrase_id")
+                    }
+                    val updated = db.update(
+                        "sentence_words", wcv,
+                        "sentence_id = ? AND word_order = ?",
+                        arrayOf(sentenceId, w.wordOrder.toString())
+                    )
+                    if (updated == 0) {
+                        Log.w(TAG, "writeAiResult: word #${w.wordOrder} '${w.textEn}' không tìm thấy để update (sentence_id=$sentenceId)")
+                    }
+                }
+            }
+
+            db.setTransactionSuccessful()
+            true
+        } catch (e: Exception) {
+            Log.e(TAG, "writeAiResult error (reading_id=$readingId)", e)
+            false
+        } finally {
+            db.endTransaction()
+        }
+    }
 }
 
 // ─────────────────────────────────────────────────────────────────────────────
@@ -509,6 +638,25 @@ class MyReadingRepository private constructor(myDb: SQLiteDatabase) {
         withContext(Dispatchers.IO) {
             dao.migrateOwnership(CurrentUser.GUEST_ID, newUserId).also {
                 sentenceCache.clear()
+            }
+        }
+
+    // ─────────────────────────────────────────────────────────────────────
+    // AI processing — dùng bởi MyReadingAiProcessor. KHÔNG lọc theo
+    // CurrentUser vì đây là watchdog quét NGẦM cho mọi user_id != null,
+    // không chỉ user đang đăng nhập hiện tại.
+    // ─────────────────────────────────────────────────────────────────────
+
+    suspend fun getPendingAiReadings(): List<Pair<String, String>> =
+        withContext(Dispatchers.IO) { dao.getPendingAiReadings() }
+
+    suspend fun getSentencesForAi(readingId: String): List<Pair<Int, String>> =
+        withContext(Dispatchers.IO) { dao.getSentenceOrdersAndText(readingId) }
+
+    suspend fun writeAiResult(readingId: String, aiData: MyAiReading): Boolean =
+        withContext(Dispatchers.IO) {
+            dao.writeAiResult(readingId, aiData).also { ok ->
+                if (ok) sentenceCache.remove(readingId)
             }
         }
 

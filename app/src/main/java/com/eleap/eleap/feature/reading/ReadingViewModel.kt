@@ -7,6 +7,7 @@ import androidx.lifecycle.ViewModelProvider
 import androidx.lifecycle.viewModelScope
 import com.eleap.eleap.core.auth.CurrentUser
 import com.eleap.eleap.feature.myreading.data.MyReadingRepository
+import com.eleap.eleap.feature.myreading.data.processUnhandledMyReadings
 import com.eleap.eleap.feature.reading.data.Reading
 import com.eleap.eleap.feature.reading.data.ReadingDao
 import com.eleap.eleap.feature.reading.data.ReadingDatabase
@@ -17,6 +18,7 @@ import com.eleap.eleap.feature.reading.data.SentencePhrase
 import com.eleap.eleap.feature.reading.data.SentenceWord
 import com.eleap.eleap.feature.reading.ui.UserDatabase
 import kotlinx.coroutines.Dispatchers
+import kotlinx.coroutines.delay
 import kotlinx.coroutines.flow.MutableStateFlow
 import kotlinx.coroutines.flow.StateFlow
 import kotlinx.coroutines.flow.drop
@@ -29,6 +31,7 @@ class ReadingViewModel(
     private val repository: ReadingRepository,
     private val myReadingRepository: MyReadingRepository,   // ← mới: để ViewModel expose ghi/sửa/xoá
     private val userDb: UserDatabase,
+    private val appContext: Context,   // ← mới: dùng cho watchdog AI xử lý MyReading
 ) : ViewModel() {
 
     // ── Flow 2 ────────────────────────────────────────────────────────────────
@@ -84,6 +87,26 @@ class ReadingViewModel(
                 loadReadings(forceRefresh = true)
             }
         }
+
+        // ── Watchdog AI xử lý MyReading — quét NGẦM liên tục, hoàn toàn im
+        // lặng (không snackbar/toast). ReadingViewModel là singleton
+        // (Factory.INSTANCE) nên vòng lặp này sống xuyên suốt vòng đời app,
+        // không phụ thuộc màn hình nào đang hiển thị. Chạy ngay lần đầu (để
+        // xử lý các bài lỡ bị bỏ sót từ phiên trước), sau đó lặp mỗi 15s.
+        viewModelScope.launch {
+            while (true) {
+                runMyReadingAiWatchdog()
+                delay(15_000L)
+            }
+        }
+    }
+
+    private suspend fun runMyReadingAiWatchdog() {
+        processUnhandledMyReadings(
+            context = appContext,
+            onStatus = { msg -> Log.d("ReadingVM.AiWatchdog", msg) },
+            onUpdated = { loadReadings(forceRefresh = true) },
+        )
     }
 
     // ── Flow 2 ────────────────────────────────────────────────────────────────
@@ -122,6 +145,12 @@ class ReadingViewModel(
             val id = myReadingRepository.saveMyReading(title, content)
             loadReadings(forceRefresh = true)   // để bài mới xuất hiện trong `readings`/`myReadings`
             onDone(id)
+
+            // Kích hoạt AI dịch ngay cho bài vừa thêm, không chờ vòng watchdog
+            // 15s kế tiếp. Chạy trong coroutine riêng, không chặn onDone().
+            if (id != null) {
+                launch { runMyReadingAiWatchdog() }
+            }
         }
     }
 
@@ -219,7 +248,7 @@ class ReadingViewModel(
                     val myRepo = MyReadingRepository.getInstance(appCtx)
                     val repo   = ReadingRepository(dao, myRepo)
                     val userDb = UserDatabase.getInstance(appCtx)
-                    ReadingViewModel(repo, myRepo, userDb).also { INSTANCE = it }
+                    ReadingViewModel(repo, myRepo, userDb, appCtx).also { INSTANCE = it }
                 }
             }) as T
         }
