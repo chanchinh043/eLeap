@@ -6,6 +6,7 @@ import android.content.Context
 import android.content.ContentValues
 import android.database.sqlite.SQLiteDatabase
 import android.util.Log
+import com.eleap.eleap.core.auth.CurrentUser
 import com.eleap.eleap.feature.reading.ui.UserDatabase
 import com.eleap.eleap.feature.reading.ui.UserVocabularyEntry
 import kotlinx.coroutines.Dispatchers
@@ -13,7 +14,6 @@ import kotlinx.coroutines.withContext
 import java.io.File
 import java.io.FileOutputStream
 
-// ── Entity từ điển ────────────────────────────────────────────────────────────
 data class VocabDictEntry(
     val word: String,
     val ipa: String?,
@@ -22,7 +22,6 @@ data class VocabDictEntry(
     val shortMeaning: String?,
 )
 
-// ── Repository ────────────────────────────────────────────────────────────────
 class VocabRepository private constructor(
     private val userDb: UserDatabase,
     private val dictDb: SQLiteDatabase,
@@ -32,13 +31,12 @@ class VocabRepository private constructor(
 
     // ══ users.db ══════════════════════════════════════════════════════════════
 
-    suspend fun getAllVocabulary(userId: Int = 0): List<UserVocabularyEntry> =
+    suspend fun getAllVocabulary(userId: String = CurrentUser.userId.value): List<UserVocabularyEntry> =
         withContext(Dispatchers.IO) { userDb.getAllVocabulary(userId) }
 
     suspend fun deleteWord(id: String): Boolean =
         withContext(Dispatchers.IO) { userDb.deleteWord(id) }
 
-    // ── Tăng count thêm 1 (ghi DB nền) ──────────────────────────────────────
     suspend fun incrementCount(id: String) = withContext(Dispatchers.IO) {
         try {
             userDb.db.execSQL(
@@ -50,7 +48,6 @@ class VocabRepository private constructor(
         }
     }
 
-    // ── Cập nhật selected (0 hoặc 1) cho 1 từ ────────────────────────────────
     suspend fun updateSelected(id: String, selected: Int): Boolean =
         withContext(Dispatchers.IO) {
             return@withContext try {
@@ -63,13 +60,12 @@ class VocabRepository private constructor(
             }
         }
 
-    // ── Lấy danh sách từ đang được chọn (selected = 1) ───────────────────────
-    suspend fun getSelectedVocabulary(userId: Int = 0): List<UserVocabularyEntry> =
+    suspend fun getSelectedVocabulary(userId: String = CurrentUser.userId.value): List<UserVocabularyEntry> =
         withContext(Dispatchers.IO) {
             val list = mutableListOf<UserVocabularyEntry>()
             val cursor = userDb.db.rawQuery(
                 "SELECT * FROM user_vocabulary WHERE user_id = ? AND selected = 1 ORDER BY created_at DESC",
-                arrayOf(userId.toString())
+                arrayOf(userId)
             )
             cursor.use {
                 while (it.moveToNext()) {
@@ -80,7 +76,7 @@ class VocabRepository private constructor(
                     list.add(
                         UserVocabularyEntry(
                             id               = it.getString(it.getColumnIndexOrThrow("id")),
-                            userId           = it.getInt(it.getColumnIndexOrThrow("user_id")),
+                            userId           = it.getString(it.getColumnIndexOrThrow("user_id")),
                             sourceSentenceId = nullableString("source_sentence_id"),
                             sourceWordId     = nullableString("source_word_id"),
                             sourcePhraseId   = nullableString("source_phrase_id"),
@@ -101,13 +97,11 @@ class VocabRepository private constructor(
             list
         }
 
-    // ── Lấy từ đã lưu của 1 bài đọc cụ thể (JOIN qua source_sentence_id) ────────
-    // Vì readings.db và users.db là 2 file DB khác nhau, không JOIN trực tiếp được.
-    // Bước 1: lấy tất cả sentence_id của bài đọc từ readings.db
-    // Bước 2: query user_vocabulary WHERE source_sentence_id IN (...) từ users.db
-    suspend fun getVocabByReadingId(readingId: String, userId: Int = 0): List<UserVocabularyEntry> =
+    suspend fun getVocabByReadingId(
+        readingId: String,
+        userId: String = CurrentUser.userId.value
+    ): List<UserVocabularyEntry> =
         withContext(Dispatchers.IO) {
-            // Bước 1: lấy sentence_id của bài đọc
             val sentenceIds = mutableListOf<String>()
             val cursor = readingsDb.rawQuery(
                 "SELECT sentence_id FROM reading_sentences WHERE reading_id = ?",
@@ -120,9 +114,8 @@ class VocabRepository private constructor(
             }
             if (sentenceIds.isEmpty()) return@withContext emptyList()
 
-            // Bước 2: query user_vocabulary theo sentence_id
             val placeholders = sentenceIds.joinToString(",") { "?" }
-            val args = (listOf(userId.toString()) + sentenceIds).toTypedArray()
+            val args = (listOf(userId) + sentenceIds).toTypedArray()
             val list = mutableListOf<UserVocabularyEntry>()
             val vocabCursor = userDb.db.rawQuery(
                 """SELECT * FROM user_vocabulary
@@ -140,7 +133,7 @@ class VocabRepository private constructor(
                     list.add(
                         UserVocabularyEntry(
                             id               = it.getString(it.getColumnIndexOrThrow("id")),
-                            userId           = it.getInt(it.getColumnIndexOrThrow("user_id")),
+                            userId           = it.getString(it.getColumnIndexOrThrow("user_id")),
                             sourceSentenceId = nullableString("source_sentence_id"),
                             sourceWordId     = nullableString("source_word_id"),
                             sourcePhraseId   = nullableString("source_phrase_id"),
@@ -160,8 +153,6 @@ class VocabRepository private constructor(
             }
             list
         }
-
-
 
     suspend fun preloadDict(words: List<String>) = withContext(Dispatchers.IO) {
         val keysToLoad = words
@@ -218,7 +209,6 @@ class VocabRepository private constructor(
             ?.replace(Regex("^[^a-z']+|[^a-z']+$"), "")
             ?.ifEmpty { null }
 
-    // ══ Singleton ═════════════════════════════════════════════════════════════
     companion object {
         @Volatile private var INSTANCE: VocabRepository? = null
 

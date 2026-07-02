@@ -10,6 +10,7 @@ import androidx.compose.material3.TextButton
 import androidx.compose.material3.Text
 import androidx.compose.runtime.*
 import androidx.compose.ui.platform.LocalContext
+import com.eleap.eleap.core.auth.CurrentUser
 import com.eleap.eleap.feature.reading.data.SentenceWord
 import com.eleap.eleap.feature.reading.data.SentencePhrase
 import com.eleap.eleap.feature.reading.data.ReadingSentence
@@ -23,7 +24,7 @@ import java.util.*
 
 data class UserVocabularyEntry(
     val id: String = "",
-    val userId: Int = 0,
+    val userId: String = CurrentUser.GUEST_ID,
     val sourceSentenceId: String?,
     val sourceWordId: String?,
     val sourcePhraseId: String?,
@@ -51,17 +52,14 @@ fun generateUuidV7(): String {
     rand.nextBytes(randomBytes)
 
     val buffer = java.nio.ByteBuffer.allocate(16)
-    // 48-bit timestamp (ms since epoch)
     buffer.put((timestamp shr 40).toByte())
     buffer.put((timestamp shr 32).toByte())
     buffer.put((timestamp shr 24).toByte())
     buffer.put((timestamp shr 16).toByte())
     buffer.put((timestamp shr 8).toByte())
     buffer.put(timestamp.toByte())
-    // 4-bit version (0111) + 12-bit random
     buffer.put((0x70 or (randomBytes[0].toInt() and 0x0F)).toByte())
     buffer.put(randomBytes[1])
-    // 2-bit variant (10) + 62-bit random
     buffer.put((0x80 or (randomBytes[2].toInt() and 0x3F)).toByte())
     buffer.put(randomBytes[3])
     buffer.put(randomBytes[4])
@@ -95,17 +93,17 @@ class UserDatabase private constructor(context: Context) {
             db.execSQL(
                 """
                 CREATE TABLE IF NOT EXISTS users (
-                    user_id   INTEGER PRIMARY KEY DEFAULT 0
+                    user_id   TEXT PRIMARY KEY DEFAULT 'guest'
                 )
                 """.trimIndent()
             )
-            db.execSQL("INSERT OR IGNORE INTO users (user_id) VALUES (0)")
+            db.execSQL("INSERT OR IGNORE INTO users (user_id) VALUES ('guest')")
 
             db.execSQL(
                 """
                 CREATE TABLE IF NOT EXISTS user_vocabulary (
                     id                 TEXT PRIMARY KEY,
-                    user_id            INTEGER NOT NULL DEFAULT 0,
+                    user_id            TEXT NOT NULL DEFAULT 'guest',
                     source_sentence_id TEXT,
                     source_word_id     TEXT,
                     source_phrase_id   TEXT,
@@ -137,12 +135,6 @@ class UserDatabase private constructor(context: Context) {
                 db.execSQL("ALTER TABLE user_vocabulary ADD COLUMN sentence_text_vi TEXT")
             }
             if (oldVersion < 4) {
-                // readings.db đã đổi toàn bộ id sang uuid v7 → id kiểu INTEGER cũ của
-                // user_vocabulary (và các source_*_id trỏ vào readings.db) không còn
-                // hợp lệ. SQLite không ALTER được kiểu cột / kiểu PK, nên phải dựng lại
-                // bảng: giữ nguyên nội dung đã lưu (text_en, text_vi, các snapshot...),
-                // gán id mới (uuid v7) cho từng dòng, và xoá các source_*_id cũ (vì
-                // trỏ vào id không còn tồn tại trong readings.db mới).
                 db.execSQL("ALTER TABLE user_vocabulary RENAME TO user_vocabulary_old")
                 db.execSQL(
                     """
@@ -172,8 +164,6 @@ class UserDatabase private constructor(context: Context) {
                         val cv = ContentValues().apply {
                             put("id", generateUuidV7())
                             put("user_id", it.getInt(it.getColumnIndexOrThrow("user_id")))
-                            // source_sentence_id / source_word_id / source_phrase_id: bỏ qua
-                            // (id cũ không map được sang uuid mới)
                             put("text_en", it.getString(it.getColumnIndexOrThrow("text_en")))
                             put("text_vi", it.getString(it.getColumnIndexOrThrow("text_vi")))
                             put("selected", it.getInt(it.getColumnIndexOrThrow("selected")))
@@ -190,9 +180,73 @@ class UserDatabase private constructor(context: Context) {
                 }
                 db.execSQL("DROP TABLE user_vocabulary_old")
             }
+            if (oldVersion < 5) {
+                // Đổi user_id: INTEGER → TEXT ở cả 2 bảng, để chuẩn bị lưu uuid
+                // thật từ Supabase sau này thay vì số nguyên. Dữ liệu cũ luôn
+                // là user_id = 0 (hardcode guest trước đây) → map sang "guest".
+                db.execSQL("ALTER TABLE users RENAME TO users_old")
+                db.execSQL(
+                    """
+                    CREATE TABLE users (
+                        user_id TEXT PRIMARY KEY DEFAULT 'guest'
+                    )
+                    """.trimIndent()
+                )
+                db.execSQL("INSERT OR IGNORE INTO users (user_id) VALUES ('guest')")
+                db.execSQL("DROP TABLE users_old")
+
+                db.execSQL("ALTER TABLE user_vocabulary RENAME TO user_vocabulary_old2")
+                db.execSQL(
+                    """
+                    CREATE TABLE user_vocabulary (
+                        id                 TEXT PRIMARY KEY,
+                        user_id            TEXT NOT NULL DEFAULT 'guest',
+                        source_sentence_id TEXT,
+                        source_word_id     TEXT,
+                        source_phrase_id   TEXT,
+                        text_en            TEXT,
+                        text_vi            TEXT,
+                        selected           INTEGER NOT NULL DEFAULT 1,
+                        created_at         TEXT NOT NULL,
+                        count       INTEGER NOT NULL DEFAULT 0,
+                        score      INTEGER NOT NULL DEFAULT 0,
+                        phrase_text_en     TEXT,
+                        phrase_text_vi     TEXT,
+                        sentence_text_en   TEXT,
+                        sentence_text_vi   TEXT,
+                        FOREIGN KEY (user_id) REFERENCES users(user_id)
+                    )
+                    """.trimIndent()
+                )
+                val cursor = db.rawQuery("SELECT * FROM user_vocabulary_old2", null)
+                cursor.use {
+                    while (it.moveToNext()) {
+                        fun s(col: String) = it.getString(it.getColumnIndexOrThrow(col))
+                        val cv = ContentValues().apply {
+                            put("id", s("id"))
+                            put("user_id", "guest")   // cũ luôn = 0 (int) → "guest"
+                            put("source_sentence_id", s("source_sentence_id"))
+                            put("source_word_id", s("source_word_id"))
+                            put("source_phrase_id", s("source_phrase_id"))
+                            put("text_en", s("text_en"))
+                            put("text_vi", s("text_vi"))
+                            put("selected", it.getInt(it.getColumnIndexOrThrow("selected")))
+                            put("created_at", s("created_at"))
+                            put("count", it.getInt(it.getColumnIndexOrThrow("count")))
+                            put("score", it.getInt(it.getColumnIndexOrThrow("score")))
+                            put("phrase_text_en", s("phrase_text_en"))
+                            put("phrase_text_vi", s("phrase_text_vi"))
+                            put("sentence_text_en", s("sentence_text_en"))
+                            put("sentence_text_vi", s("sentence_text_vi"))
+                        }
+                        db.insert("user_vocabulary", null, cv)
+                    }
+                }
+                db.execSQL("DROP TABLE user_vocabulary_old2")
+            }
         }
 
-        companion object { const val DB_VERSION = 4 }
+        companion object { const val DB_VERSION = 5 }
     }
 
     fun saveWord(entry: UserVocabularyEntry): Boolean {
@@ -232,11 +286,11 @@ class UserDatabase private constructor(context: Context) {
         return cursor.use { it.moveToFirst() }
     }
 
-    fun getAllVocabulary(userId: Int = 0): List<UserVocabularyEntry> {
+    fun getAllVocabulary(userId: String = CurrentUser.userId.value): List<UserVocabularyEntry> {
         val list = mutableListOf<UserVocabularyEntry>()
         val cursor = db.rawQuery(
             "SELECT * FROM user_vocabulary WHERE user_id = ? ORDER BY created_at DESC",
-            arrayOf(userId.toString())
+            arrayOf(userId)
         )
         cursor.use {
             while (it.moveToNext()) {
@@ -247,7 +301,7 @@ class UserDatabase private constructor(context: Context) {
                 list.add(
                     UserVocabularyEntry(
                         id                = it.getString(it.getColumnIndexOrThrow("id")),
-                        userId            = it.getInt(it.getColumnIndexOrThrow("user_id")),
+                        userId            = it.getString(it.getColumnIndexOrThrow("user_id")),
                         sourceSentenceId  = nullableString("source_sentence_id"),
                         sourceWordId      = nullableString("source_word_id"),
                         sourcePhraseId    = nullableString("source_phrase_id"),
@@ -318,11 +372,6 @@ class UserDatabase private constructor(context: Context) {
 // 3. SaveWordButton
 // ─────────────────────────────────────────────────────────────────────────────
 
-// ── Tự lấy text_en/text_vi của câu chứa word, giống hệt cách `phrase` đang ──
-// lấy dữ liệu: tìm trong danh sách `sentences` đã có sẵn trong RAM của
-// ReadingViewModel (đã load khi mở bài đọc), KHÔNG query lại DB.
-// Dùng khi caller không truyền sẵn `sentence` — tránh phải sửa WordPopup.kt
-// hay bất kỳ nơi nào khác đang gọi SaveWordButton.
 private fun findSentenceTexts(context: Context, sentenceId: String): Pair<String?, String?>? {
     return try {
         val readingVm = ReadingViewModel.Factory(context).create(ReadingViewModel::class.java)
@@ -335,20 +384,12 @@ private fun findSentenceTexts(context: Context, sentenceId: String): Pair<String
     }
 }
 
-/**
- * @param word               Từ đang hiển thị trong popup
- * @param phrase             Cụm từ chứa từ đó (có thể null)
- * @param sentence           Câu chứa từ đó (có thể null) — nếu không truyền,
- *                           sẽ tự lấy từ readings.db theo word.sentenceId
- * @param onSaveStateChanged Callback gọi sau khi lưu hoặc bỏ lưu thành công —
- *                           dùng để ViewModel refresh savedWordIds → màu từ đổi ngay
- */
 @Composable
 fun SaveWordButton(
     word: SentenceWord,
     phrase: SentencePhrase?,
-    sentence: ReadingSentence? = null,     // ← mặc định null, ưu tiên dùng nếu có
-    onSaveStateChanged: () -> Unit = {},   // ← mới, mặc định rỗng để không break code cũ
+    sentence: ReadingSentence? = null,
+    onSaveStateChanged: () -> Unit = {},
 ) {
     val context = LocalContext.current
     val userDb  = remember { UserDatabase.getInstance(context) }
@@ -362,19 +403,16 @@ fun SaveWordButton(
             val removed = userDb.unsaveWord(word.wordId)
             if (removed) {
                 isSaved = false
-                onSaveStateChanged()   // ← notify ViewModel
+                onSaveStateChanged()
             }
         } else {
             val now = SimpleDateFormat("yyyy-MM-dd'T'HH:mm:ss'Z'", Locale.getDefault())
                 .apply { timeZone = TimeZone.getTimeZone("UTC") }
                 .format(Date())
-            // Ưu tiên sentence được truyền sẵn; nếu không có thì tự tìm trong
-            // sentences (RAM) của ReadingViewModel theo word.sentenceId —
-            // giống hệt cách phrase đang lấy dữ liệu, không cần sửa nơi gọi.
             val sentenceTexts = sentence?.let { it.textEn to it.textVi }
                 ?: findSentenceTexts(context, word.sentenceId)
             val entry = UserVocabularyEntry(
-                userId           = 0,
+                userId           = CurrentUser.userId.value,
                 sourceSentenceId = word.sentenceId,
                 sourceWordId     = word.wordId,
                 sourcePhraseId   = phrase?.phraseId,
@@ -390,7 +428,7 @@ fun SaveWordButton(
             val saved = userDb.saveWord(entry)
             if (saved) {
                 isSaved = true
-                onSaveStateChanged()   // ← notify ViewModel
+                onSaveStateChanged()
             }
         }
     }) {

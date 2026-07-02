@@ -17,7 +17,7 @@ class MainActivity : ComponentActivity() {
         super.onCreate(savedInstanceState)
 
         // Khởi tạo CurrentUser TRƯỚC setContent — để lúc UI vẽ ra,
-        // userId đã sẵn sàng đọc được ngay (không bị null/chưa init).
+        // userId đã sẵn sàng đọc được ngay.
         CurrentUser.init(this)
 
         enableEdgeToEdge()

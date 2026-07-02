@@ -9,8 +9,9 @@ import kotlinx.coroutines.flow.MutableStateFlow
 import kotlinx.coroutines.flow.StateFlow
 
 // ── Singleton thủ công, KHÔNG dùng Hilt/DI ───────────────────────────────────
-// Giữ user_id hiện tại (guest hoặc uuid Supabase sau này) trong RAM (StateFlow)
-// và lưu bền trong SharedPreferences để sống sót qua tắt/mở app.
+// userId luôn là String (TEXT) — "guest" khi chưa đăng nhập, hoặc uuid thật
+// do Supabase cấp sau khi đăng nhập/đăng ký. Khớp thẳng với cột user_id
+// (TEXT) trong users.db — không cần convert Int/String ở bất kỳ đâu nữa.
 object CurrentUser {
 
     private const val PREFS_NAME  = "current_user"
@@ -29,12 +30,10 @@ object CurrentUser {
 
         val saved = prefs.getString(KEY_USER_ID, null)
         if (saved == null) {
-            // Lần đầu mở app — chưa có gì trong prefs → ghi "guest" xuống ngay
             prefs.edit().putString(KEY_USER_ID, GUEST_ID).apply()
         }
         _userId.value = saved ?: GUEST_ID
 
-        // ── Log để kiểm tra trong Logcat ─────────────────────────────────────
         Log.d("CurrentUser", "init() done → userId = ${_userId.value}")
     }
 
