@@ -18,6 +18,25 @@ import java.util.TimeZone
 private const val TAG = "MyReadingRepository"
 
 // ─────────────────────────────────────────────────────────────────────────────
+// 0a. user_id placeholder — TẠM THỜI, chưa có Auth/Sync
+//
+// Hiện tại app chưa có đăng nhập, nên mọi bài đọc tạo trong MyReading đều gán
+// user_id = GUEST_USER_ID (chuỗi cố định, KHÔNG phải UUID).
+//
+// SAU NÀY khi có Auth/Sync với Supabase:
+//   - Khi user đăng nhập → Supabase trả về user_id thật (UUID v7 dạng String).
+//   - Cần 1 bước migrate: UPDATE readings SET user_id = '<uuid_that_from_server>'
+//     WHERE user_id = GUEST_USER_ID  (gán lại toàn bộ bài đọc "guest" hiện có
+//     cho tài khoản vừa đăng nhập).
+//   - Sau bước migrate đó, insertReadingWithSentences() bên dưới cần đổi để
+//     nhận user_id thật từ session hiện tại (thay vì hard-code GUEST_USER_ID),
+//     ví dụ: nhận thêm param `currentUserId: String?` từ nơi gọi (ViewModel/
+//     AuthManager), fallback về GUEST_USER_ID nếu chưa đăng nhập.
+// ─────────────────────────────────────────────────────────────────────────────
+
+const val GUEST_USER_ID = "guest"
+
+// ─────────────────────────────────────────────────────────────────────────────
 // 0. UUID v7 — time-ordered UUID (RFC 9562 draft), dùng làm primary key
 //    thay vì INTEGER AUTOINCREMENT, để id sinh ra ở client vẫn sort được
 //    theo thời gian tạo.
@@ -117,10 +136,12 @@ fun splitMyWords(sentenceText: String): List<String> =
 
 data class MyReading(
     val readingId: String,
+    val userId: String?,
     val titleEn: String?,
     val titleVi: String?,
     val level: String?,
     val topic: String?,
+    val isAiProcessed: Boolean,
     val createdAt: String?,
     val updatedAt: String?,
 )
@@ -131,7 +152,7 @@ data class MyReading(
 // ─────────────────────────────────────────────────────────────────────────────
 
 private const val DB_NAME    = "myreading.db"
-private const val DB_VERSION = 1
+private const val DB_VERSION = 2
 
 private class MyReadingDbHelper(context: Context) :
     SQLiteOpenHelper(context.applicationContext, DB_NAME, null, DB_VERSION) {
@@ -145,13 +166,15 @@ private class MyReadingDbHelper(context: Context) :
         db.execSQL(
             """
             CREATE TABLE readings (
-                reading_id  TEXT PRIMARY KEY,
-                title_en    TEXT,
-                title_vi    TEXT,
-                level       TEXT,
-                topic       TEXT,
-                created_at  TEXT,
-                updated_at  TEXT
+                reading_id       TEXT PRIMARY KEY,
+                user_id          TEXT,
+                title_en         TEXT,
+                title_vi         TEXT,
+                level            TEXT,
+                topic            TEXT,
+                is_ai_processed  INTEGER DEFAULT 0,
+                created_at       TEXT,
+                updated_at       TEXT
             )
             """.trimIndent()
         )
@@ -209,7 +232,14 @@ private class MyReadingDbHelper(context: Context) :
     }
 
     override fun onUpgrade(db: SQLiteDatabase, oldVersion: Int, newVersion: Int) {
-        // Chưa có migration nào — sẽ bổ sung khi tăng DB_VERSION ở các bước sau.
+        if (oldVersion < 2) {
+            // version 1 → 2: thêm user_id + is_ai_processed vào bảng readings
+            // (khớp với schema readings.db mới)
+            db.execSQL("ALTER TABLE readings ADD COLUMN user_id TEXT")
+            db.execSQL("ALTER TABLE readings ADD COLUMN is_ai_processed INTEGER DEFAULT 0")
+            Log.d(TAG, "onUpgrade $oldVersion→$newVersion: đã thêm cột user_id, is_ai_processed")
+        }
+        // Các migration sau sẽ bổ sung tiếp ở đây khi tăng DB_VERSION.
     }
 }
 
@@ -234,6 +264,9 @@ private class MyReadingDao(private val db: SQLiteDatabase) {
         try {
             val cv = ContentValues().apply {
                 put("reading_id", readingId)
+                // TODO(auth-sync): thay GUEST_USER_ID bằng user_id thật (UUID v7
+                // từ Supabase) khi đã có Auth. Xem ghi chú ở GUEST_USER_ID phía trên.
+                put("user_id",    GUEST_USER_ID)
                 put("title_en",   titleEn)
                 put("created_at", now)
                 put("updated_at", now)
@@ -338,15 +371,18 @@ private class MyReadingDao(private val db: SQLiteDatabase) {
                 return if (c.isNull(idx)) null else c.getString(idx)
             }
             while (c.moveToNext()) {
+                val userIdIdx = c.getColumnIndexOrThrow("user_id")
                 list.add(
                     MyReading(
-                        readingId = c.getString(c.getColumnIndexOrThrow("reading_id")),
-                        titleEn   = nullableString("title_en"),
-                        titleVi   = nullableString("title_vi"),
-                        level     = nullableString("level"),
-                        topic     = nullableString("topic"),
-                        createdAt = nullableString("created_at"),
-                        updatedAt = nullableString("updated_at"),
+                        readingId     = c.getString(c.getColumnIndexOrThrow("reading_id")),
+                        userId        = if (c.isNull(userIdIdx)) null else c.getString(userIdIdx),
+                        titleEn       = nullableString("title_en"),
+                        titleVi       = nullableString("title_vi"),
+                        level         = nullableString("level"),
+                        topic         = nullableString("topic"),
+                        isAiProcessed = c.getInt(c.getColumnIndexOrThrow("is_ai_processed")) != 0,
+                        createdAt     = nullableString("created_at"),
+                        updatedAt     = nullableString("updated_at"),
                     )
                 )
             }

@@ -21,10 +21,12 @@ import kotlinx.coroutines.withContext
 // ── readings ──────────────────────────────────────────────────────────────────
 data class Reading(
     val readingId: String,
+    val userId: String?,
     val titleEn: String?,
     val titleVi: String?,
     val level: String?,
     val topic: String?,
+    val isAiProcessed: Boolean,
     val createdAt: String?,
     val updatedAt: String?,
 )
@@ -89,16 +91,19 @@ class ReadingDao(
         val list = mutableListOf<Reading>()
         val cursor = db.rawQuery("SELECT * FROM readings ORDER BY reading_id ASC", null)
         cursor.use {
+            val userIdIdx = it.getColumnIndexOrThrow("user_id")
             while (it.moveToNext()) {
                 list.add(
                     Reading(
-                        readingId = it.getString(it.getColumnIndexOrThrow("reading_id")),
-                        titleEn   = it.getString(it.getColumnIndexOrThrow("title_en")),
-                        titleVi   = it.getString(it.getColumnIndexOrThrow("title_vi")),
-                        level     = it.getString(it.getColumnIndexOrThrow("level")),
-                        topic     = it.getString(it.getColumnIndexOrThrow("topic")),
-                        createdAt = it.getString(it.getColumnIndexOrThrow("created_at")),
-                        updatedAt = it.getString(it.getColumnIndexOrThrow("updated_at")),
+                        readingId     = it.getString(it.getColumnIndexOrThrow("reading_id")),
+                        userId        = if (it.isNull(userIdIdx)) null else it.getString(userIdIdx),
+                        titleEn       = it.getString(it.getColumnIndexOrThrow("title_en")),
+                        titleVi       = it.getString(it.getColumnIndexOrThrow("title_vi")),
+                        level         = it.getString(it.getColumnIndexOrThrow("level")),
+                        topic         = it.getString(it.getColumnIndexOrThrow("topic")),
+                        isAiProcessed = it.getInt(it.getColumnIndexOrThrow("is_ai_processed")) != 0,
+                        createdAt     = it.getString(it.getColumnIndexOrThrow("created_at")),
+                        updatedAt     = it.getString(it.getColumnIndexOrThrow("updated_at")),
                     )
                 )
             }
