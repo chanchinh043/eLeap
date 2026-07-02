@@ -7,6 +7,7 @@ import android.content.ContentValues
 import android.database.sqlite.SQLiteDatabase
 import android.util.Log
 import com.eleap.eleap.core.auth.CurrentUser
+import com.eleap.eleap.feature.myreading.data.MyReadingRepository
 import com.eleap.eleap.feature.reading.ui.UserDatabase
 import com.eleap.eleap.feature.reading.ui.UserVocabularyEntry
 import kotlinx.coroutines.Dispatchers
@@ -26,6 +27,7 @@ class VocabRepository private constructor(
     private val userDb: UserDatabase,
     private val dictDb: SQLiteDatabase,
     private val readingsDb: SQLiteDatabase,
+    private val myReadingRepository: MyReadingRepository,
 ) {
     private val dictCache = mutableMapOf<String, VocabDictEntry>()
 
@@ -112,6 +114,14 @@ class VocabRepository private constructor(
                     sentenceIds.add(it.getString(0))
                 }
             }
+
+            // ── Bài "Bài đọc của tôi" (MyReading): reading_id không tồn tại
+            //    trong readings.db → sentenceIds rỗng ở trên. Fallback sang
+            //    myreading.db (nơi thực sự chứa reading_sentences của bài này).
+            if (sentenceIds.isEmpty()) {
+                sentenceIds.addAll(myReadingRepository.getSentenceIds(readingId))
+            }
+
             if (sentenceIds.isEmpty()) return@withContext emptyList()
 
             val placeholders = sentenceIds.joinToString(",") { "?" }
@@ -218,7 +228,10 @@ class VocabRepository private constructor(
                     val userDb     = UserDatabase.getInstance(context)
                     val dictDb     = openDictDb(context.applicationContext)
                     val readingsDb = openReadingsDb(context.applicationContext)
-                    VocabRepository(userDb, dictDb, readingsDb).also { INSTANCE = it }
+                    // Dùng lại singleton — cùng instance với ReadingViewModel/AddMyReadingScreen,
+                    // tránh mở thêm SQLiteOpenHelper thứ 2 cho myreading.db.
+                    val myRepo     = MyReadingRepository.getInstance(context.applicationContext)
+                    VocabRepository(userDb, dictDb, readingsDb, myRepo).also { INSTANCE = it }
                 }
             }
 

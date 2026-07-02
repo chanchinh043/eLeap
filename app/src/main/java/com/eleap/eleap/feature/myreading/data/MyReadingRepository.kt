@@ -234,6 +234,22 @@ class MyReadingDao(private val db: SQLiteDatabase) {
         return list
     }
 
+    /**
+     * Chỉ lấy sentence_id (không kèm text/phrase/word) — dùng cho VocabRepository
+     * để tra "bài MyReading này có những sentence_id nào", đối chiếu với
+     * source_sentence_id đã lưu trong users.db.
+     */
+    fun getSentenceIdsByReadingId(readingId: String): List<String> {
+        val list = mutableListOf<String>()
+        db.rawQuery(
+            "SELECT sentence_id FROM reading_sentences WHERE reading_id = ?",
+            arrayOf(readingId)
+        ).use { c ->
+            while (c.moveToNext()) list.add(c.getString(0))
+        }
+        return list
+    }
+
     fun getSentencesByReadingId(readingId: String): List<ReadingSentence> {
         val list = mutableListOf<ReadingSentence>()
         db.rawQuery(
@@ -431,6 +447,14 @@ class MyReadingRepository private constructor(myDb: SQLiteDatabase) {
                 sentenceCache[readingId] = it
             }
         }
+
+    /**
+     * Tra nhanh danh sách sentence_id thuộc 1 reading_id trong myreading.db —
+     * dùng cho VocabRepository.getVocabByReadingId() khi bài đọc là MyReading
+     * (readings.db không có reading_id này, phải fallback sang đây).
+     */
+    suspend fun getSentenceIds(readingId: String): List<String> =
+        withContext(Dispatchers.IO) { dao.getSentenceIdsByReadingId(readingId) }
 
     private fun buildReading(readingId: String): List<ReadingSentence> {
         val sentences = dao.getSentencesByReadingId(readingId)
