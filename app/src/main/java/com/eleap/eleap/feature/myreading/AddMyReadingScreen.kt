@@ -13,13 +13,13 @@ import androidx.compose.ui.Modifier
 import androidx.compose.ui.platform.LocalContext
 import androidx.compose.ui.text.font.FontWeight
 import androidx.compose.ui.unit.dp
-import com.eleap.eleap.feature.myreading.data.MyReadingRepository
-import kotlinx.coroutines.launch
+import androidx.lifecycle.viewmodel.compose.viewModel
+import com.eleap.eleap.feature.reading.ReadingViewModel
 
-// Màn "Thêm bài đọc" trong luồng MyReading — giao diện giống UserReadingScreen
-// (feature/userreading), nhưng lưu vào myreading.db (file DB riêng, độc lập
-// hoàn toàn với readings.db và users.db) qua MyReadingRepository.
-// saveMyReading() trả về reading_id dạng UUID v7 (String), hoặc null nếu lỗi.
+// Màn "Thêm bài đọc" trong luồng MyReading — lưu qua ReadingViewModel.addMyReading(),
+// chính là ReadingViewModel dùng chung với ReadingListScreen/ReadingScreen (singleton),
+// nên sau khi lưu xong, danh sách readings/myReadings tự cập nhật ngay, không cần
+// MyReadingListScreen tự reload thủ công.
 @OptIn(ExperimentalMaterial3Api::class)
 @Composable
 fun AddMyReadingScreen(
@@ -27,8 +27,7 @@ fun AddMyReadingScreen(
     onSaved: () -> Unit = {},
 ) {
     val context = LocalContext.current
-    val scope   = rememberCoroutineScope()
-    val repo    = remember { MyReadingRepository.getInstance(context) }
+    val vm: ReadingViewModel = viewModel(factory = ReadingViewModel.Factory(context))
 
     var title   by remember { mutableStateOf("") }
     var content by remember { mutableStateOf("") }
@@ -41,10 +40,7 @@ fun AddMyReadingScreen(
     val titleError    = title.isBlank() && saveResult == false
     val contentError  = content.isBlank() && saveResult == false
 
-    val snackbarHostState = remember { SnackbarHostState() }
-
     Scaffold(
-        snackbarHost = { SnackbarHost(snackbarHostState) },
         topBar = {
             TopAppBar(
                 title = { Text("Thêm bài đọc") },
@@ -65,11 +61,9 @@ fun AddMyReadingScreen(
                                 return@TextButton
                             }
                             isSaving = true
-                            scope.launch {
-                                val id = repo.saveMyReading(title, content)
+                            vm.addMyReading(title, content) { id ->
                                 isSaving = false
                                 savedId  = id ?: ""
-
                                 if (id != null) {
                                     onSaved()
                                 }

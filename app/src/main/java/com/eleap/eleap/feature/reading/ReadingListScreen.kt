@@ -41,7 +41,8 @@ fun ReadingListScreen(
 ) {
     val context = LocalContext.current
     val vm: ReadingViewModel = viewModel(factory = ReadingViewModel.Factory(context))
-    val readings by vm.readings.collectAsState()
+    // Chỉ bài hệ thống (userId == null) — bài của user xem ở MyReadingListScreen riêng
+    val readings by vm.systemReadings.collectAsState()
 
     // Menu danh mục bài đọc — giờ mở từ icon ở TopAppBar (góc trên-phải)
     var showCategoryMenu by remember { mutableStateOf(false) }

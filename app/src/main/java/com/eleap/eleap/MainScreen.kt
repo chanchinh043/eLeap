@@ -44,7 +44,7 @@ private val READING_ENTRY_SCREENS = setOf(Screen.READING_LIST, Screen.MY_READING
 
 private fun previousScreenOf(screen: Screen): Screen = when (screen) {
     Screen.READING_LIST        -> Screen.MAIN
-    Screen.READING             -> Screen.READING_LIST
+    Screen.READING             -> Screen.READING_LIST   // fallback mặc định — bị override động trong goBack() khi vào từ MY_READING
     Screen.MY_READING          -> Screen.MAIN   // ← back từ MyReading về thẳng trang chủ
     Screen.ADD_MY_READING      -> Screen.MY_READING
     Screen.VOCAB               -> Screen.MAIN
@@ -98,6 +98,12 @@ fun MainScreen() {
     var lastReadingEntryScreen by remember {
         mutableStateOf(loadLastReadingEntryScreen(context))
     }
+
+    // ── Nhớ màn đã mở READING từ đâu (READING_LIST hay MY_READING) ──────────
+    // Dùng riêng để goBack() từ READING quay đúng về nguồn, không lệ thuộc
+    // lastReadingEntryScreen (cái đó chỉ dùng cho nút "Reading" ở trang chủ).
+    var readingEntryPoint by remember { mutableStateOf(Screen.READING_LIST) }
+
     val vm: VocabViewModel = viewModel(
         viewModelStoreOwner = activity,
         factory = VocabViewModel.Factory(context)
@@ -118,7 +124,13 @@ fun MainScreen() {
         screen = target
     }
 
-    fun goBack() { screen = previousScreenOf(screen) }
+    fun goBack() {
+        screen = if (screen == Screen.READING) {
+            readingEntryPoint   // ← quay đúng về màn đã mở bài đọc (READING_LIST hoặc MY_READING)
+        } else {
+            previousScreenOf(screen)
+        }
+    }
 
     BackHandler(enabled = screen != Screen.MAIN) { goBack() }
 
@@ -154,6 +166,7 @@ fun MainScreen() {
             lastReadingEntryScreen  = lastReadingEntryScreen,
             onNavigateTo            = { navigateTo(it) },
             onSelectReading         = { id ->
+                readingEntryPoint = screen   // ghi nhớ đang đứng ở READING_LIST hay MY_READING
                 selectedReadingId = id
                 screen = Screen.READING
             },
@@ -215,7 +228,8 @@ private fun ScreenContent(
         Screen.MY_READING -> MyReadingListScreen(
             onBack            = onBack,
             onAddClick        = { onNavigateTo(Screen.READING_LIST) },
-            onAddReadingClick = { onNavigateTo(Screen.ADD_MY_READING) }
+            onAddReadingClick = { onNavigateTo(Screen.ADD_MY_READING) },
+            onReadingClick    = { readingId -> onSelectReading(readingId) }
         )
 
         Screen.ADD_MY_READING -> AddMyReadingScreen(

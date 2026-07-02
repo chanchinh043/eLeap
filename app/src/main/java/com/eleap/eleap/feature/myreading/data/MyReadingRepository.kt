@@ -7,6 +7,11 @@ import android.content.Context
 import android.database.sqlite.SQLiteDatabase
 import android.database.sqlite.SQLiteOpenHelper
 import android.util.Log
+import com.eleap.eleap.core.auth.CurrentUser
+import com.eleap.eleap.feature.reading.data.Reading
+import com.eleap.eleap.feature.reading.data.ReadingSentence
+import com.eleap.eleap.feature.reading.data.SentencePhrase
+import com.eleap.eleap.feature.reading.data.SentenceWord
 import kotlinx.coroutines.Dispatchers
 import kotlinx.coroutines.withContext
 import java.security.SecureRandom
@@ -18,28 +23,7 @@ import java.util.TimeZone
 private const val TAG = "MyReadingRepository"
 
 // ─────────────────────────────────────────────────────────────────────────────
-// 0a. user_id placeholder — TẠM THỜI, chưa có Auth/Sync
-//
-// Hiện tại app chưa có đăng nhập, nên mọi bài đọc tạo trong MyReading đều gán
-// user_id = GUEST_USER_ID (chuỗi cố định, KHÔNG phải UUID).
-//
-// SAU NÀY khi có Auth/Sync với Supabase:
-//   - Khi user đăng nhập → Supabase trả về user_id thật (UUID v7 dạng String).
-//   - Cần 1 bước migrate: UPDATE readings SET user_id = '<uuid_that_from_server>'
-//     WHERE user_id = GUEST_USER_ID  (gán lại toàn bộ bài đọc "guest" hiện có
-//     cho tài khoản vừa đăng nhập).
-//   - Sau bước migrate đó, insertReadingWithSentences() bên dưới cần đổi để
-//     nhận user_id thật từ session hiện tại (thay vì hard-code GUEST_USER_ID),
-//     ví dụ: nhận thêm param `currentUserId: String?` từ nơi gọi (ViewModel/
-//     AuthManager), fallback về GUEST_USER_ID nếu chưa đăng nhập.
-// ─────────────────────────────────────────────────────────────────────────────
-
-const val GUEST_USER_ID = "guest"
-
-// ─────────────────────────────────────────────────────────────────────────────
 // 0. UUID v7 — time-ordered UUID (RFC 9562 draft), dùng làm primary key
-//    thay vì INTEGER AUTOINCREMENT, để id sinh ra ở client vẫn sort được
-//    theo thời gian tạo.
 // ─────────────────────────────────────────────────────────────────────────────
 
 object UuidV7 {
@@ -50,17 +34,14 @@ object UuidV7 {
         val rand = ByteArray(10).also { random.nextBytes(it) }
 
         val buf = ByteArray(16)
-        // 48 bit: unix_ts_ms
         buf[0] = (unixMillis shr 40).toByte()
         buf[1] = (unixMillis shr 32).toByte()
         buf[2] = (unixMillis shr 24).toByte()
         buf[3] = (unixMillis shr 16).toByte()
         buf[4] = (unixMillis shr 8).toByte()
         buf[5] = unixMillis.toByte()
-        // 4 bit version (0111) + 12 bit random
         buf[6] = (0x70 or (rand[0].toInt() and 0x0F)).toByte()
         buf[7] = rand[1]
-        // 2 bit variant (10) + 62 bit random
         buf[8] = (0x80 or (rand[2].toInt() and 0x3F)).toByte()
         buf[9] = rand[3]
         for (i in 0..5) buf[10 + i] = rand[4 + i]
@@ -71,10 +52,6 @@ object UuidV7 {
     }
 }
 
-// ─────────────────────────────────────────────────────────────────────────────
-// 0b. Timestamp ISO 8601 (UTC)
-// ─────────────────────────────────────────────────────────────────────────────
-
 private fun nowIso8601(): String {
     val sdf = SimpleDateFormat("yyyy-MM-dd'T'HH:mm:ss'Z'", Locale.US)
     sdf.timeZone = TimeZone.getTimeZone("UTC")
@@ -82,9 +59,7 @@ private fun nowIso8601(): String {
 }
 
 // ─────────────────────────────────────────────────────────────────────────────
-// 1. Tách nội dung thành câu / từ — giống logic bên UserReadingData,
-//    lặp lại ở đây để module myreading tự chứa, không phụ thuộc
-//    feature.userreading.
+// 1. Tách nội dung thành câu / từ
 // ─────────────────────────────────────────────────────────────────────────────
 
 data class MyParsedSentence(
@@ -131,30 +106,13 @@ fun splitMyWords(sentenceText: String): List<String> =
         .filter { it.isNotEmpty() }
 
 // ─────────────────────────────────────────────────────────────────────────────
-// 2. Model đọc ra (dùng cho MyReadingListScreen sau này)
-// ─────────────────────────────────────────────────────────────────────────────
-
-data class MyReading(
-    val readingId: String,
-    val userId: String?,
-    val titleEn: String?,
-    val titleVi: String?,
-    val level: String?,
-    val topic: String?,
-    val isAiProcessed: Boolean,
-    val createdAt: String?,
-    val updatedAt: String?,
-)
-
-// ─────────────────────────────────────────────────────────────────────────────
-// 3. SQLiteOpenHelper — mở/tạo myreading.db, HOÀN TOÀN riêng biệt với users.db
-//    và readings.db, tự quản lý version/migration.
+// 2. SQLiteOpenHelper — mở/tạo myreading.db, độc lập với readings.db và users.db
 // ─────────────────────────────────────────────────────────────────────────────
 
 private const val DB_NAME    = "myreading.db"
 private const val DB_VERSION = 2
 
-private class MyReadingDbHelper(context: Context) :
+class MyReadingDbHelper(context: Context) :
     SQLiteOpenHelper(context.applicationContext, DB_NAME, null, DB_VERSION) {
 
     override fun onConfigure(db: SQLiteDatabase) {
@@ -233,27 +191,127 @@ private class MyReadingDbHelper(context: Context) :
 
     override fun onUpgrade(db: SQLiteDatabase, oldVersion: Int, newVersion: Int) {
         if (oldVersion < 2) {
-            // version 1 → 2: thêm user_id + is_ai_processed vào bảng readings
-            // (khớp với schema readings.db mới)
             db.execSQL("ALTER TABLE readings ADD COLUMN user_id TEXT")
             db.execSQL("ALTER TABLE readings ADD COLUMN is_ai_processed INTEGER DEFAULT 0")
             Log.d(TAG, "onUpgrade $oldVersion→$newVersion: đã thêm cột user_id, is_ai_processed")
         }
-        // Các migration sau sẽ bổ sung tiếp ở đây khi tăng DB_VERSION.
     }
 }
 
 // ─────────────────────────────────────────────────────────────────────────────
-// 4. DAO — insert / delete
+// 3. DAO — đọc + ghi, LUÔN thao tác gắn với 1 user_id cụ thể do caller truyền vào
+//    (Repository sẽ luôn truyền CurrentUser.userId.value tại thời điểm gọi)
 // ─────────────────────────────────────────────────────────────────────────────
 
-private class MyReadingDao(private val db: SQLiteDatabase) {
+class MyReadingDao(private val db: SQLiteDatabase) {
+
+    fun getAllReadings(userId: String): List<Reading> {
+        val list = mutableListOf<Reading>()
+        db.rawQuery(
+            "SELECT * FROM readings WHERE user_id = ? ORDER BY created_at DESC",
+            arrayOf(userId)
+        ).use { c ->
+            fun nullableString(col: String): String? {
+                val idx = c.getColumnIndexOrThrow(col)
+                return if (c.isNull(idx)) null else c.getString(idx)
+            }
+            while (c.moveToNext()) {
+                list.add(
+                    Reading(
+                        readingId     = c.getString(c.getColumnIndexOrThrow("reading_id")),
+                        userId        = nullableString("user_id"),
+                        titleEn       = nullableString("title_en"),
+                        titleVi       = nullableString("title_vi"),
+                        level         = nullableString("level"),
+                        topic         = nullableString("topic"),
+                        isAiProcessed = c.getInt(c.getColumnIndexOrThrow("is_ai_processed")) != 0,
+                        createdAt     = nullableString("created_at"),
+                        updatedAt     = nullableString("updated_at"),
+                    )
+                )
+            }
+        }
+        return list
+    }
+
+    fun getSentencesByReadingId(readingId: String): List<ReadingSentence> {
+        val list = mutableListOf<ReadingSentence>()
+        db.rawQuery(
+            "SELECT * FROM reading_sentences WHERE reading_id = ? ORDER BY sentence_order ASC",
+            arrayOf(readingId)
+        ).use { c ->
+            while (c.moveToNext()) {
+                list.add(
+                    ReadingSentence(
+                        sentenceId          = c.getString(c.getColumnIndexOrThrow("sentence_id")),
+                        readingId           = c.getString(c.getColumnIndexOrThrow("reading_id")),
+                        textEn              = c.getString(c.getColumnIndexOrThrow("text_en")),
+                        textVi              = c.getString(c.getColumnIndexOrThrow("text_vi")),
+                        sentenceExplanation = c.getString(c.getColumnIndexOrThrow("sentence_explanation")),
+                        sentenceOrder       = c.getInt(c.getColumnIndexOrThrow("sentence_order")),
+                    )
+                )
+            }
+        }
+        return list
+    }
+
+    fun getPhrasesBySentenceId(sentenceId: String): List<SentencePhrase> {
+        val list = mutableListOf<SentencePhrase>()
+        db.rawQuery(
+            "SELECT * FROM sentence_phrases WHERE sentence_id = ?",
+            arrayOf(sentenceId)
+        ).use { c ->
+            while (c.moveToNext()) {
+                list.add(
+                    SentencePhrase(
+                        phraseId          = c.getString(c.getColumnIndexOrThrow("phrase_id")),
+                        sentenceId        = c.getString(c.getColumnIndexOrThrow("sentence_id")),
+                        textEn            = c.getString(c.getColumnIndexOrThrow("text_en")),
+                        textVi            = c.getString(c.getColumnIndexOrThrow("text_vi")),
+                        phraseExplanation = c.getString(c.getColumnIndexOrThrow("phrase_explanation")),
+                        startWordOrder    = c.getInt(c.getColumnIndexOrThrow("start_word_order")),
+                        endWordOrder      = c.getInt(c.getColumnIndexOrThrow("end_word_order")),
+                    )
+                )
+            }
+        }
+        return list
+    }
+
+    fun getWordsBySentenceId(sentenceId: String): List<SentenceWord> {
+        val list = mutableListOf<SentenceWord>()
+        db.rawQuery(
+            "SELECT * FROM sentence_words WHERE sentence_id = ? ORDER BY word_order ASC",
+            arrayOf(sentenceId)
+        ).use { c ->
+            val phraseIdIdx = c.getColumnIndexOrThrow("phrase_id")
+            while (c.moveToNext()) {
+                list.add(
+                    SentenceWord(
+                        wordId              = c.getString(c.getColumnIndexOrThrow("word_id")),
+                        sentenceId          = c.getString(c.getColumnIndexOrThrow("sentence_id")),
+                        phraseId            = if (c.isNull(phraseIdIdx)) null else c.getString(phraseIdIdx),
+                        textEn              = c.getString(c.getColumnIndexOrThrow("text_en")),
+                        textVi              = c.getString(c.getColumnIndexOrThrow("text_vi")),
+                        wordExplanation     = c.getString(c.getColumnIndexOrThrow("word_explanation")),
+                        wordOrder           = c.getInt(c.getColumnIndexOrThrow("word_order")),
+                        pos                 = c.getString(c.getColumnIndexOrThrow("pos")),
+                        lemma               = c.getString(c.getColumnIndexOrThrow("lemma")),
+                        wordFormExplanation = c.getString(c.getColumnIndexOrThrow("word_form_explanation")),
+                    )
+                )
+            }
+        }
+        return list
+    }
 
     /**
      * Insert 1 bài đọc + toàn bộ câu + từng word trong 1 transaction.
      * Trả về reading_id (UUID v7) mới, hoặc null nếu thất bại.
      */
     fun insertReadingWithSentences(
+        userId: String,
         titleEn: String,
         sentences: List<MyParsedSentence>,
     ): String? {
@@ -264,19 +322,14 @@ private class MyReadingDao(private val db: SQLiteDatabase) {
         try {
             val cv = ContentValues().apply {
                 put("reading_id", readingId)
-                // TODO(auth-sync): thay GUEST_USER_ID bằng user_id thật (UUID v7
-                // từ Supabase) khi đã có Auth. Xem ghi chú ở GUEST_USER_ID phía trên.
-                put("user_id",    GUEST_USER_ID)
+                put("user_id",    userId)
                 put("title_en",   titleEn)
                 put("created_at", now)
                 put("updated_at", now)
-                // Bài mới tạo trong app → chưa qua xử lý AI, luôn để false.
-                // Sẽ được đổi thành true ở bước xử lý AI riêng sau này.
                 put("is_ai_processed", false)
-                // title_vi, level, topic: chưa có → để NULL (chưa qua xử lý AI)
             }
             val readingRowId = db.insert("readings", null, cv)
-            Log.d(TAG, "insert reading: \"$titleEn\" → reading_id=$readingId (rowId=$readingRowId)")
+            Log.d(TAG, "insert reading: \"$titleEn\" (user=$userId) → reading_id=$readingId (rowId=$readingRowId)")
 
             if (readingRowId == -1L) {
                 db.endTransaction()
@@ -291,14 +344,8 @@ private class MyReadingDao(private val db: SQLiteDatabase) {
                     put("text_en",         s.text)
                     put("sentence_order",  s.sentenceOrder)
                     put("paragraph_order", s.paragraphOrder)
-                    // text_vi, sentence_explanation: chưa có → để NULL
                 }
                 val sentenceRowId = db.insert("reading_sentences", null, scv)
-                Log.d(
-                    TAG,
-                    "  sentence #${s.sentenceOrder} (para ${s.paragraphOrder}) → sentence_id=$sentenceId"
-                )
-
                 if (sentenceRowId == -1L) return@forEach
 
                 val wordTokens = splitMyWords(s.text)
@@ -308,15 +355,9 @@ private class MyReadingDao(private val db: SQLiteDatabase) {
                         put("sentence_id", sentenceId)
                         put("text_en",     token)
                         put("word_order",  index + 1)
-                        // phrase_id, text_vi, word_explanation, pos, lemma,
-                        // word_form_explanation: chưa có → để NULL
                     }
-                    val wordRowId = db.insert("sentence_words", null, wcv)
-                    if (wordRowId == -1L) {
-                        Log.w(TAG, "    word #${index + 1} \"$token\" insert thất bại")
-                    }
+                    db.insert("sentence_words", null, wcv)
                 }
-                Log.d(TAG, "    → đã tách ${wordTokens.size} word(s)")
             }
 
             db.setTransactionSuccessful()
@@ -328,7 +369,7 @@ private class MyReadingDao(private val db: SQLiteDatabase) {
 
     /**
      * Xoá hoàn toàn 1 bài đọc: sentence_words → sentence_phrases →
-     * reading_sentences → readings (thứ tự FK, giống UserReadingDao).
+     * reading_sentences → readings.
      */
     fun deleteReadingById(readingId: String): Boolean {
         db.beginTransaction()
@@ -337,22 +378,14 @@ private class MyReadingDao(private val db: SQLiteDatabase) {
             db.rawQuery(
                 "SELECT sentence_id FROM reading_sentences WHERE reading_id = ?",
                 arrayOf(readingId)
-            ).use { c ->
-                while (c.moveToNext()) sentenceIds.add(c.getString(0))
-            }
-            Log.d(TAG, "deleteReading: readingId=$readingId, sentences=${sentenceIds.size}")
+            ).use { c -> while (c.moveToNext()) sentenceIds.add(c.getString(0)) }
 
             sentenceIds.forEach { sid ->
-                val wRows = db.delete("sentence_words", "sentence_id = ?", arrayOf(sid))
-                val pRows = db.delete("sentence_phrases", "sentence_id = ?", arrayOf(sid))
-                Log.d(TAG, "  sentence_id=$sid → xoá $wRows words, $pRows phrases")
+                db.delete("sentence_words", "sentence_id = ?", arrayOf(sid))
+                db.delete("sentence_phrases", "sentence_id = ?", arrayOf(sid))
             }
-
-            val sRows = db.delete("reading_sentences", "reading_id = ?", arrayOf(readingId))
-            Log.d(TAG, "  → xoá $sRows sentences")
-
+            db.delete("reading_sentences", "reading_id = ?", arrayOf(readingId))
             val rRows = db.delete("readings", "reading_id = ?", arrayOf(readingId))
-            Log.d(TAG, "  → xoá $rRows reading row(s)")
 
             db.setTransactionSuccessful()
             rRows > 0
@@ -364,47 +397,53 @@ private class MyReadingDao(private val db: SQLiteDatabase) {
         }
     }
 
-    fun getAllReadings(): List<MyReading> {
-        val list = mutableListOf<MyReading>()
-        db.rawQuery(
-            "SELECT * FROM readings ORDER BY created_at DESC", null
-        ).use { c ->
-            fun nullableString(col: String): String? {
-                val idx = c.getColumnIndexOrThrow(col)
-                return if (c.isNull(idx)) null else c.getString(idx)
-            }
-            while (c.moveToNext()) {
-                val userIdIdx = c.getColumnIndexOrThrow("user_id")
-                list.add(
-                    MyReading(
-                        readingId     = c.getString(c.getColumnIndexOrThrow("reading_id")),
-                        userId        = if (c.isNull(userIdIdx)) null else c.getString(userIdIdx),
-                        titleEn       = nullableString("title_en"),
-                        titleVi       = nullableString("title_vi"),
-                        level         = nullableString("level"),
-                        topic         = nullableString("topic"),
-                        isAiProcessed = c.getInt(c.getColumnIndexOrThrow("is_ai_processed")) != 0,
-                        createdAt     = nullableString("created_at"),
-                        updatedAt     = nullableString("updated_at"),
-                    )
-                )
-            }
-        }
-        return list
+    /**
+     * Chuyển toàn bộ bài đọc từ 1 user_id (thường là guest) sang user_id khác
+     * (thường là uuid thật vừa đăng nhập). Trả về số dòng đã cập nhật.
+     */
+    fun migrateOwnership(fromUserId: String, toUserId: String): Int {
+        val cv = ContentValues().apply { put("user_id", toUserId) }
+        val rows = db.update("readings", cv, "user_id = ?", arrayOf(fromUserId))
+        Log.d(TAG, "migrateOwnership: $fromUserId → $toUserId, $rows row(s)")
+        return rows
     }
 }
 
 // ─────────────────────────────────────────────────────────────────────────────
-// 5. Repository — public API dùng từ Compose (AddMyReadingScreen, ...)
+// 4. Repository — public API. Mọi hàm đọc/ghi đều gắn với CurrentUser.userId
+//    tại thời điểm gọi — không nhận userId từ tham số để tránh nơi gọi quên
+//    truyền đúng, hoặc truyền nhầm user khác.
 // ─────────────────────────────────────────────────────────────────────────────
 
-class MyReadingRepository private constructor(context: Context) {
+class MyReadingRepository private constructor(myDb: SQLiteDatabase) {
 
-    private val dbHelper = MyReadingDbHelper(context)
-    private val dao: MyReadingDao by lazy { MyReadingDao(dbHelper.writableDatabase) }
+    private val dao = MyReadingDao(myDb)
+
+    // key = readingId, value = sentences (đã gắn phrases + words)
+    private val sentenceCache = mutableMapOf<String, List<ReadingSentence>>()
+
+    suspend fun getAllReadings(): List<Reading> =
+        withContext(Dispatchers.IO) { dao.getAllReadings(CurrentUser.userId.value) }
+
+    suspend fun getReading(readingId: String): List<ReadingSentence> =
+        withContext(Dispatchers.IO) {
+            sentenceCache[readingId] ?: buildReading(readingId).also {
+                sentenceCache[readingId] = it
+            }
+        }
+
+    private fun buildReading(readingId: String): List<ReadingSentence> {
+        val sentences = dao.getSentencesByReadingId(readingId)
+        return sentences.map { s ->
+            s.copy(
+                phrases = dao.getPhrasesBySentenceId(s.sentenceId),
+                words   = dao.getWordsBySentenceId(s.sentenceId),
+            )
+        }
+    }
 
     /**
-     * Tách nội dung thành câu rồi lưu vào myreading.db.
+     * Tách nội dung thành câu rồi lưu vào myreading.db, gắn với user hiện tại.
      * Trả về reading_id mới (UUID v7), hoặc null nếu thất bại.
      */
     suspend fun saveMyReading(title: String, content: String): String? =
@@ -415,14 +454,11 @@ class MyReadingRepository private constructor(context: Context) {
                     Log.w(TAG, "Nội dung không có câu nào sau khi tách")
                     return@withContext null
                 }
-                val id = dao.insertReadingWithSentences(
+                dao.insertReadingWithSentences(
+                    userId    = CurrentUser.userId.value,
                     titleEn   = title.trim(),
                     sentences = sentences,
                 )
-                if (id != null) {
-                    Log.d(TAG, "saveMyReading OK: reading_id=$id, sentences=${sentences.size}")
-                }
-                id
             } catch (e: Exception) {
                 Log.e(TAG, "saveMyReading error", e)
                 null
@@ -432,20 +468,23 @@ class MyReadingRepository private constructor(context: Context) {
     suspend fun deleteMyReading(readingId: String): Boolean =
         withContext(Dispatchers.IO) {
             try {
-                dao.deleteReadingById(readingId)
+                dao.deleteReadingById(readingId).also { ok ->
+                    if (ok) sentenceCache.remove(readingId)
+                }
             } catch (e: Exception) {
                 Log.e(TAG, "deleteMyReading error", e)
                 false
             }
         }
 
-    suspend fun getAllReadings(): List<MyReading> =
+    /**
+     * Gọi sau khi đăng nhập/đăng ký Supabase thành công (sau CurrentUser.setUser(newId)):
+     * chuyển toàn bộ bài đã tạo lúc còn là guest sang tài khoản vừa đăng nhập.
+     */
+    suspend fun migrateGuestDataTo(newUserId: String): Int =
         withContext(Dispatchers.IO) {
-            try {
-                dao.getAllReadings()
-            } catch (e: Exception) {
-                Log.e(TAG, "getAllReadings error", e)
-                emptyList()
+            dao.migrateOwnership(CurrentUser.GUEST_ID, newUserId).also {
+                sentenceCache.clear()
             }
         }
 
@@ -454,7 +493,9 @@ class MyReadingRepository private constructor(context: Context) {
 
         fun getInstance(context: Context): MyReadingRepository =
             INSTANCE ?: synchronized(this) {
-                INSTANCE ?: MyReadingRepository(context.applicationContext).also { INSTANCE = it }
+                INSTANCE ?: MyReadingRepository(
+                    MyReadingDbHelper(context.applicationContext).writableDatabase
+                ).also { INSTANCE = it }
             }
     }
 }

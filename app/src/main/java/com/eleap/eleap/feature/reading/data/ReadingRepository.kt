@@ -1,13 +1,12 @@
 // ReadingRepository.kt
-// File gộp từ: Entities.kt, ReadingDao.kt, ReadingDatabase.kt, ReadingRepository.kt
-// Vẫn nằm trong package com.eleap.eleap.feature.reading.data (thư mục data/)
-// → Các file khác (ReadingViewModel, ReadingListScreen, ReadingScreen, WordPopup, SaveWord,
-//   SentencePopup) KHÔNG cần đổi import gì cả.
+// File gộp: Entities.kt, ReadingDao.kt, ReadingDatabase.kt, ReadingRepository.kt
+// Vẫn nằm trong package com.eleap.eleap.feature.reading.data
 package com.eleap.eleap.feature.reading.data
 
 import android.content.Context
 import android.database.sqlite.SQLiteDatabase
 import android.util.Log
+import com.eleap.eleap.feature.myreading.data.MyReadingRepository
 import java.io.File
 import java.io.FileOutputStream
 import java.security.MessageDigest
@@ -15,7 +14,7 @@ import kotlinx.coroutines.Dispatchers
 import kotlinx.coroutines.withContext
 
 // ═════════════════════════════════════════════════════════════════════════════
-// 1. ENTITIES (trước đây ở Entities.kt)
+// 1. ENTITIES
 // ═════════════════════════════════════════════════════════════════════════════
 
 // ── readings ──────────────────────────────────────────────────────────────────
@@ -78,7 +77,7 @@ data class DictEntry(
 )
 
 // ═════════════════════════════════════════════════════════════════════════════
-// 2. DAO (trước đây ở ReadingDao.kt)
+// 2. DAO — CHỈ đọc readings.db + dict.db. Không biết myreading.db tồn tại.
 // ═════════════════════════════════════════════════════════════════════════════
 
 class ReadingDao(
@@ -86,7 +85,7 @@ class ReadingDao(
     private val dictDb: SQLiteDatabase,
 ) {
 
-    // ── Flow 2: danh sách bài đọc ─────────────────────────────────────────────
+    // ── Flow 2: danh sách bài đọc hệ thống ───────────────────────────────────
     fun getAllReadings(): List<Reading> {
         val list = mutableListOf<Reading>()
         val cursor = db.rawQuery("SELECT * FROM readings ORDER BY reading_id ASC", null)
@@ -194,7 +193,6 @@ class ReadingDao(
         if (words.isEmpty()) return emptyList()
         val list = mutableListOf<DictEntry>()
 
-        // Chia batch để không vượt giới hạn placeholder của SQLite (~999)
         words.chunked(500).forEach { chunk ->
             val placeholders = chunk.joinToString(",") { "?" }
             val cursor = dictDb.rawQuery(
@@ -220,20 +218,10 @@ class ReadingDao(
 }
 
 // ═════════════════════════════════════════════════════════════════════════════
-// 3. DATABASE (trước đây ở ReadingDatabase.kt)
+// 3. DATABASE — chỉ mở readings.db + dict.db (asset, readonly). myreading.db
+//    được MyReadingRepository tự quản lý hoàn toàn riêng, không liên quan ở đây.
 // ═════════════════════════════════════════════════════════════════════════════
 
-/**
- * Mở readings.db và dict.db từ assets bằng SQLite thuần — không dùng Room.
- *
- * Cơ chế tự động cập nhật:
- *   - Tính MD5 của file trong assets và file đang dùng trên thiết bị.
- *   - Nếu khác nhau (DB đã được thay bằng file mới) → tự động copy đè, không cần xóa app.
- *   - Hash được lưu trong SharedPreferences để tránh tính lại mỗi lần khởi động.
- *
- * Lưu ý: readings.db và dict.db là DB chỉ đọc từ assets — không chứa dữ liệu người dùng.
- * Dữ liệu người dùng (từ đã lưu, v.v.) nằm trong users.db — không bị ảnh hưởng.
- */
 class ReadingDatabase private constructor(context: Context) {
 
     val db: SQLiteDatabase       // readings.db
@@ -244,19 +232,12 @@ class ReadingDatabase private constructor(context: Context) {
         dictDb = openDatabase(context, "dict.db")
     }
 
-    /**
-     * Mở một DB từ assets.
-     * Tự động copy lại từ assets nếu:
-     *   1. File chưa tồn tại trên thiết bị (lần đầu cài app), hoặc
-     *   2. MD5 của file assets khác với MD5 đã lưu (DB đã được cập nhật trong APK mới).
-     */
     private fun openDatabase(context: Context, fileName: String): SQLiteDatabase {
         val prefs      = context.getSharedPreferences("db_checksums", Context.MODE_PRIVATE)
         val prefKey    = "md5_$fileName"
         val assetPath  = "databases/$fileName"
         val dbFile     = File(context.getDatabasePath(fileName).absolutePath)
 
-        // ── Tính MD5 của file trong assets ───────────────────────────────────
         val assetMd5 = context.assets.open(assetPath).use { md5OfStream(it) }
         Log.d("ReadingDB", "$fileName | asset MD5  = $assetMd5")
 
@@ -268,7 +249,6 @@ class ReadingDatabase private constructor(context: Context) {
         if (needsCopy) {
             Log.d("ReadingDB", "$fileName | DB thay đổi → copy lại từ assets")
             dbFile.parentFile?.mkdirs()
-            // Đóng DB cũ nếu đang mở (trường hợp singleton bị tái tạo)
             try { SQLiteDatabase.openDatabase(dbFile.absolutePath, null, SQLiteDatabase.OPEN_READONLY).close() }
             catch (_: Exception) { }
 
@@ -288,7 +268,6 @@ class ReadingDatabase private constructor(context: Context) {
         )
     }
 
-    /** Tính MD5 của một InputStream, trả về chuỗi hex 32 ký tự. */
     private fun md5OfStream(stream: java.io.InputStream): String {
         val digest = MessageDigest.getInstance("MD5")
         val buffer = ByteArray(8192)
@@ -310,10 +289,15 @@ class ReadingDatabase private constructor(context: Context) {
 }
 
 // ═════════════════════════════════════════════════════════════════════════════
-// 4. REPOSITORY (trước đây ở ReadingRepository.kt)
+// 4. REPOSITORY — gộp danh sách hệ thống (readings.db, userId == null) +
+//    danh sách của user hiện tại (myreading.db, userId != null, qua
+//    MyReadingRepository). Route theo userId, không tự SELECT myreading.db.
 // ═════════════════════════════════════════════════════════════════════════════
 
-class ReadingRepository(private val dao: ReadingDao) {
+class ReadingRepository(
+    private val dao: ReadingDao,
+    private val myReadingRepository: MyReadingRepository,
+) {
 
     // ── Cache RAM ─────────────────────────────────────────────────────────────
     private var readingListCache: List<Reading>? = null
@@ -324,16 +308,36 @@ class ReadingRepository(private val dao: ReadingDao) {
     // key = word đã normalize (lowercase, trim), value = DictEntry (dict.db)
     private val dictCache = mutableMapOf<String, DictEntry>()
 
-    // ── Flow 2 ────────────────────────────────────────────────────────────────
-    suspend fun getAllReadings(): List<Reading> = withContext(Dispatchers.IO) {
-        readingListCache ?: dao.getAllReadings().also { readingListCache = it }
-    }
+    // key = readingId, value = userId của bài đó — null nghĩa là bài hệ thống
+    // (readings.db), khác null nghĩa là bài của user (myreading.db).
+    private val userIdOf = mutableMapOf<String, String?>()
 
-    // ── Flow 3 ────────────────────────────────────────────────────────────────
+    // ── Flow 2: gộp cả 2 nguồn ────────────────────────────────────────────────
+    suspend fun getAllReadings(forceRefresh: Boolean = false): List<Reading> =
+        withContext(Dispatchers.IO) {
+            if (forceRefresh) readingListCache = null
+            readingListCache ?: run {
+                val system = dao.getAllReadings()                    // userId luôn null
+                val mine   = myReadingRepository.getAllReadings()    // userId luôn != null (CurrentUser hiện tại)
+                userIdOf.clear()
+                (system + mine).forEach { userIdOf[it.readingId] = it.userId }
+                (system + mine).also { readingListCache = it }
+            }
+        }
+
+    // ── Flow 3: route theo userId đã biết từ getAllReadings() ───────────────
     suspend fun getReading(readingId: String): List<ReadingSentence> =
         withContext(Dispatchers.IO) {
-            readingCache[readingId] ?: buildReading(readingId).also {
-                readingCache[readingId] = it
+            readingCache[readingId] ?: run {
+                if (userIdOf.isEmpty()) getAllReadings()   // chưa load list lần nào → load trước
+
+                val result = if (userIdOf[readingId] != null) {
+                    myReadingRepository.getReading(readingId)   // delegate — không tự SELECT myreading.db
+                } else {
+                    buildReading(readingId)
+                }
+                readingCache[readingId] = result
+                result
             }
         }
 
@@ -347,7 +351,6 @@ class ReadingRepository(private val dao: ReadingDao) {
     }
 
     // ── Background: nạp Dict RAM cho các từ xuất hiện trong bài đọc ──────────
-    // Gọi sau khi bài đọc đã hiển thị, không chặn UI.
     suspend fun preloadDictForReading(sentences: List<ReadingSentence>) =
         withContext(Dispatchers.IO) {
             val keysToLoad = sentences
@@ -367,7 +370,6 @@ class ReadingRepository(private val dao: ReadingDao) {
     fun getDictEntry(textEn: String?): DictEntry? =
         normalizeWord(textEn)?.let { dictCache[it] }
 
-    // ── Chuẩn hoá từ để tra cứu: lowercase, bỏ khoảng trắng + dấu câu ở 2 đầu ──
     private fun normalizeWord(text: String?): String? {
         val cleaned = text
             ?.trim()

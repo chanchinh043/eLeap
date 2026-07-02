@@ -25,40 +25,24 @@ import androidx.compose.ui.Modifier
 import androidx.compose.ui.graphics.Color
 import androidx.compose.ui.platform.LocalContext
 import androidx.compose.ui.unit.dp
-import com.eleap.eleap.feature.myreading.data.MyReading
-import com.eleap.eleap.feature.myreading.data.MyReadingRepository
-import kotlinx.coroutines.launch
+import androidx.lifecycle.viewmodel.compose.viewModel
+import com.eleap.eleap.feature.reading.ReadingViewModel
+import com.eleap.eleap.feature.reading.data.Reading
 
-// Màn "Bài đọc của tôi" — hiển thị danh sách bài đọc lấy từ myreading.db
-// qua MyReadingRepository. Bấm vào 1 bài chỉ log tạm (chưa có màn đọc riêng
-// cho MyReading — sẽ nối onReadingClick khi có màn đó).
+// Màn "Bài đọc của tôi" — hiển thị danh sách bài đọc của user hiện tại
+// (userId != null), lấy từ ReadingViewModel.myReadings (đã gộp sẵn qua
+// ReadingRepository + MyReadingRepository, filter theo CurrentUser).
 @OptIn(ExperimentalMaterial3Api::class)
 @Composable
 fun MyReadingListScreen(
     onBack: () -> Unit,
     onAddClick: () -> Unit,          // nút (+) FAB → chuyển sang ReadingListScreen
-    onAddReadingClick: () -> Unit,   // ← mới: mục đầu tiên trong menu → AddMyReadingScreen
+    onAddReadingClick: () -> Unit,   // ← mục đầu tiên trong menu → AddMyReadingScreen
+    onReadingClick: (readingId: String) -> Unit,   // ← bấm vào 1 bài → mở ReadingScreen
 ) {
     val context = LocalContext.current
-    val scope   = rememberCoroutineScope()
-    val repo    = remember { MyReadingRepository.getInstance(context) }
-
-    var readings  by remember { mutableStateOf<List<MyReading>>(emptyList()) }
-    var isLoading by remember { mutableStateOf(true) }
-
-    // Load lại mỗi khi màn này được vào (kể cả sau khi quay lại từ AddMyReadingScreen,
-    // vì navigate trong MainScreen tạo lại composable này từ đầu).
-    LaunchedEffect(Unit) {
-        isLoading = true
-        readings  = repo.getAllReadings()
-        isLoading = false
-    }
-
-    fun reload() {
-        scope.launch {
-            readings = repo.getAllReadings()
-        }
-    }
+    val vm: ReadingViewModel = viewModel(factory = ReadingViewModel.Factory(context))
+    val readings by vm.myReadings.collectAsState()
 
     // Menu danh mục — mở từ icon ở TopAppBar (góc trên-phải), giống ReadingListScreen
     var showMenu by remember { mutableStateOf(false) }
@@ -87,15 +71,6 @@ fun MyReadingListScreen(
             }
         ) { padding ->
             when {
-                isLoading && readings.isEmpty() -> Box(
-                    modifier = Modifier
-                        .fillMaxSize()
-                        .padding(padding),
-                    contentAlignment = Alignment.Center
-                ) {
-                    CircularProgressIndicator()
-                }
-
                 readings.isEmpty() -> EmptyMyReadingContent(
                     modifier = Modifier
                         .fillMaxSize()
@@ -113,14 +88,8 @@ fun MyReadingListScreen(
                     items(readings, key = { it.readingId }) { reading ->
                         MyReadingCard(
                             reading  = reading,
-                            onClick  = { /* TODO: mở màn đọc MyReading khi có */ },
-                            onDelete = {
-                                scope.launch {
-                                    if (repo.deleteMyReading(reading.readingId)) {
-                                        reload()
-                                    }
-                                }
-                            }
+                            onClick  = { onReadingClick(reading.readingId) },
+                            onDelete = { vm.deleteMyReading(reading.readingId) }
                         )
                     }
                 }
@@ -141,7 +110,7 @@ fun MyReadingListScreen(
 // ── Thẻ 1 bài đọc trong danh sách ────────────────────────────────────────────
 @Composable
 private fun MyReadingCard(
-    reading: MyReading,
+    reading: Reading,
     onClick: () -> Unit,
     onDelete: () -> Unit,
 ) {
@@ -218,7 +187,6 @@ private fun EmptyMyReadingContent(
 }
 
 // ── Menu — kéo từ bên phải sang, mở từ icon Menu trên TopAppBar ─────────────
-// Mục đầu tiên: "Thêm bài đọc" → AddMyReadingScreen. Các mục khác thêm sau.
 @Composable
 private fun MyReadingMenuDrawer(
     visible: Boolean,
@@ -231,7 +199,6 @@ private fun MyReadingMenuDrawer(
         exit = fadeOut(),
     ) {
         Box(modifier = Modifier.fillMaxSize()) {
-            // Scrim — chạm ra ngoài để đóng menu
             Box(
                 modifier = Modifier
                     .fillMaxSize()
@@ -267,7 +234,6 @@ private fun MyReadingMenuDrawer(
                             Spacer(modifier = Modifier.width(8.dp))
                             Text("Thêm bài đọc")
                         }
-                        // TODO: các mục khác sẽ thêm sau
                     }
                 }
             }
