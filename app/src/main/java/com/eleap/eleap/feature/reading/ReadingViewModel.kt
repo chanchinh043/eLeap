@@ -62,14 +62,14 @@ class ReadingViewModel(
     // ── savedWordIds: tập wordId đã lưu — dùng để tô màu từ trong bài đọc ────
     // Quản lý ở đây để SaveWordButton có thể notify cập nhật mà không cần
     // ReadingScreen phải poll lại DB mỗi khi popup đóng.
-    private val _savedWordIds = MutableStateFlow<Set<Int>>(emptySet())
-    val savedWordIds: StateFlow<Set<Int>> = _savedWordIds
+    private val _savedWordIds = MutableStateFlow<Set<String>>(emptySet())
+    val savedWordIds: StateFlow<Set<String>> = _savedWordIds
 
     // ── readingId đang cache — tránh load lại bài đọc đã load rồi ────────────
     // Repository đã có readingCache (RAM), nhưng ViewModel bị recreate mỗi lần
     // navigate nên loadReading() vẫn bị gọi lại. Giờ ViewModel là singleton
     // (qua Factory companion), nên chỉ cần kiểm tra biến này là đủ.
-    private var cachedReadingId: Int = -1
+    private var cachedReadingId: String? = null
 
     init {
         loadReadings()
@@ -84,7 +84,7 @@ class ReadingViewModel(
     }
 
     // ── Flow 3: chỉ load khi readingId thay đổi ──────────────────────────────
-    fun loadReading(readingId: Int) {
+    fun loadReading(readingId: String) {
         if (readingId == cachedReadingId) {
             // Bài đọc đã load rồi — không làm gì thêm, ViewModel giữ nguyên state
             Log.d("ReadingVM", "readingId=$readingId đã cache, bỏ qua loadReading()")

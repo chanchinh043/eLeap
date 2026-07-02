@@ -20,7 +20,7 @@ import kotlinx.coroutines.withContext
 
 // ── readings ──────────────────────────────────────────────────────────────────
 data class Reading(
-    val readingId: Int,
+    val readingId: String,
     val titleEn: String?,
     val titleVi: String?,
     val level: String?,
@@ -31,8 +31,8 @@ data class Reading(
 
 // ── reading_sentences ─────────────────────────────────────────────────────────
 data class ReadingSentence(
-    val sentenceId: Int,
-    val readingId: Int,
+    val sentenceId: String,
+    val readingId: String,
     val textEn: String?,
     val textVi: String?,
     val sentenceExplanation: String?,
@@ -43,8 +43,8 @@ data class ReadingSentence(
 
 // ── sentence_phrases ──────────────────────────────────────────────────────────
 data class SentencePhrase(
-    val phraseId: Int,
-    val sentenceId: Int,
+    val phraseId: String,
+    val sentenceId: String,
     val textEn: String?,
     val textVi: String?,
     val phraseExplanation: String?,
@@ -54,9 +54,9 @@ data class SentencePhrase(
 
 // ── sentence_words ────────────────────────────────────────────────────────────
 data class SentenceWord(
-    val wordId: Int,
-    val sentenceId: Int,
-    val phraseId: Int?,
+    val wordId: String,
+    val sentenceId: String,
+    val phraseId: String?,
     val textEn: String?,
     val textVi: String?,
     val wordExplanation: String?,
@@ -92,7 +92,7 @@ class ReadingDao(
             while (it.moveToNext()) {
                 list.add(
                     Reading(
-                        readingId = it.getInt(it.getColumnIndexOrThrow("reading_id")),
+                        readingId = it.getString(it.getColumnIndexOrThrow("reading_id")),
                         titleEn   = it.getString(it.getColumnIndexOrThrow("title_en")),
                         titleVi   = it.getString(it.getColumnIndexOrThrow("title_vi")),
                         level     = it.getString(it.getColumnIndexOrThrow("level")),
@@ -107,18 +107,18 @@ class ReadingDao(
     }
 
     // ── Flow 3: load sentences của 1 bài ─────────────────────────────────────
-    fun getSentencesByReadingId(readingId: Int): List<ReadingSentence> {
+    fun getSentencesByReadingId(readingId: String): List<ReadingSentence> {
         val list = mutableListOf<ReadingSentence>()
         val cursor = db.rawQuery(
             "SELECT * FROM reading_sentences WHERE reading_id = ? ORDER BY sentence_order ASC",
-            arrayOf(readingId.toString())
+            arrayOf(readingId)
         )
         cursor.use {
             while (it.moveToNext()) {
                 list.add(
                     ReadingSentence(
-                        sentenceId          = it.getInt(it.getColumnIndexOrThrow("sentence_id")),
-                        readingId           = it.getInt(it.getColumnIndexOrThrow("reading_id")),
+                        sentenceId          = it.getString(it.getColumnIndexOrThrow("sentence_id")),
+                        readingId           = it.getString(it.getColumnIndexOrThrow("reading_id")),
                         textEn              = it.getString(it.getColumnIndexOrThrow("text_en")),
                         textVi              = it.getString(it.getColumnIndexOrThrow("text_vi")),
                         sentenceExplanation = it.getString(it.getColumnIndexOrThrow("sentence_explanation")),
@@ -131,18 +131,18 @@ class ReadingDao(
     }
 
     // ── Flow 3: load phrases của 1 sentence ──────────────────────────────────
-    fun getPhrasesBySentenceId(sentenceId: Int): List<SentencePhrase> {
+    fun getPhrasesBySentenceId(sentenceId: String): List<SentencePhrase> {
         val list = mutableListOf<SentencePhrase>()
         val cursor = db.rawQuery(
             "SELECT * FROM sentence_phrases WHERE sentence_id = ?",
-            arrayOf(sentenceId.toString())
+            arrayOf(sentenceId)
         )
         cursor.use {
             while (it.moveToNext()) {
                 list.add(
                     SentencePhrase(
-                        phraseId           = it.getInt(it.getColumnIndexOrThrow("phrase_id")),
-                        sentenceId         = it.getInt(it.getColumnIndexOrThrow("sentence_id")),
+                        phraseId           = it.getString(it.getColumnIndexOrThrow("phrase_id")),
+                        sentenceId         = it.getString(it.getColumnIndexOrThrow("sentence_id")),
                         textEn             = it.getString(it.getColumnIndexOrThrow("text_en")),
                         textVi             = it.getString(it.getColumnIndexOrThrow("text_vi")),
                         phraseExplanation  = it.getString(it.getColumnIndexOrThrow("phrase_explanation")),
@@ -156,20 +156,20 @@ class ReadingDao(
     }
 
     // ── Flow 3: load words của 1 sentence ────────────────────────────────────
-    fun getWordsBySentenceId(sentenceId: Int): List<SentenceWord> {
+    fun getWordsBySentenceId(sentenceId: String): List<SentenceWord> {
         val list = mutableListOf<SentenceWord>()
         val cursor = db.rawQuery(
             "SELECT * FROM sentence_words WHERE sentence_id = ? ORDER BY word_order ASC",
-            arrayOf(sentenceId.toString())
+            arrayOf(sentenceId)
         )
         cursor.use {
             while (it.moveToNext()) {
                 val phraseIdIdx = it.getColumnIndexOrThrow("phrase_id")
                 list.add(
                     SentenceWord(
-                        wordId              = it.getInt(it.getColumnIndexOrThrow("word_id")),
-                        sentenceId          = it.getInt(it.getColumnIndexOrThrow("sentence_id")),
-                        phraseId            = if (it.isNull(phraseIdIdx)) null else it.getInt(phraseIdIdx),
+                        wordId              = it.getString(it.getColumnIndexOrThrow("word_id")),
+                        sentenceId          = it.getString(it.getColumnIndexOrThrow("sentence_id")),
+                        phraseId            = if (it.isNull(phraseIdIdx)) null else it.getString(phraseIdIdx),
                         textEn              = it.getString(it.getColumnIndexOrThrow("text_en")),
                         textVi              = it.getString(it.getColumnIndexOrThrow("text_vi")),
                         wordExplanation     = it.getString(it.getColumnIndexOrThrow("word_explanation")),
@@ -314,7 +314,7 @@ class ReadingRepository(private val dao: ReadingDao) {
     private var readingListCache: List<Reading>? = null
 
     // key = readingId, value = danh sách sentence (đã gắn phrases + words)
-    private val readingCache = mutableMapOf<Int, List<ReadingSentence>>()
+    private val readingCache = mutableMapOf<String, List<ReadingSentence>>()
 
     // key = word đã normalize (lowercase, trim), value = DictEntry (dict.db)
     private val dictCache = mutableMapOf<String, DictEntry>()
@@ -325,14 +325,14 @@ class ReadingRepository(private val dao: ReadingDao) {
     }
 
     // ── Flow 3 ────────────────────────────────────────────────────────────────
-    suspend fun getReading(readingId: Int): List<ReadingSentence> =
+    suspend fun getReading(readingId: String): List<ReadingSentence> =
         withContext(Dispatchers.IO) {
             readingCache[readingId] ?: buildReading(readingId).also {
                 readingCache[readingId] = it
             }
         }
 
-    private fun buildReading(readingId: Int): List<ReadingSentence> {
+    private fun buildReading(readingId: String): List<ReadingSentence> {
         val sentences = dao.getSentencesByReadingId(readingId)
         return sentences.map { sentence ->
             val phrases = dao.getPhrasesBySentenceId(sentence.sentenceId)

@@ -24,7 +24,7 @@ import com.eleap.eleap.feature.reading.ui.WordPopup
 @OptIn(ExperimentalMaterial3Api::class)
 @Composable
 fun ReadingScreen(
-    readingId: Int,
+    readingId: String,
     onBack: () -> Unit,
 ) {
     val context = LocalContext.current

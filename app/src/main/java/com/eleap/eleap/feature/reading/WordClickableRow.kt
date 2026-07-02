@@ -46,7 +46,7 @@ fun WordClickableRow(
     selectedPhrase: SentencePhrase?,   // ← PhrasePopup độc lập (mode "P", selectedWord == null) — dùng để bôi đậm cụm từ
     selectedSentence: ReadingSentence?,
     fontSize: Int,
-    savedWordIds: Set<Int>,
+    savedWordIds: Set<String>,
     translateMode: String,   // "S" = kéo ≥2 từ → dịch câu | "P" = kéo ≥2 từ → dịch cụm từ
     phraseFormat: String,    // "underline" | "line" — chỉ có ý nghĩa khi translateMode == "P"
     onWordClick: (SentenceWord) -> Unit,

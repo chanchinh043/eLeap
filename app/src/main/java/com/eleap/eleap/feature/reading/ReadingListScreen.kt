@@ -36,7 +36,7 @@ import androidx.compose.material.icons.filled.Person
 @Composable
 fun ReadingListScreen(
     onBack: () -> Unit,
-    onReadingClick: (readingId: Int) -> Unit,
+    onReadingClick: (readingId: String) -> Unit,
     onMyReadingClick: () -> Unit,   // ← mở "Bài đọc của tôi"
 ) {
     val context = LocalContext.current

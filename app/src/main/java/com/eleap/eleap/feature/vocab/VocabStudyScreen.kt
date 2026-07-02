@@ -65,7 +65,7 @@ fun VocabStudyScreen(
         }
     }
 
-    fun randomExcluding(excludeId: Int?): UserVocabularyEntry {
+    fun randomExcluding(excludeId: String?): UserVocabularyEntry {
         if (pool.size <= 1) return pool.first()
         var candidate = pool.random()
         while (candidate.id == excludeId) { candidate = pool.random() }

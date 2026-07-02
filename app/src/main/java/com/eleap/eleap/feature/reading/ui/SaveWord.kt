@@ -22,11 +22,11 @@ import java.util.*
 // ─────────────────────────────────────────────────────────────────────────────
 
 data class UserVocabularyEntry(
-    val id: Int = 0,
+    val id: String = "",
     val userId: Int = 0,
-    val sourceSentenceId: Int?,
-    val sourceWordId: Int?,
-    val sourcePhraseId: Int?,
+    val sourceSentenceId: String?,
+    val sourceWordId: String?,
+    val sourcePhraseId: String?,
     val textEn: String?,
     val textVi: String?,
     val selected: Int = 1,
@@ -39,6 +39,41 @@ data class UserVocabularyEntry(
     val sentenceTextEn: String? = null,
     val sentenceTextVi: String? = null,
 )
+
+// ─────────────────────────────────────────────────────────────────────────────
+// UUID v7 — dùng để sinh id cho user_vocabulary, đồng bộ định dạng với readings.db
+// ─────────────────────────────────────────────────────────────────────────────
+
+fun generateUuidV7(): String {
+    val timestamp = System.currentTimeMillis()
+    val rand = java.security.SecureRandom()
+    val randomBytes = ByteArray(10)
+    rand.nextBytes(randomBytes)
+
+    val buffer = java.nio.ByteBuffer.allocate(16)
+    // 48-bit timestamp (ms since epoch)
+    buffer.put((timestamp shr 40).toByte())
+    buffer.put((timestamp shr 32).toByte())
+    buffer.put((timestamp shr 24).toByte())
+    buffer.put((timestamp shr 16).toByte())
+    buffer.put((timestamp shr 8).toByte())
+    buffer.put(timestamp.toByte())
+    // 4-bit version (0111) + 12-bit random
+    buffer.put((0x70 or (randomBytes[0].toInt() and 0x0F)).toByte())
+    buffer.put(randomBytes[1])
+    // 2-bit variant (10) + 62-bit random
+    buffer.put((0x80 or (randomBytes[2].toInt() and 0x3F)).toByte())
+    buffer.put(randomBytes[3])
+    buffer.put(randomBytes[4])
+    buffer.put(randomBytes[5])
+    buffer.put(randomBytes[6])
+    buffer.put(randomBytes[7])
+    buffer.put(randomBytes[8])
+    buffer.put(randomBytes[9])
+
+    buffer.flip()
+    return java.util.UUID(buffer.long, buffer.long).toString()
+}
 
 // ─────────────────────────────────────────────────────────────────────────────
 // 2. Database
@@ -69,11 +104,11 @@ class UserDatabase private constructor(context: Context) {
             db.execSQL(
                 """
                 CREATE TABLE IF NOT EXISTS user_vocabulary (
-                    id                 INTEGER PRIMARY KEY AUTOINCREMENT,
+                    id                 TEXT PRIMARY KEY,
                     user_id            INTEGER NOT NULL DEFAULT 0,
-                    source_sentence_id INTEGER,
-                    source_word_id     INTEGER,
-                    source_phrase_id   INTEGER,
+                    source_sentence_id TEXT,
+                    source_word_id     TEXT,
+                    source_phrase_id   TEXT,
                     text_en            TEXT,
                     text_vi            TEXT,
                     selected           INTEGER NOT NULL DEFAULT 1,
@@ -101,14 +136,70 @@ class UserDatabase private constructor(context: Context) {
                 db.execSQL("ALTER TABLE user_vocabulary ADD COLUMN sentence_text_en TEXT")
                 db.execSQL("ALTER TABLE user_vocabulary ADD COLUMN sentence_text_vi TEXT")
             }
+            if (oldVersion < 4) {
+                // readings.db đã đổi toàn bộ id sang uuid v7 → id kiểu INTEGER cũ của
+                // user_vocabulary (và các source_*_id trỏ vào readings.db) không còn
+                // hợp lệ. SQLite không ALTER được kiểu cột / kiểu PK, nên phải dựng lại
+                // bảng: giữ nguyên nội dung đã lưu (text_en, text_vi, các snapshot...),
+                // gán id mới (uuid v7) cho từng dòng, và xoá các source_*_id cũ (vì
+                // trỏ vào id không còn tồn tại trong readings.db mới).
+                db.execSQL("ALTER TABLE user_vocabulary RENAME TO user_vocabulary_old")
+                db.execSQL(
+                    """
+                    CREATE TABLE user_vocabulary (
+                        id                 TEXT PRIMARY KEY,
+                        user_id            INTEGER NOT NULL DEFAULT 0,
+                        source_sentence_id TEXT,
+                        source_word_id     TEXT,
+                        source_phrase_id   TEXT,
+                        text_en            TEXT,
+                        text_vi            TEXT,
+                        selected           INTEGER NOT NULL DEFAULT 1,
+                        created_at         TEXT NOT NULL,
+                        count       INTEGER NOT NULL DEFAULT 0,
+                        score      INTEGER NOT NULL DEFAULT 0,
+                        phrase_text_en     TEXT,
+                        phrase_text_vi     TEXT,
+                        sentence_text_en   TEXT,
+                        sentence_text_vi   TEXT,
+                        FOREIGN KEY (user_id) REFERENCES users(user_id)
+                    )
+                    """.trimIndent()
+                )
+                val cursor = db.rawQuery("SELECT * FROM user_vocabulary_old", null)
+                cursor.use {
+                    while (it.moveToNext()) {
+                        val cv = ContentValues().apply {
+                            put("id", generateUuidV7())
+                            put("user_id", it.getInt(it.getColumnIndexOrThrow("user_id")))
+                            // source_sentence_id / source_word_id / source_phrase_id: bỏ qua
+                            // (id cũ không map được sang uuid mới)
+                            put("text_en", it.getString(it.getColumnIndexOrThrow("text_en")))
+                            put("text_vi", it.getString(it.getColumnIndexOrThrow("text_vi")))
+                            put("selected", it.getInt(it.getColumnIndexOrThrow("selected")))
+                            put("created_at", it.getString(it.getColumnIndexOrThrow("created_at")))
+                            put("count", it.getInt(it.getColumnIndexOrThrow("count")))
+                            put("score", it.getInt(it.getColumnIndexOrThrow("score")))
+                            put("phrase_text_en", it.getString(it.getColumnIndexOrThrow("phrase_text_en")))
+                            put("phrase_text_vi", it.getString(it.getColumnIndexOrThrow("phrase_text_vi")))
+                            put("sentence_text_en", it.getString(it.getColumnIndexOrThrow("sentence_text_en")))
+                            put("sentence_text_vi", it.getString(it.getColumnIndexOrThrow("sentence_text_vi")))
+                        }
+                        db.insert("user_vocabulary", null, cv)
+                    }
+                }
+                db.execSQL("DROP TABLE user_vocabulary_old")
+            }
         }
 
-        companion object { const val DB_VERSION = 3 }
+        companion object { const val DB_VERSION = 4 }
     }
 
     fun saveWord(entry: UserVocabularyEntry): Boolean {
         return try {
+            val id = entry.id.ifBlank { generateUuidV7() }
             val cv = ContentValues().apply {
+                put("id",                 id)
                 put("user_id",            entry.userId)
                 put("source_sentence_id", entry.sourceSentenceId)
                 put("source_word_id",     entry.sourceWordId)
@@ -133,10 +224,10 @@ class UserDatabase private constructor(context: Context) {
         }
     }
 
-    fun isWordSaved(wordId: Int): Boolean {
+    fun isWordSaved(wordId: String): Boolean {
         val cursor = db.rawQuery(
             "SELECT 1 FROM user_vocabulary WHERE source_word_id = ? LIMIT 1",
-            arrayOf(wordId.toString())
+            arrayOf(wordId)
         )
         return cursor.use { it.moveToFirst() }
     }
@@ -149,21 +240,17 @@ class UserDatabase private constructor(context: Context) {
         )
         cursor.use {
             while (it.moveToNext()) {
-                fun nullableInt(col: String): Int? {
-                    val idx = it.getColumnIndexOrThrow(col)
-                    return if (it.isNull(idx)) null else it.getInt(idx)
-                }
                 fun nullableString(col: String): String? {
                     val idx = it.getColumnIndexOrThrow(col)
                     return if (it.isNull(idx)) null else it.getString(idx)
                 }
                 list.add(
                     UserVocabularyEntry(
-                        id                = it.getInt(it.getColumnIndexOrThrow("id")),
+                        id                = it.getString(it.getColumnIndexOrThrow("id")),
                         userId            = it.getInt(it.getColumnIndexOrThrow("user_id")),
-                        sourceSentenceId  = nullableInt("source_sentence_id"),
-                        sourceWordId      = nullableInt("source_word_id"),
-                        sourcePhraseId    = nullableInt("source_phrase_id"),
+                        sourceSentenceId  = nullableString("source_sentence_id"),
+                        sourceWordId      = nullableString("source_word_id"),
+                        sourcePhraseId    = nullableString("source_phrase_id"),
                         textEn            = it.getString(it.getColumnIndexOrThrow("text_en")),
                         textVi            = it.getString(it.getColumnIndexOrThrow("text_vi")),
                         selected          = it.getInt(it.getColumnIndexOrThrow("selected")),
@@ -181,18 +268,18 @@ class UserDatabase private constructor(context: Context) {
         return list
     }
 
-    fun deleteWord(id: Int): Boolean {
+    fun deleteWord(id: String): Boolean {
         return try {
-            db.delete("user_vocabulary", "id = ?", arrayOf(id.toString())) > 0
+            db.delete("user_vocabulary", "id = ?", arrayOf(id)) > 0
         } catch (e: Exception) {
             Log.e("UserDB", "deleteWord error", e)
             false
         }
     }
 
-    fun unsaveWord(wordId: Int): Boolean {
+    fun unsaveWord(wordId: String): Boolean {
         return try {
-            val rows = db.delete("user_vocabulary", "source_word_id = ?", arrayOf(wordId.toString()))
+            val rows = db.delete("user_vocabulary", "source_word_id = ?", arrayOf(wordId))
             Log.d("UserDB", "unsaveWord: wordId=$wordId → $rows row(s) deleted")
             rows > 0
         } catch (e: Exception) {
@@ -201,15 +288,15 @@ class UserDatabase private constructor(context: Context) {
         }
     }
 
-    fun getAllSavedWordIds(): Set<Int> {
-        val set = mutableSetOf<Int>()
+    fun getAllSavedWordIds(): Set<String> {
+        val set = mutableSetOf<String>()
         val cursor = db.rawQuery(
             "SELECT source_word_id FROM user_vocabulary WHERE source_word_id IS NOT NULL",
             null
         )
         cursor.use {
             while (it.moveToNext()) {
-                set.add(it.getInt(0))
+                set.add(it.getString(0))
             }
         }
         return set
@@ -236,7 +323,7 @@ class UserDatabase private constructor(context: Context) {
 // ReadingViewModel (đã load khi mở bài đọc), KHÔNG query lại DB.
 // Dùng khi caller không truyền sẵn `sentence` — tránh phải sửa WordPopup.kt
 // hay bất kỳ nơi nào khác đang gọi SaveWordButton.
-private fun findSentenceTexts(context: Context, sentenceId: Int): Pair<String?, String?>? {
+private fun findSentenceTexts(context: Context, sentenceId: String): Pair<String?, String?>? {
     return try {
         val readingVm = ReadingViewModel.Factory(context).create(ReadingViewModel::class.java)
         readingVm.sentences.value
@@ -278,7 +365,8 @@ fun SaveWordButton(
                 onSaveStateChanged()   // ← notify ViewModel
             }
         } else {
-            val now = SimpleDateFormat("yyyy-MM-dd HH:mm:ss", Locale.getDefault())
+            val now = SimpleDateFormat("yyyy-MM-dd'T'HH:mm:ss'Z'", Locale.getDefault())
+                .apply { timeZone = TimeZone.getTimeZone("UTC") }
                 .format(Date())
             // Ưu tiên sentence được truyền sẵn; nếu không có thì tự tìm trong
             // sentences (RAM) của ReadingViewModel theo word.sentenceId —

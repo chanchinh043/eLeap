@@ -85,7 +85,7 @@ private fun saveLastReadingEntryScreen(context: android.content.Context, screen:
 @Composable
 fun MainScreen() {
     var screen by remember { mutableStateOf(Screen.MAIN) }
-    var selectedReadingId by remember { mutableStateOf<Int?>(null) }
+    var selectedReadingId by remember { mutableStateOf<String?>(null) }
     var readingStudyTabName by remember { mutableStateOf("NEW") }
 
     val context  = LocalContext.current
@@ -184,12 +184,12 @@ fun MainScreen() {
 @Composable
 private fun ScreenContent(
     screen: Screen,
-    selectedReadingId: Int?,
+    selectedReadingId: String?,
     vocabStudyPool: List<UserVocabularyEntry>,
     readingStudyPool: List<UserVocabularyEntry>,
     lastReadingEntryScreen: Screen,
     onNavigateTo: (Screen) -> Unit,
-    onSelectReading: (Int) -> Unit,
+    onSelectReading: (String) -> Unit,
     onReadingStudyClick: (tabName: String, nextScreen: Screen) -> Unit,
     onBack: () -> Unit,
 ) {

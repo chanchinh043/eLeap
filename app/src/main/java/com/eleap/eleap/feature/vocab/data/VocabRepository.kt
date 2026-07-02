@@ -35,11 +35,11 @@ class VocabRepository private constructor(
     suspend fun getAllVocabulary(userId: Int = 0): List<UserVocabularyEntry> =
         withContext(Dispatchers.IO) { userDb.getAllVocabulary(userId) }
 
-    suspend fun deleteWord(id: Int): Boolean =
+    suspend fun deleteWord(id: String): Boolean =
         withContext(Dispatchers.IO) { userDb.deleteWord(id) }
 
     // ── Tăng count thêm 1 (ghi DB nền) ──────────────────────────────────────
-    suspend fun incrementCount(id: Int) = withContext(Dispatchers.IO) {
+    suspend fun incrementCount(id: String) = withContext(Dispatchers.IO) {
         try {
             userDb.db.execSQL(
                 "UPDATE user_vocabulary SET count = count + 1 WHERE id = ?",
@@ -51,11 +51,11 @@ class VocabRepository private constructor(
     }
 
     // ── Cập nhật selected (0 hoặc 1) cho 1 từ ────────────────────────────────
-    suspend fun updateSelected(id: Int, selected: Int): Boolean =
+    suspend fun updateSelected(id: String, selected: Int): Boolean =
         withContext(Dispatchers.IO) {
             return@withContext try {
                 val cv = ContentValues().apply { put("selected", selected) }
-                val rows = userDb.db.update("user_vocabulary", cv, "id = ?", arrayOf(id.toString()))
+                val rows = userDb.db.update("user_vocabulary", cv, "id = ?", arrayOf(id))
                 rows > 0
             } catch (e: Exception) {
                 Log.e("VocabRepository", "updateSelected error", e)
@@ -73,21 +73,17 @@ class VocabRepository private constructor(
             )
             cursor.use {
                 while (it.moveToNext()) {
-                    fun nullableInt(col: String): Int? {
-                        val idx = it.getColumnIndexOrThrow(col)
-                        return if (it.isNull(idx)) null else it.getInt(idx)
-                    }
                     fun nullableString(col: String): String? {
                         val idx = it.getColumnIndexOrThrow(col)
                         return if (it.isNull(idx)) null else it.getString(idx)
                     }
                     list.add(
                         UserVocabularyEntry(
-                            id               = it.getInt(it.getColumnIndexOrThrow("id")),
+                            id               = it.getString(it.getColumnIndexOrThrow("id")),
                             userId           = it.getInt(it.getColumnIndexOrThrow("user_id")),
-                            sourceSentenceId = nullableInt("source_sentence_id"),
-                            sourceWordId     = nullableInt("source_word_id"),
-                            sourcePhraseId   = nullableInt("source_phrase_id"),
+                            sourceSentenceId = nullableString("source_sentence_id"),
+                            sourceWordId     = nullableString("source_word_id"),
+                            sourcePhraseId   = nullableString("source_phrase_id"),
                             textEn           = it.getString(it.getColumnIndexOrThrow("text_en")),
                             textVi           = it.getString(it.getColumnIndexOrThrow("text_vi")),
                             selected         = it.getInt(it.getColumnIndexOrThrow("selected")),
@@ -109,24 +105,24 @@ class VocabRepository private constructor(
     // Vì readings.db và users.db là 2 file DB khác nhau, không JOIN trực tiếp được.
     // Bước 1: lấy tất cả sentence_id của bài đọc từ readings.db
     // Bước 2: query user_vocabulary WHERE source_sentence_id IN (...) từ users.db
-    suspend fun getVocabByReadingId(readingId: Int, userId: Int = 0): List<UserVocabularyEntry> =
+    suspend fun getVocabByReadingId(readingId: String, userId: Int = 0): List<UserVocabularyEntry> =
         withContext(Dispatchers.IO) {
             // Bước 1: lấy sentence_id của bài đọc
-            val sentenceIds = mutableListOf<Int>()
+            val sentenceIds = mutableListOf<String>()
             val cursor = readingsDb.rawQuery(
                 "SELECT sentence_id FROM reading_sentences WHERE reading_id = ?",
-                arrayOf(readingId.toString())
+                arrayOf(readingId)
             )
             cursor.use {
                 while (it.moveToNext()) {
-                    sentenceIds.add(it.getInt(0))
+                    sentenceIds.add(it.getString(0))
                 }
             }
             if (sentenceIds.isEmpty()) return@withContext emptyList()
 
             // Bước 2: query user_vocabulary theo sentence_id
             val placeholders = sentenceIds.joinToString(",") { "?" }
-            val args = (listOf(userId) + sentenceIds).map { it.toString() }.toTypedArray()
+            val args = (listOf(userId.toString()) + sentenceIds).toTypedArray()
             val list = mutableListOf<UserVocabularyEntry>()
             val vocabCursor = userDb.db.rawQuery(
                 """SELECT * FROM user_vocabulary
@@ -137,21 +133,17 @@ class VocabRepository private constructor(
             )
             vocabCursor.use {
                 while (it.moveToNext()) {
-                    fun nullableInt(col: String): Int? {
-                        val idx = it.getColumnIndexOrThrow(col)
-                        return if (it.isNull(idx)) null else it.getInt(idx)
-                    }
                     fun nullableString(col: String): String? {
                         val idx = it.getColumnIndexOrThrow(col)
                         return if (it.isNull(idx)) null else it.getString(idx)
                     }
                     list.add(
                         UserVocabularyEntry(
-                            id               = it.getInt(it.getColumnIndexOrThrow("id")),
+                            id               = it.getString(it.getColumnIndexOrThrow("id")),
                             userId           = it.getInt(it.getColumnIndexOrThrow("user_id")),
-                            sourceSentenceId = nullableInt("source_sentence_id"),
-                            sourceWordId     = nullableInt("source_word_id"),
-                            sourcePhraseId   = nullableInt("source_phrase_id"),
+                            sourceSentenceId = nullableString("source_sentence_id"),
+                            sourceWordId     = nullableString("source_word_id"),
+                            sourcePhraseId   = nullableString("source_phrase_id"),
                             textEn           = it.getString(it.getColumnIndexOrThrow("text_en")),
                             textVi           = it.getString(it.getColumnIndexOrThrow("text_vi")),
                             selected         = it.getInt(it.getColumnIndexOrThrow("selected")),

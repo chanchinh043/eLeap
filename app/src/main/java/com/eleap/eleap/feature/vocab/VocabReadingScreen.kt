@@ -40,7 +40,7 @@ private fun UserVocabularyEntry.readingTab(): VocabReadingTab = when {
 @OptIn(ExperimentalMaterial3Api::class)
 @Composable
 fun VocabReadingScreen(
-    readingId: Int,
+    readingId: String,
     onBack: () -> Unit,
     onStudyClick: (tabName: String) -> Unit,
 ) {

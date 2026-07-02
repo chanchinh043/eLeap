@@ -26,34 +26,35 @@ class VocabViewModel(
 ) : ViewModel() {
 
     // ── SharedPreferences key per tab: "reading_sel_<readingId>_<tab>" → "1,2,3" ──
-    private var currentReadingId: Int = -1
+    private var currentReadingId: String? = null
 
     // Tab names dùng làm key — phải khớp với VocabReadingTab.name
     private val TAB_KEYS = listOf("NEW", "RECENT", "ALL")
 
-    private fun prefsKey(readingId: Int, tabName: String) = "reading_sel_${readingId}_$tabName"
-    private fun autoSelectKey(readingId: Int) = "reading_autoselect_$readingId"
+    private fun prefsKey(readingId: String, tabName: String) = "reading_sel_${readingId}_$tabName"
+    private fun autoSelectKey(readingId: String) = "reading_autoselect_$readingId"
 
-    private fun saveAutoSelect(readingId: Int, enabled: Boolean) {
+    private fun saveAutoSelect(readingId: String, enabled: Boolean) {
         prefs.edit().putBoolean(autoSelectKey(readingId), enabled).apply()
     }
 
-    private fun loadAutoSelect(readingId: Int): Boolean =
+    private fun loadAutoSelect(readingId: String): Boolean =
         prefs.getBoolean(autoSelectKey(readingId), true)  // mặc định true
 
-    private fun saveTabSelection(readingId: Int, tabName: String, ids: Set<Int>) {
+    private fun saveTabSelection(readingId: String?, tabName: String, ids: Set<String>) {
+        if (readingId == null) return
         prefs.edit()
             .putString(prefsKey(readingId, tabName), ids.joinToString(","))
             .apply()
     }
 
-    private fun loadTabSelection(readingId: Int, tabName: String): Set<Int> {
+    private fun loadTabSelection(readingId: String, tabName: String): Set<String> {
         val raw = prefs.getString(prefsKey(readingId, tabName), "") ?: ""
         return if (raw.isBlank()) emptySet()
-        else raw.split(",").mapNotNull { it.trim().toIntOrNull() }.toSet()
+        else raw.split(",").map { it.trim() }.filter { it.isNotEmpty() }.toSet()
     }
 
-    private fun loadAllTabSelections(readingId: Int): Map<String, Set<Int>> =
+    private fun loadAllTabSelections(readingId: String): Map<String, Set<String>> =
         TAB_KEYS.associateWith { loadTabSelection(readingId, it) }
 
     // ── Toàn bộ từ vựng (VocabScreen) ────────────────────────────────────────
@@ -99,10 +100,10 @@ class VocabViewModel(
     val isLoadingReadingVocab: StateFlow<Boolean> = _isLoadingReadingVocab
 
     // ── Selected theo từng tab — KHÔNG ghi DB, lưu vào SharedPreferences ─────
-    // Map<tabName, Set<Int>>: NEW / RECENT / ALL mỗi tab có selection riêng biệt.
+    // Map<tabName, Set<String>>: NEW / RECENT / ALL mỗi tab có selection riêng biệt.
     // Tắt app bật lại vẫn còn, reset khi chuyển sang bài đọc khác.
-    private val _readingSelectedByTab = MutableStateFlow<Map<String, Set<Int>>>(emptyMap())
-    val readingSelectedByTab: StateFlow<Map<String, Set<Int>>> = _readingSelectedByTab
+    private val _readingSelectedByTab = MutableStateFlow<Map<String, Set<String>>>(emptyMap())
+    val readingSelectedByTab: StateFlow<Map<String, Set<String>>> = _readingSelectedByTab
 
     // ── Trạng thái "Tự động chọn tất cả" tab NEW — lưu vào SharedPreferences ─
     private val _readingAutoSelect = MutableStateFlow(true)
@@ -110,11 +111,11 @@ class VocabViewModel(
 
     fun setAutoSelect(enabled: Boolean) {
         _readingAutoSelect.value = enabled
-        saveAutoSelect(currentReadingId, enabled)
+        currentReadingId?.let { saveAutoSelect(it, enabled) }
     }
 
     // ── Load từ theo bài đọc ──────────────────────────────────────────────────
-    fun loadVocabForReading(readingId: Int) {
+    fun loadVocabForReading(readingId: String) {
         viewModelScope.launch {
             _isLoadingReadingVocab.value = true
             if (readingId != currentReadingId) {
@@ -176,17 +177,17 @@ class VocabViewModel(
     }
 
     // ── Đặt toàn bộ selection cho 1 tab (dùng cho Chọn tất cả / Bỏ chọn tất cả) ──
-    fun setAllSelectedInReading(ids: Set<Int>, tabName: String) {
+    fun setAllSelectedInReading(ids: Set<String>, tabName: String) {
         _readingSelectedByTab.value = _readingSelectedByTab.value + (tabName to ids)
         saveTabSelection(currentReadingId, tabName, ids)
     }
 
     // ── Lấy selected IDs của 1 tab cụ thể (dùng ở MainScreen để build pool) ──
-    fun getSelectedIdsForTab(tabName: String): Set<Int> =
+    fun getSelectedIdsForTab(tabName: String): Set<String> =
         _readingSelectedByTab.value[tabName] ?: emptySet()
 
     // ── Xóa từ trong VocabScreen ──────────────────────────────────────────────
-    fun deleteWord(id: Int) {
+    fun deleteWord(id: String) {
         viewModelScope.launch {
             if (repository.deleteWord(id)) {
                 _vocabList.value = _vocabList.value.filterNot { it.id == id }
@@ -198,7 +199,7 @@ class VocabViewModel(
     }
 
     // ── Xóa từ trong VocabReadingScreen ──────────────────────────────────────
-    fun deleteWordFromReading(id: Int) {
+    fun deleteWordFromReading(id: String) {
         viewModelScope.launch {
             if (repository.deleteWord(id)) {
                 _readingVocabList.value = _readingVocabList.value.filterNot { it.id == id }
