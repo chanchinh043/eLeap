@@ -49,7 +49,8 @@ data class MyAiWord(
     val textVi: String?,
     val pos: String?,
     val lemma: String?,
-    val phraseId: String?,      // luôn khớp 1 phrase trong sentence này (rule: phrase phủ hết câu)
+    val phraseId: String?,      // null nếu từ đứng độc lập, không thuộc cụm từ nào;
+    // nếu có giá trị thì phải khớp đúng 1 phrase trong sentence này
     val explanation: String?,
     val formExplanation: String?,
 )
@@ -83,11 +84,11 @@ data class MyAiReading(
 // 2. Prompt builder
 // ─────────────────────────────────────────────────────────────────────────────
 //
-// Khác bản tham khảo (readings.db) ở 1 điểm quan trọng: MyReading BẮT BUỘC
-// phrase phủ kín 100% số từ trong câu (không có từ nào nằm ngoài phrase), và
-// mỗi phrase phải có ít nhất 2 từ. Nói cách khác: các phrase của 1 câu chia
-// câu thành các cụm liên tiếp, không chồng lấn, không có khoảng trống, từ
-// word_order = 1 đến hết.
+// Khác bản tham khảo (readings.db) ở 1 điểm: MyReading có thêm khái niệm
+// "phrase" (cụm từ) — nhưng phrase KHÔNG bắt buộc phủ kín toàn bộ câu. Chỉ
+// những cụm từ thực sự có nghĩa/cấu trúc mới được gộp thành phrase (>= 2 từ,
+// không chồng lấn); từ nào không thuộc cụm nào thì đứng độc lập (phrase_id
+// = null), giống 1 "word" bình thường.
 
 fun buildMyReadingPrompt(titleEn: String, sentences: List<Pair<Int, String>>): String {
     val sentenceBlock = sentences.joinToString("\n") { (order, text) -> "$order. $text" }
@@ -130,7 +131,7 @@ Hãy phân tích toàn bộ bài và trả về MỘT object JSON DUY NHẤT (kh
           "text_vi": "<nghĩa tiếng Việt của từ>",
           "pos": "<noun|verb|adjective|adverb|preposition|conjunction|determiner|pronoun|interjection|other>",
           "lemma": "<dạng gốc của từ>",
-          "phrase_id": "<id cụm từ mà từ này thuộc về, ví dụ 'p1'>",
+          "phrase_id": "<id cụm từ mà từ này thuộc về, ví dụ 'p1'; null nếu từ này đứng độc lập, không thuộc cụm từ nào>",
           "explanation": "<giải thích từ bằng tiếng Việt hoặc null>",
           "form_explanation": "<giải thích dạng từ (ví dụ 'Dạng số nhiều của storm') hoặc null>"
         }
@@ -139,12 +140,21 @@ Hãy phân tích toàn bộ bài và trả về MỘT object JSON DUY NHẤT (kh
   ]
 }
 
+Quy trình xử lý — PHẢI làm tuần tự theo đúng thứ tự sau, xử lý XONG HẲN 1 câu (đủ 3 bước) rồi mới chuyển sang câu tiếp theo (không nhảy qua lại giữa các câu, không xử lý nhiều câu cùng lúc, không quay lại sửa câu trước):
+
+Với MỖI câu, theo đúng thứ tự:
+  Bước 1 — Xử lý câu: dịch text_vi và viết explanation cho câu đó.
+  Bước 2 — Xử lý cụm từ (phrases) của câu đó: xác định những cụm từ THỰC SỰ có nghĩa/cấu trúc đáng chú ý (collocation, cụm động từ, cụm giới từ, thành ngữ...) trong câu. Với mỗi cụm, xác định đúng start_word_order/end_word_order — là vị trí của từ đầu tiên/cuối cùng trong cụm, tính theo thứ tự xuất hiện của từ trong câu (tách theo khoảng trắng, bắt đầu đếm từ 1).
+  Bước 3 — Xử lý từng từ (words) của câu đó: liệt kê ĐẦY ĐỦ tất cả các từ trong câu theo đúng word_order 1, 2, 3, ... liên tục; với mỗi từ điền text_vi/pos/lemma/explanation/form_explanation, và gán phrase_id bằng cách đối chiếu word_order của từ đó với các phrase đã xác định ở Bước 2 — nếu word_order nằm trong khoảng [start_word_order, end_word_order] của 1 phrase thì gán đúng id của phrase đó, nếu không nằm trong phrase nào thì để phrase_id = null.
+
+Chỉ khi hoàn tất cả 3 bước trên cho câu hiện tại (đủ text_vi, explanation, phrases, words) mới được chuyển sang câu tiếp theo.
+
 Quy tắc bắt buộc:
 - Mỗi câu phải có đúng số lượng word bằng số từ trong câu (tách theo khoảng trắng, giữ nguyên dấu câu dính liền), word_order bắt đầu từ 1 và tăng liên tục.
-- BẮT BUỘC: các phrase của 1 câu phải phủ kín TOÀN BỘ từ trong câu đó — mọi word_order từ 1 đến hết đều phải thuộc đúng 1 phrase, không có từ nào nằm ngoài phrase.
-- BẮT BUỘC: các phrase phải liên tiếp nhau và không chồng lấn — phrase đầu tiên bắt đầu từ word_order = 1, phrase cuối cùng kết thúc ở word_order cuối cùng của câu, phrase sau nối liền ngay sau phrase trước (start_word_order của phrase sau = end_word_order của phrase trước + 1).
+- Chỉ tạo phrase cho những cụm từ THỰC SỰ có nghĩa/cấu trúc đáng chú ý. KHÔNG bắt buộc phrase phải phủ kín toàn bộ câu — những từ không thuộc cụm từ nào thì để đứng độc lập (không gán vào phrase nào cả).
 - BẮT BUỘC: mỗi phrase phải có ÍT NHẤT 2 từ (end_word_order - start_word_order >= 1). Không tạo phrase chỉ gồm 1 từ.
-- phrase_id trong words phải khớp chính xác với id trong mảng phrases của câu đó — mọi word đều phải có phrase_id (không được null).
+- BẮT BUỘC: các phrase trong cùng 1 câu KHÔNG được chồng lấn lên nhau (1 word_order chỉ được thuộc tối đa 1 phrase). Các phrase không cần liên tiếp nhau và không cần bắt đầu từ word_order = 1.
+- BẮT BUỘC: start_word_order/end_word_order của mỗi phrase phải khớp CHÍNH XÁC với phrase_id mà chính các word đó được gán ở Bước 3 — đây là điểm hay sai nhất, hãy rà soát lại trước khi trả kết quả.
 - Không thêm bất kỳ văn bản nào ngoài JSON.
 """.trimIndent()
 }
@@ -290,42 +300,104 @@ private fun parseMyReadingAiResponseInternal(raw: String): MyAiReading {
 }
 
 // ─────────────────────────────────────────────────────────────────────────────
-// 5. Validate — kiểm tra rule "phrase phủ kín câu, mỗi phrase >= 2 từ" trước
-//    khi ghi DB. Trả về null nếu hợp lệ, hoặc lý do lỗi (String) nếu không.
+// 5. Repair + Validate
 // ─────────────────────────────────────────────────────────────────────────────
+//
+// AI trả về vị trí phrase theo 2 nguồn riêng biệt: "phrases[].start/end_word_
+// order" (AI tự khai) và "words[].phrase_id" (AI tự gán cho từng từ). Trên
+// thực tế AI hay bị LỆCH giữa 2 nguồn này (đếm nhầm vị trí dù gán phrase_id
+// cho từng từ vẫn đúng), khiến validate cũ từ chối dữ liệu dù về ngữ nghĩa
+// hoàn toàn ổn.
+//
+// Giải pháp: chỉ tin DUY NHẤT 1 nguồn — "words[].phrase_id" — rồi TỰ DỰNG
+// LẠI start_word_order/end_word_order của từng phrase bằng cách gom các từ
+// liên tiếp có cùng phrase_id. Nhờ vậy start/end luôn nhất quán 100% với
+// phrase_id của words theo đúng cấu trúc, không còn khả năng "2 nguồn cãi
+// nhau" nữa. phrases[].text_en/text_vi/explanation (nội dung mô tả cụm từ)
+// vẫn được AI cung cấp và giữ nguyên, chỉ có vị trí là do ta tính lại.
+//
+// Trả về data đã sửa (dùng để ghi DB) nếu hợp lệ, hoặc lý do lỗi nếu dữ liệu
+// AI sai đến mức không thể tự sửa được (sai số từ, thiếu/trùng word_order,
+// hoặc 1 phrase_id bị AI gán cho 2 nhóm từ không liền kề nhau).
 //
 // wordCounts: map sentence_order -> số từ THẬT của câu đó (lấy từ DB, không
 // tin số từ AI tự đếm) để đối chiếu.
 
-fun validateMyAiReading(aiData: MyAiReading, wordCounts: Map<Int, Int>): String? {
+data class MyAiRepairResult(
+    val data: MyAiReading?,
+    val error: String?,
+)
+
+fun repairAndValidateMyAiReading(aiData: MyAiReading, wordCounts: Map<Int, Int>): MyAiRepairResult {
+    val fixedSentences = mutableListOf<MyAiSentence>()
+
     for (s in aiData.sentences) {
         val expectedWordCount = wordCounts[s.sentenceOrder]
-            ?: return "Câu #${s.sentenceOrder}: không tìm thấy trong DB"
+            ?: return MyAiRepairResult(null, "Câu #${s.sentenceOrder}: không tìm thấy trong DB")
 
         if (s.words.size != expectedWordCount) {
-            return "Câu #${s.sentenceOrder}: số word AI trả (${s.words.size}) khác số từ thật ($expectedWordCount)"
+            return MyAiRepairResult(
+                null,
+                "Câu #${s.sentenceOrder}: số word AI trả (${s.words.size}) khác số từ thật ($expectedWordCount)"
+            )
         }
 
-        val sortedPhrases = s.phrases.sortedBy { it.startWordOrder }
-        var expectedStart = 1
-        for (p in sortedPhrases) {
-            if (p.startWordOrder != expectedStart) {
-                return "Câu #${s.sentenceOrder}: phrase '${p.id}' bắt đầu tại ${p.startWordOrder}, kỳ vọng $expectedStart (phrase phải liên tiếp, không khoảng trống/chồng lấn)"
+        // word_order phải đầy đủ, liên tục, không trùng, từ 1..expectedWordCount.
+        val sortedWords = s.words.sortedBy { it.wordOrder }
+        for ((idx, w) in sortedWords.withIndex()) {
+            if (w.wordOrder != idx + 1) {
+                return MyAiRepairResult(
+                    null,
+                    "Câu #${s.sentenceOrder}: word_order không đầy đủ/liên tục 1..$expectedWordCount (lệch tại vị trí ${idx + 1}, gặp word_order=${w.wordOrder})"
+                )
             }
-            if (p.endWordOrder - p.startWordOrder + 1 < 2) {
-                return "Câu #${s.sentenceOrder}: phrase '${p.id}' chỉ có ${p.endWordOrder - p.startWordOrder + 1} từ (yêu cầu >= 2)"
-            }
-            expectedStart = p.endWordOrder + 1
-        }
-        if (expectedStart - 1 != expectedWordCount) {
-            return "Câu #${s.sentenceOrder}: phrase phủ tới word_order ${expectedStart - 1}, chưa phủ hết $expectedWordCount từ"
         }
 
-        val phraseIds = sortedPhrases.map { it.id }.toSet()
-        val missingPhraseId = s.words.firstOrNull { it.phraseId == null || it.phraseId !in phraseIds }
-        if (missingPhraseId != null) {
-            return "Câu #${s.sentenceOrder}: word #${missingPhraseId.wordOrder} có phrase_id không hợp lệ (${missingPhraseId.phraseId})"
+        // Gom các từ liên tiếp cùng phrase_id thành 1 phrase, vị trí tính từ
+        // chính word_order thật — không dùng start/end AI tự khai.
+        val phraseMetaById = s.phrases.associateBy { it.id }
+        val fixedPhrases = mutableListOf<MyAiPhrase>()
+        val idsUsed = mutableSetOf<String>()
+        var i = 0
+        while (i < sortedWords.size) {
+            val pid = sortedWords[i].phraseId
+            if (pid == null) {
+                i++
+                continue
+            }
+            var j = i + 1
+            while (j < sortedWords.size && sortedWords[j].phraseId == pid) j++
+            val groupSize = j - i
+
+            if (!idsUsed.add(pid)) {
+                return MyAiRepairResult(
+                    null,
+                    "Câu #${s.sentenceOrder}: phrase_id '$pid' bị gán cho 2 nhóm từ không liền kề nhau"
+                )
+            }
+            if (groupSize < 2) {
+                return MyAiRepairResult(
+                    null,
+                    "Câu #${s.sentenceOrder}: phrase '$pid' chỉ có $groupSize từ (yêu cầu >= 2)"
+                )
+            }
+
+            val startOrder = sortedWords[i].wordOrder
+            val endOrder = sortedWords[j - 1].wordOrder
+            val meta = phraseMetaById[pid]
+            fixedPhrases += MyAiPhrase(
+                id             = pid,
+                textEn         = meta?.textEn ?: sortedWords.subList(i, j).joinToString(" ") { it.textEn },
+                textVi         = meta?.textVi,
+                explanation    = meta?.explanation,
+                startWordOrder = startOrder,
+                endWordOrder   = endOrder,
+            )
+            i = j
         }
+
+        fixedSentences += s.copy(phrases = fixedPhrases)
     }
-    return null
+
+    return MyAiRepairResult(MyAiReading(aiData.titleVi, aiData.level, aiData.topic, fixedSentences), null)
 }

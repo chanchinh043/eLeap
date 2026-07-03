@@ -51,8 +51,9 @@ private fun clearFailure(readingId: String) {
 }
 
 // ─────────────────────────────────────────────────────────────────────────────
-// Pipeline xử lý 1 bài: lấy câu → build prompt → gọi AI → parse → validate
-// (phrase phủ kín câu, >= 2 từ/phrase) → ghi DB qua MyReadingRepository.
+// Pipeline xử lý 1 bài: lấy câu → build prompt → gọi AI → parse → dựng lại
+// phrase từ words[].phrase_id + validate (mỗi phrase >= 2 từ, không chồng
+// lấn) → ghi DB qua MyReadingRepository.
 // ─────────────────────────────────────────────────────────────────────────────
 
 private suspend fun processOneMyReading(
@@ -77,12 +78,12 @@ private suspend fun processOneMyReading(
     // Số từ THẬT của mỗi câu, lấy từ DB (qua splitMyWords) — không tin số AI tự đếm.
     val wordCounts = sentences.associate { (order, text) -> order to splitMyWords(text).size }
 
-    val validationError = validateMyAiReading(aiData, wordCounts)
-    if (validationError != null) {
-        throw IllegalStateException("Dữ liệu AI không hợp lệ: $validationError")
+    val repaired = repairAndValidateMyAiReading(aiData, wordCounts)
+    if (repaired.error != null || repaired.data == null) {
+        throw IllegalStateException("Dữ liệu AI không hợp lệ: ${repaired.error}")
     }
 
-    val written = repo.writeAiResult(readingId, aiData)
+    val written = repo.writeAiResult(readingId, repaired.data)
     if (!written) {
         throw IllegalStateException("Ghi DB thất bại cho $label")
     }
