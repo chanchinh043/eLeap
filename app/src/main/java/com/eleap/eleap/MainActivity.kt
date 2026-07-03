@@ -72,7 +72,26 @@ class MainActivity : ComponentActivity() {
                 Log.d("MainActivity", "sessionStatus = $status")
                 when (status) {
                     is SessionStatus.Authenticated -> {
+                        // Bỏ qua nếu đang trong quá trình đăng xuất (LoginScreen
+                        // vừa gọi SupabaseClientProvider.signOut()) — tránh
+                        // trường hợp SDK còn phát lại 1 sự kiện Authenticated
+                        // "trễ" của session cũ TRƯỚC khi signOut() hoàn tất
+                        // hẳn, ghi đè ngược CurrentUser.userId về tài khoản
+                        // vừa thoát.
+                        if (CurrentUser.isLoggingOut.value) {
+                            Log.d("MainActivity", "Bỏ qua Authenticated vì đang logout")
+                            return@collect
+                        }
+
                         val supabaseUserId = status.session.user?.id
+                        // Chỉ set khi có id hợp lệ và đúng chiều: khác với
+                        // userId hiện tại. setUser() bên trong CurrentUser tự
+                        // phân biệt "guest → user thật" (kích hoạt migrate
+                        // dialog) hay "user thật → user thật khác id" (session
+                        // refresh bình thường) — ở đây không cần phân biệt
+                        // thêm, chỉ cần đảm bảo không set ngược lại GUEST_ID
+                        // qua nhánh này (nhánh Authenticated không bao giờ có
+                        // supabaseUserId == GUEST_ID nên không cần chặn riêng).
                         if (supabaseUserId != null && supabaseUserId != CurrentUser.userId.value) {
                             CurrentUser.setUser(supabaseUserId)
                         }

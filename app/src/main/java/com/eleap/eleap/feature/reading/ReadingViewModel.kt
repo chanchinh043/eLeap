@@ -80,11 +80,23 @@ class ReadingViewModel(
         loadReadings()
         refreshSavedWordIds()
 
-        // Tự load lại danh sách khi tài khoản đổi (login/logout) — không cần
-        // UI tự gọi. drop(1) để bỏ giá trị hiện tại lúc khởi động (đã load ở trên).
+        // Tự load lại danh sách khi tài khoản đổi (login/logout/chuyển tài
+        // khoản) — không cần UI tự gọi. drop(1) để bỏ giá trị hiện tại lúc
+        // khởi động (đã load ở trên).
+        //
+        // ← sửa: trước đây chỉ gọi loadReadings(forceRefresh = true), THIẾU
+        // refreshSavedWordIds() — khiến _savedWordIds giữ nguyên giá trị cũ
+        // trong RAM (word_id của user trước đó) sau khi đăng nhập/đăng xuất/
+        // chuyển tài khoản. Hậu quả: WordClickableRow vẫn highlight nhầm từ
+        // của user cũ cho tới khi có hành động lưu/bỏ lưu 1 từ khác (thứ duy
+        // nhất từng gọi refreshSavedWordIds() qua onSaveStateChanged). Trong
+        // khi đó SaveWordButton.isWordSaved() luôn query DB trực tiếp mỗi lần
+        // mở popup nên vẫn đúng — 2 luồng lệch pha nhau chính là nguyên nhân
+        // hiện tượng bạn thấy.
         viewModelScope.launch {
             CurrentUser.userId.drop(1).collect {
                 loadReadings(forceRefresh = true)
+                refreshSavedWordIds()
             }
         }
 
@@ -165,6 +177,13 @@ class ReadingViewModel(
         viewModelScope.launch {
             _readings.value = repository.getAllReadings(forceRefresh)
         }
+    }
+
+    // Public wrapper — dùng khi 1 nơi ngoài ViewModel (vd MainScreen, sau khi
+    // migrate dữ liệu guest → user thật) cần ép reload lại danh sách readings
+    // ngay lập tức, bỏ qua mọi cache.
+    fun refreshReadings() {
+        loadReadings(forceRefresh = true)
     }
 
     // ── Flow 3: chỉ load khi readingId thay đổi ──────────────────────────────

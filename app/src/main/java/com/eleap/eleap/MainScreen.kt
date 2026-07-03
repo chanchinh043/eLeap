@@ -13,8 +13,10 @@ import androidx.activity.ComponentActivity
 import androidx.lifecycle.viewmodel.compose.viewModel
 import com.eleap.eleap.core.auth.CurrentUser
 import com.eleap.eleap.feature.auth.LoginScreen
+import com.eleap.eleap.feature.myreading.data.MyReadingRepository
 import com.eleap.eleap.feature.reading.ReadingListScreen
 import com.eleap.eleap.feature.reading.ReadingScreen
+import com.eleap.eleap.feature.reading.ReadingViewModel
 import com.eleap.eleap.feature.myreading.MyReadingListScreen
 import com.eleap.eleap.feature.myreading.AddMyReadingScreen
 
@@ -25,6 +27,7 @@ import com.eleap.eleap.feature.vocab.VocabViewModel
 import com.eleap.eleap.feature.vocab.VocabPopup
 import com.eleap.eleap.feature.reading.ui.UserVocabularyEntry
 import com.eleap.eleap.ui.FloatingVocabButton
+import kotlinx.coroutines.launch
 
 private enum class Screen {
     MAIN,
@@ -94,6 +97,7 @@ fun MainScreen() {
 
     val context  = LocalContext.current
     val activity = context as ComponentActivity
+    val scope    = rememberCoroutineScope()
 
     // ── Nhớ lần cuối vào luồng Reading là READING_LIST hay MY_READING ───────
     // Đọc từ SharedPreferences khi khởi tạo → giữ nguyên qua lần tắt/mở app.
@@ -111,6 +115,10 @@ fun MainScreen() {
     val vm: VocabViewModel = viewModel(
         viewModelStoreOwner = activity,
         factory = VocabViewModel.Factory(context)
+    )
+    val readingVm: ReadingViewModel = viewModel(
+        viewModelStoreOwner = activity,
+        factory = ReadingViewModel.Factory(context)
     )
     val vocabList          by vm.vocabList.collectAsState()
     val readingVocabList   by vm.readingVocabList.collectAsState()
@@ -137,6 +145,59 @@ fun MainScreen() {
     }
 
     BackHandler(enabled = screen != Screen.MAIN) { goBack() }
+
+    // ── Dialog hỏi migrate dữ liệu guest → user thật ─────────────────────────
+    // pendingMigrationUserId khác null đúng 1 lần duy nhất mỗi lượt đăng nhập
+    // MỚI (chuyển từ GUEST_ID sang uuid thật) — do CurrentUser.setUser() phát
+    // hiện. Không hiện lại khi mở app với session cũ (lúc đó chiều chuyển đổi
+    // không phải guest → user thật nữa).
+    val pendingMigrationUserId by CurrentUser.pendingMigrationUserId.collectAsState()
+    var isMigrating by remember { mutableStateOf(false) }
+
+    pendingMigrationUserId?.let { newUserId ->
+        AlertDialog(
+            onDismissRequest = {
+                // Coi dismiss (bấm ra ngoài / back) như chọn "Không" — không
+                // để dialog treo lơ lửng và cũng không hiện lại lần sau.
+                if (!isMigrating) CurrentUser.clearPendingMigration()
+            },
+            title = { Text("Giữ lại dữ liệu cũ?") },
+            text = {
+                Text("Bạn có muốn giữ lại dữ liệu (bài đọc + từ vựng) đã tạo trước khi đăng nhập không?")
+            },
+            confirmButton = {
+                TextButton(
+                    enabled = !isMigrating,
+                    onClick = {
+                        isMigrating = true
+                        scope.launch {
+                            val myReadingRepo = MyReadingRepository.getInstance(context)
+                            myReadingRepo.migrateGuestDataTo(newUserId)
+                            vm.migrateGuestVocabDataTo(newUserId)   // tự refresh vocabList bên trong
+                            readingVm.refreshReadings()
+
+                            isMigrating = false
+                            CurrentUser.clearPendingMigration()
+                        }
+                    }
+                ) {
+                    if (isMigrating) {
+                        CircularProgressIndicator(modifier = Modifier.size(18.dp), strokeWidth = 2.dp)
+                    } else {
+                        Text("Có")
+                    }
+                }
+            },
+            dismissButton = {
+                TextButton(
+                    enabled = !isMigrating,
+                    onClick = { CurrentUser.clearPendingMigration() }
+                ) {
+                    Text("Không")
+                }
+            }
+        )
+    }
 
     selectedEntry?.let { entry ->
         VocabPopup(

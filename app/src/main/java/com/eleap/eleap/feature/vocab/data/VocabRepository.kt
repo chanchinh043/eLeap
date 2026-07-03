@@ -87,6 +87,29 @@ class VocabRepository private constructor(
             }
         }
 
+    /**
+     * Chuyển toàn bộ từ vựng đã lưu lúc còn là guest (user_id = "guest")
+     * sang user thật vừa đăng nhập. Gọi sau khi CurrentUser.setUser() phát
+     * hiện lượt đăng nhập đầu tiên (guest → user thật) và người dùng chọn
+     * "Có" ở dialog migrate tại MainScreen. Trả về số dòng đã chuyển.
+     *
+     * Ghi trực tiếp qua userDb.db (bypass UserDatabase) — cùng cách các hàm
+     * deleteWord/incrementCount/updateSelected ở trên đang làm, vì
+     * UserDatabase chưa có sẵn hàm migrateOwnership().
+     */
+    suspend fun migrateGuestDataTo(newUserId: String): Int =
+        withContext(Dispatchers.IO) {
+            try {
+                val cv = ContentValues().apply { put("user_id", newUserId) }
+                userDb.db.update(
+                    "user_vocabulary", cv, "user_id = ?", arrayOf(CurrentUser.GUEST_ID)
+                )
+            } catch (e: Exception) {
+                Log.e("VocabRepository", "migrateGuestDataTo error", e)
+                0
+            }
+        }
+
     suspend fun getSelectedVocabulary(userId: String = CurrentUser.userId.value): List<UserVocabularyEntry> =
         withContext(Dispatchers.IO) {
             val list = mutableListOf<UserVocabularyEntry>()

@@ -40,4 +40,14 @@ object SupabaseClientProvider {
             redirectUrl = AUTH_REDIRECT_URL
         )
     }
+
+    // Đăng xuất khỏi Supabase — huỷ session hiện tại (xoá access/refresh token
+    // khỏi local storage của SDK). Sau khi hàm này trả về THÀNH CÔNG, nơi gọi
+    // (LoginScreen) mới nên gọi CurrentUser.logout() để đưa userId về GUEST_ID
+    // — đảm bảo thứ tự: Supabase signOut xong rồi mới đổi CurrentUser, tránh
+    // trường hợp UI/DB đọc theo userId=guest trong khi Supabase vẫn còn coi
+    // là đã đăng nhập.
+    suspend fun signOut() {
+        auth.signOut()
+    }
 }

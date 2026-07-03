@@ -278,10 +278,13 @@ class UserDatabase private constructor(context: Context) {
         }
     }
 
-    fun isWordSaved(wordId: String): Boolean {
+    // ← sửa: thêm lọc theo user_id — trước đây bất kỳ user nào lưu đúng
+    // word_id này (vd cùng 1 bài đọc hệ thống, wordId cố định theo bài) đều
+    // khiến nút hiện "Bỏ lưu" nhầm cho user hiện tại dù họ chưa từng lưu.
+    fun isWordSaved(wordId: String, userId: String = CurrentUser.userId.value): Boolean {
         val cursor = db.rawQuery(
-            "SELECT 1 FROM user_vocabulary WHERE source_word_id = ? LIMIT 1",
-            arrayOf(wordId)
+            "SELECT 1 FROM user_vocabulary WHERE source_word_id = ? AND user_id = ? LIMIT 1",
+            arrayOf(wordId, userId)
         )
         return cursor.use { it.moveToFirst() }
     }
@@ -331,10 +334,16 @@ class UserDatabase private constructor(context: Context) {
         }
     }
 
-    fun unsaveWord(wordId: String): Boolean {
+    // ← sửa: thêm lọc theo user_id — đây là bug nghiêm trọng nhất trong 3 hàm:
+    // trước đây bấm "Bỏ lưu" có thể XOÁ NHẦM dòng dữ liệu của user KHÁC nếu
+    // họ cùng lưu 1 word_id (isWordSaved báo sai do bug tương tự ở trên khiến
+    // người dùng tưởng mình đã lưu rồi bấm bỏ lưu).
+    fun unsaveWord(wordId: String, userId: String = CurrentUser.userId.value): Boolean {
         return try {
-            val rows = db.delete("user_vocabulary", "source_word_id = ?", arrayOf(wordId))
-            Log.d("UserDB", "unsaveWord: wordId=$wordId → $rows row(s) deleted")
+            val rows = db.delete(
+                "user_vocabulary", "source_word_id = ? AND user_id = ?", arrayOf(wordId, userId)
+            )
+            Log.d("UserDB", "unsaveWord: wordId=$wordId, userId=$userId → $rows row(s) deleted")
             rows > 0
         } catch (e: Exception) {
             Log.e("UserDB", "unsaveWord error", e)
@@ -342,11 +351,15 @@ class UserDatabase private constructor(context: Context) {
         }
     }
 
-    fun getAllSavedWordIds(): Set<String> {
+    // ← sửa: thêm lọc theo user_id — đây chính là nguyên nhân gây bug
+    // highlight sai trong ReadingScreen: trước đây hàm này trả về word_id
+    // của TẤT CẢ user, nên ReadingViewModel.savedWordIds chứa lẫn cả từ
+    // user khác đã lưu → WordClickableRow highlight nhầm.
+    fun getAllSavedWordIds(userId: String = CurrentUser.userId.value): Set<String> {
         val set = mutableSetOf<String>()
         val cursor = db.rawQuery(
-            "SELECT source_word_id FROM user_vocabulary WHERE source_word_id IS NOT NULL",
-            null
+            "SELECT source_word_id FROM user_vocabulary WHERE source_word_id IS NOT NULL AND user_id = ?",
+            arrayOf(userId)
         )
         cursor.use {
             while (it.moveToNext()) {

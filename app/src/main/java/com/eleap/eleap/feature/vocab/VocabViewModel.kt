@@ -8,6 +8,7 @@ import android.util.Log
 import androidx.lifecycle.ViewModel
 import androidx.lifecycle.ViewModelProvider
 import androidx.lifecycle.viewModelScope
+import com.eleap.eleap.core.auth.CurrentUser
 import com.eleap.eleap.feature.reading.ReadingViewModel
 import com.eleap.eleap.feature.reading.ui.UserVocabularyEntry
 import com.eleap.eleap.feature.vocab.data.VocabDictEntry
@@ -15,6 +16,7 @@ import com.eleap.eleap.feature.vocab.data.VocabRepository
 import androidx.compose.ui.geometry.Rect
 import kotlinx.coroutines.flow.MutableStateFlow
 import kotlinx.coroutines.flow.StateFlow
+import kotlinx.coroutines.flow.drop
 import kotlinx.coroutines.launch
 
 class VocabViewModel(
@@ -114,6 +116,19 @@ class VocabViewModel(
         currentReadingId?.let { saveAutoSelect(it, enabled) }
     }
 
+    init {
+        // Tự load lại vocabList khi tài khoản đổi (login/logout) — không cần
+        // UI tự gọi. drop(1) để bỏ giá trị hiện tại lúc khởi động. Áp dụng
+        // cho cả 2 chiều: đăng nhập (guest → user thật) lẫn đăng xuất
+        // (user thật → guest), vì VocabScreen cần hiển thị đúng vocab của
+        // userId đang active tại mọi thời điểm.
+        viewModelScope.launch {
+            CurrentUser.userId.drop(1).collect {
+                loadVocab()
+            }
+        }
+    }
+
     // ── Load từ theo bài đọc ──────────────────────────────────────────────────
     fun loadVocabForReading(readingId: String) {
         viewModelScope.launch {
@@ -151,6 +166,19 @@ class VocabViewModel(
                 val words = result.mapNotNull { it.textEn }
                 repository.preloadDict(words)
             }
+        }
+    }
+
+    // ── Migrate dữ liệu guest → user thật ────────────────────────────────────
+    // Gọi từ MainScreen sau khi người dùng chọn "Có" ở dialog hỏi migrate.
+    // Chuyển toàn bộ user_vocabulary từ user_id="guest" sang newUserId rồi
+    // reload lại vocabList để UI (VocabScreen) cập nhật ngay — không cần đợi
+    // qua loadVocab() do 1 nơi khác gọi.
+    fun migrateGuestVocabDataTo(newUserId: String) {
+        viewModelScope.launch {
+            val moved = repository.migrateGuestDataTo(newUserId)
+            Log.d("VocabVM", "migrateGuestVocabDataTo($newUserId) → đã chuyển $moved dòng")
+            loadVocab()
         }
     }
 

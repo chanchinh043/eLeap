@@ -14,9 +14,10 @@ import com.eleap.eleap.core.auth.CurrentUser
 import com.eleap.eleap.core.auth.SupabaseClientProvider
 import kotlinx.coroutines.launch
 
-// Màn đăng nhập — chỉ có 1 nút "Đăng nhập với Google" để test luồng OAuth.
-// Sau khi Supabase redirect về qua deep link (xử lý ở MainActivity), CurrentUser
-// sẽ tự cập nhật userId, màn này chỉ cần hiển thị trạng thái hiện tại.
+// Màn đăng nhập — có nút "Đăng nhập với Google" và (khi đã đăng nhập) nút
+// "Đăng xuất". Sau khi Supabase redirect về qua deep link (xử lý ở
+// MainActivity), CurrentUser sẽ tự cập nhật userId, màn này chỉ cần hiển thị
+// trạng thái hiện tại.
 @OptIn(ExperimentalMaterial3Api::class)
 @Composable
 fun LoginScreen(
@@ -27,6 +28,8 @@ fun LoginScreen(
 
     var isLoading by remember { mutableStateOf(false) }
     var errorMessage by remember { mutableStateOf<String?>(null) }
+
+    val isLoggedIn = userId != CurrentUser.GUEST_ID
 
     Scaffold(
         topBar = {
@@ -63,26 +66,63 @@ fun LoginScreen(
                 Spacer(modifier = Modifier.height(12.dp))
             }
 
-            Button(
-                onClick = {
-                    isLoading = true
-                    errorMessage = null
-                    scope.launch {
-                        try {
-                            SupabaseClientProvider.signInWithGoogle()
-                        } catch (e: Exception) {
-                            errorMessage = "Lỗi đăng nhập: ${e.message}"
-                        } finally {
-                            isLoading = false
+            if (!isLoggedIn) {
+                Button(
+                    onClick = {
+                        isLoading = true
+                        errorMessage = null
+                        scope.launch {
+                            try {
+                                SupabaseClientProvider.signInWithGoogle()
+                            } catch (e: Exception) {
+                                errorMessage = "Lỗi đăng nhập: ${e.message}"
+                            } finally {
+                                isLoading = false
+                            }
                         }
+                    },
+                    enabled = !isLoading
+                ) {
+                    if (isLoading) {
+                        CircularProgressIndicator(modifier = Modifier.size(18.dp), strokeWidth = 2.dp)
+                    } else {
+                        Text("Đăng nhập với Google")
                     }
-                },
-                enabled = !isLoading
-            ) {
-                if (isLoading) {
-                    CircularProgressIndicator(modifier = Modifier.size(18.dp), strokeWidth = 2.dp)
-                } else {
-                    Text("Đăng nhập với Google")
+                }
+            } else {
+                OutlinedButton(
+                    onClick = {
+                        isLoading = true
+                        errorMessage = null
+                        // Bật cờ TRƯỚC khi gọi signOut() — để MainActivity.observeSupabaseSession()
+                        // biết mà bỏ qua sự kiện Authenticated "trễ" nào đó lọt về
+                        // trong lúc đang xử lý, tránh ghi đè ngược userId.
+                        CurrentUser.beginLogout()
+                        scope.launch {
+                            try {
+                                // Thứ tự bắt buộc: signOut khỏi Supabase THÀNH CÔNG
+                                // rồi mới đổi CurrentUser về guest — tránh trạng thái
+                                // CurrentUser đã là guest trong khi Supabase vẫn còn
+                                // coi là đã đăng nhập (dữ liệu UI/DB có thể đọc sai).
+                                SupabaseClientProvider.signOut()
+                                CurrentUser.logout()
+                            } catch (e: Exception) {
+                                // signOut thất bại (vd mất mạng) — huỷ cờ logout,
+                                // giữ nguyên userId hiện tại, báo lỗi cho người dùng.
+                                CurrentUser.cancelLogout()
+                                errorMessage = "Lỗi đăng xuất: ${e.message}"
+                            } finally {
+                                isLoading = false
+                            }
+                        }
+                    },
+                    enabled = !isLoading
+                ) {
+                    if (isLoading) {
+                        CircularProgressIndicator(modifier = Modifier.size(18.dp), strokeWidth = 2.dp)
+                    } else {
+                        Text("Đăng xuất")
+                    }
                 }
             }
         }
