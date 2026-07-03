@@ -36,25 +36,50 @@ class VocabRepository private constructor(
     suspend fun getAllVocabulary(userId: String = CurrentUser.userId.value): List<UserVocabularyEntry> =
         withContext(Dispatchers.IO) { userDb.getAllVocabulary(userId) }
 
-    suspend fun deleteWord(id: String): Boolean =
-        withContext(Dispatchers.IO) { userDb.deleteWord(id) }
+    // userId mặc định lấy CurrentUser.userId.value TẠI THỜI ĐIỂM GỌI (không phải
+    // lúc khai báo default param) — do Kotlin luôn evaluate default param mỗi lần
+    // hàm được gọi mà không truyền đối số, nên vẫn an toàn khi user đổi tài khoản.
+    // Thêm "AND user_id = ?" để id (dù là UUID) không thể vô tình xoá/sửa
+    // nhầm dòng của user khác.
+    // Lưu ý: đổi từ userDb.deleteWord(id) (hàm có sẵn trong UserDatabase.kt, tôi
+    // không có file này để sửa) sang xoá trực tiếp qua userDb.db kèm điều kiện
+    // user_id — không cần đụng tới UserDatabase.kt. Nếu UserDatabase.deleteWord()
+    // còn được gọi ở nơi khác trong code, nên sửa luôn bên đó theo cùng cách này.
+    suspend fun deleteWord(id: String, userId: String = CurrentUser.userId.value): Boolean =
+        withContext(Dispatchers.IO) {
+            try {
+                val rows = userDb.db.delete(
+                    "user_vocabulary", "id = ? AND user_id = ?", arrayOf(id, userId)
+                )
+                rows > 0
+            } catch (e: Exception) {
+                Log.e("VocabRepository", "deleteWord error", e)
+                false
+            }
+        }
 
-    suspend fun incrementCount(id: String) = withContext(Dispatchers.IO) {
+    suspend fun incrementCount(id: String, userId: String = CurrentUser.userId.value) = withContext(Dispatchers.IO) {
         try {
             userDb.db.execSQL(
-                "UPDATE user_vocabulary SET count = count + 1 WHERE id = ?",
-                arrayOf(id)
+                "UPDATE user_vocabulary SET count = count + 1 WHERE id = ? AND user_id = ?",
+                arrayOf(id, userId)
             )
         } catch (e: Exception) {
             Log.e("VocabRepository", "incrementCount error", e)
         }
     }
 
-    suspend fun updateSelected(id: String, selected: Int): Boolean =
+    suspend fun updateSelected(
+        id: String,
+        selected: Int,
+        userId: String = CurrentUser.userId.value,
+    ): Boolean =
         withContext(Dispatchers.IO) {
             return@withContext try {
                 val cv = ContentValues().apply { put("selected", selected) }
-                val rows = userDb.db.update("user_vocabulary", cv, "id = ?", arrayOf(id))
+                val rows = userDb.db.update(
+                    "user_vocabulary", cv, "id = ? AND user_id = ?", arrayOf(id, userId)
+                )
                 rows > 0
             } catch (e: Exception) {
                 Log.e("VocabRepository", "updateSelected error", e)
