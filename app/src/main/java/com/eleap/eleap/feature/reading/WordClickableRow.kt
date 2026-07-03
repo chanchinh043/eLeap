@@ -20,6 +20,7 @@ import androidx.compose.ui.geometry.Offset
 import androidx.compose.ui.geometry.Rect
 import androidx.compose.ui.graphics.Color
 import androidx.compose.ui.input.pointer.pointerInput
+import androidx.compose.ui.layout.LayoutCoordinates
 import androidx.compose.ui.layout.boundsInWindow
 import androidx.compose.ui.layout.onGloballyPositioned
 import androidx.compose.ui.unit.dp
@@ -56,15 +57,21 @@ fun WordClickableRow(
 ) {
     val words = sentence.words
 
-    // windowBounds  : toạ độ (window) của từng từ — dùng để tính PopupAnchorInfo
-    //                 VÀ để hit-test (trừ đi containerOrigin → ra toạ độ cục bộ).
-    // containerOrigin: gốc toạ độ (window) của Box ngoài cùng chứa các dòng chữ.
-    //                 Dùng containerOrigin thay vì positionInParent() của từng Text
-    //                 vì ở chế độ "line" mỗi phrase nằm trong 1 FlowRow riêng —
-    //                 positionInParent() lúc đó sẽ trả về toạ độ tương đối của
-    //                 từng dòng khác nhau, không dùng chung được cho hit-test.
-    val windowBounds    = remember(sentence.sentenceId) { mutableStateMapOf<Int, Rect>() }
-    var containerOrigin by remember(sentence.sentenceId) { mutableStateOf(Offset.Zero) }
+    // wordCoords     : LayoutCoordinates SỐNG của từng từ (không phải Rect đã
+    //                  tính sẵn) — để luôn đọc được vị trí HIỆN TẠI, tránh bị
+    //                  "đứng hình" toạ độ cũ khi item nằm sát mép clip trên
+    //                  cùng của LazyColumn (dòng đầu của câu dài bị cuộn lên
+    //                  che khuất). Trước đây lưu Rect (snapshot tại thời điểm
+    //                  onGloballyPositioned chạy) — với các dòng bị clip ở
+    //                  mép trên, callback đó đôi khi không refire sau khi
+    //                  cuộn, khiến Rect cũ bị kẹt ở (0,0,0,0) mãi mãi → tap
+    //                  vào từ ở đúng dòng đó không bao giờ nhận được. Lưu
+    //                  LayoutCoordinates rồi tính Rect NGAY LÚC CẦN (tại thời
+    //                  điểm chạm) bằng localBoundingBoxOf/boundsInWindow() thì
+    //                  luôn ra toạ độ mới nhất, không phụ thuộc callback có
+    //                  refire hay không.
+    val wordCoords = remember(sentence.sentenceId) { mutableStateMapOf<Int, LayoutCoordinates>() }
+    var containerCoords by remember(sentence.sentenceId) { mutableStateOf<LayoutCoordinates?>(null) }
 
     // liveRange    : phạm vi đang bôi đen trong khi kéo (realtime, chưa thả tay)
     var liveRange by remember(sentence.sentenceId) { mutableStateOf<IntRange?>(null) }
@@ -95,9 +102,17 @@ fun WordClickableRow(
     // Trong khi kéo ưu tiên liveRange; sau khi thả ưu tiên committedRange
     val highlightRange = liveRange ?: committedRange
 
+    // ── Toạ độ WINDOW hiện tại của 1 từ — luôn tính tươi từ LayoutCoordinates
+    //    sống, KHÔNG dùng Rect cache. ──────────────────────────────────────
+    fun windowRectOf(index: Int): Rect? {
+        val wc = wordCoords[index] ?: return null
+        if (!wc.isAttached) return null
+        return wc.boundsInWindow()
+    }
+
     // Tính anchor cho popup mỗi khi committedRange thay đổi
     val computedAnchor = committedRange?.let { range ->
-        val rects = range.mapNotNull { windowBounds[it] }
+        val rects = range.mapNotNull { windowRectOf(it) }
         val unionRect = rects.reduceOrNull { acc, r ->
             Rect(
                 left   = minOf(acc.left, r.left),
@@ -106,7 +121,7 @@ fun WordClickableRow(
                 bottom = maxOf(acc.bottom, r.bottom),
             )
         }
-        val lineHeight = windowBounds[range.first]?.height
+        val lineHeight = windowRectOf(range.first)?.height
         if (unionRect != null && lineHeight != null)
             PopupAnchorInfo(rect = unionRect, lineHeightPx = lineHeight)
         else null
@@ -135,19 +150,25 @@ fun WordClickableRow(
     val phraseUnderlineColor = MaterialTheme.colorScheme.outline.copy(alpha = 0.5f)
 
     // ── HIT-TEST ──────────────────────────────────────────────────────────────
-    // Toạ độ cục bộ = windowBounds - containerOrigin, dùng chung cho mọi dòng
-    // (dù các dòng nằm trong FlowRow khác nhau ở chế độ "line").
-    fun localRectOf(index: Int): Rect? = windowBounds[index]?.translate(-containerOrigin)
+    // Toạ độ cục bộ = vị trí HIỆN TẠI của từ trong hệ toạ độ của container,
+    // tính tươi bằng localBoundingBoxOf ngay tại thời điểm gọi — không đọc từ
+    // cache nào cả, nên luôn đúng dù item vừa mới cuộn xong.
+    fun localRectOf(index: Int): Rect? {
+        val cc = containerCoords ?: return null
+        val wc = wordCoords[index] ?: return null
+        if (!cc.isAttached || !wc.isAttached) return null
+        return cc.localBoundingBoxOf(wc, clipBounds = false)
+    }
 
     // Chỉ dùng để kiểm tra sự kiện DOWN: trả null nếu không chạm trúng từ nào.
     // Đây là điểm mấu chốt — tap vào khoảng trống sẽ bị bỏ qua hoàn toàn.
     fun indexAtExact(pos: Offset): Int? =
-        windowBounds.keys.firstOrNull { idx -> localRectOf(idx)?.contains(pos) == true }
+        wordCoords.keys.firstOrNull { idx -> localRectOf(idx)?.contains(pos) == true }
 
     // Chỉ dùng khi đang kéo ngang: cho phép trượt qua khoảng cách giữa các từ.
     // Ưu tiên hit trực tiếp; nếu không thì tìm từ cùng hàng gần nhất theo X.
     fun indexNearestX(pos: Offset): Int? {
-        val indices = windowBounds.keys.toList()
+        val indices = wordCoords.keys.toList()
         if (indices.isEmpty()) return null
         val direct = indices.firstOrNull { idx -> localRectOf(idx)?.contains(pos) == true }
         if (direct != null) return direct
@@ -164,7 +185,7 @@ fun WordClickableRow(
 
     Box(
         modifier = Modifier
-            .onGloballyPositioned { containerOrigin = it.boundsInWindow().topLeft }
+            .onGloballyPositioned { containerCoords = it }
             // QUAN TRỌNG: key theo `words` (không chỉ sentenceId) — nếu chỉ key
             // theo sentenceId, khi AI dịch xong và cập nhật textVi/pos/lemma...
             // cho các từ trong CÙNG 1 sentenceId, block gesture bên dưới sẽ
@@ -363,7 +384,7 @@ fun WordClickableRow(
                 },
                 modifier = Modifier
                     .onGloballyPositioned { c ->
-                        windowBounds[index] = c.boundsInWindow()
+                        wordCoords[index] = c
                     }
                     .background(
                         if (selected) MaterialTheme.colorScheme.primary else Color.Transparent,
