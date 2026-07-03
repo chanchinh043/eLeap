@@ -168,7 +168,7 @@ suspend fun callMyReadingOpenAI(prompt: String, logLabel: String = ""): String =
 
     val requestBody = JSONObject().apply {
         put("model", OPENAI_MODEL)
-        put("max_tokens", MAX_TOKENS)
+        put("max_completion_tokens", MAX_TOKENS)
         put("messages", JSONArray().apply {
             put(JSONObject().apply {
                 put("role", "user")
@@ -184,6 +184,7 @@ suspend fun callMyReadingOpenAI(prompt: String, logLabel: String = ""): String =
     val conn = url.openConnection() as HttpURLConnection
     conn.requestMethod = "POST"
     conn.setRequestProperty("Content-Type", "application/json")
+
     conn.setRequestProperty("Authorization", "Bearer ${BuildConfig.OPENAI_API_KEY}")
     conn.doOutput       = true
     conn.connectTimeout = 30_000

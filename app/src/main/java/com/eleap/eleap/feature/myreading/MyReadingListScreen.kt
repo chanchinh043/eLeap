@@ -232,9 +232,9 @@ private fun MyReadingMenuDrawer(
 
             AnimatedVisibility(
                 visible = visible,
-                enter = slideInHorizontally(initialOffsetX = { it }),
-                exit = slideOutHorizontally(targetOffsetX = { it }),
-                modifier = Modifier.align(Alignment.CenterEnd)
+                enter = slideInHorizontally(initialOffsetX = { -it }),
+                exit = slideOutHorizontally(targetOffsetX = { -it }),
+                modifier = Modifier.align(Alignment.CenterStart)
             ) {
                 Surface(
                     modifier = Modifier
