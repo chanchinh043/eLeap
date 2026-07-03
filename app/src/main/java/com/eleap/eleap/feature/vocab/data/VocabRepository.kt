@@ -41,9 +41,9 @@ class VocabRepository private constructor(
     // hàm được gọi mà không truyền đối số, nên vẫn an toàn khi user đổi tài khoản.
     // Thêm "AND user_id = ?" để id (dù là UUID) không thể vô tình xoá/sửa
     // nhầm dòng của user khác.
-    // Lưu ý: đổi từ userDb.deleteWord(id) (hàm có sẵn trong UserDatabase.kt, tôi
-    // không có file này để sửa) sang xoá trực tiếp qua userDb.db kèm điều kiện
-    // user_id — không cần đụng tới UserDatabase.kt. Nếu UserDatabase.deleteWord()
+    // Lưu ý: đổi từ userDb.deleteWord(id) (hàm có sẵn trong class UserDatabase,
+    // định nghĩa trong SaveWord.kt) sang xoá trực tiếp qua userDb.db kèm điều
+    // kiện user_id — không cần đụng tới SaveWord.kt. Nếu UserDatabase.deleteWord()
     // còn được gọi ở nơi khác trong code, nên sửa luôn bên đó theo cùng cách này.
     suspend fun deleteWord(id: String, userId: String = CurrentUser.userId.value): Boolean =
         withContext(Dispatchers.IO) {
