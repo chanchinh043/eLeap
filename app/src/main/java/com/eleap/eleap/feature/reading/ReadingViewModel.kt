@@ -105,8 +105,59 @@ class ReadingViewModel(
         processUnhandledMyReadings(
             context = appContext,
             onStatus = { msg -> Log.d("ReadingVM.AiWatchdog", msg) },
-            onUpdated = { loadReadings(forceRefresh = true) },
+            onUpdated = {
+                loadReadings(forceRefresh = true)
+                // Nếu đang mở sẵn 1 bài đọc (ReadingScreen đang hiển thị) thì nạp lại
+                // câu/cụm từ/từ của đúng bài đó ngay — để phần AI vừa dịch xong hiện
+                // ra tức thì, không cần thoát ra vào lại màn hình hay khởi động lại app.
+                cachedReadingId?.let { reloadCurrentReading(it) }
+            },
         )
+    }
+
+    // Nạp lại nội dung bài đọc đang mở, bỏ qua mọi cache — dùng sau khi AI vừa
+    // ghi xong dữ liệu cho 1 bài MyReading (gọi từ runMyReadingAiWatchdog ở trên).
+    private fun reloadCurrentReading(readingId: String) {
+        viewModelScope.launch {
+            val result = repository.getReading(readingId, forceRefresh = true)
+            _sentences.value = result
+            // Nếu đang có popup từ/cụm từ/câu mở sẵn từ TRƯỚC khi AI ghi xong,
+            // các object đó (selectedWord/selectedPhrase/selectedSentence) vẫn
+            // trỏ tới dữ liệu CŨ (rỗng/null) dù `sentences` bên dưới đã cập nhật
+            // — vì chúng không tự đồng bộ theo StateFlow nào cả, chỉ được set
+            // 1 lần lúc bấm. Đồng bộ lại đây theo đúng id để popup hiện dữ liệu
+            // AI vừa dịch xong ngay lập tức, không cần đóng/mở lại popup.
+            resyncSelectedAfterReload(result)
+        }
+    }
+
+    private fun resyncSelectedAfterReload(freshSentences: List<ReadingSentence>) {
+        _selectedSentence.value?.let { old ->
+            _selectedSentence.value = freshSentences.find { it.sentenceId == old.sentenceId } ?: old
+        }
+
+        val oldWord = _selectedWord.value
+        if (oldWord != null) {
+            val freshSentence = freshSentences.find { it.sentenceId == oldWord.sentenceId }
+            val freshWord = freshSentence?.words?.find { it.wordId == oldWord.wordId }
+            if (freshWord != null) {
+                _selectedWord.value = freshWord
+                _selectedDictEntry.value = repository.getDictEntry(freshWord.textEn)
+                _selectedPhrase.value = freshWord.phraseId?.let { pid ->
+                    freshSentence.phrases.find { it.phraseId == pid }
+                }
+            }
+        } else {
+            // selectedWord null nghĩa là đang ở PhrasePopup độc lập (mode "P") —
+            // đồng bộ riêng theo selectedPhrase.
+            val oldPhrase = _selectedPhrase.value
+            if (oldPhrase != null) {
+                val freshPhrase = freshSentences
+                    .flatMap { it.phrases }
+                    .find { it.phraseId == oldPhrase.phraseId }
+                if (freshPhrase != null) _selectedPhrase.value = freshPhrase
+            }
+        }
     }
 
     // ── Flow 2 ────────────────────────────────────────────────────────────────

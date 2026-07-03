@@ -165,7 +165,15 @@ fun WordClickableRow(
     Box(
         modifier = Modifier
             .onGloballyPositioned { containerOrigin = it.boundsInWindow().topLeft }
-            .pointerInput(sentence.sentenceId, translateMode) {
+            // QUAN TRỌNG: key theo `words` (không chỉ sentenceId) — nếu chỉ key
+            // theo sentenceId, khi AI dịch xong và cập nhật textVi/pos/lemma...
+            // cho các từ trong CÙNG 1 sentenceId, block gesture bên dưới sẽ
+            // KHÔNG được khởi động lại, và biến `words` nó đang giữ (từ lúc
+            // composition trước, chưa có bản dịch) sẽ mãi bị dùng cho mọi lần
+            // bấm sau đó → popup luôn hiện dữ liệu cũ dù `sentence` bên ngoài
+            // đã có bản dịch mới, cho tới khi rời màn hình và vào lại (tạo lại
+            // toàn bộ composable từ đầu).
+            .pointerInput(sentence.sentenceId, words, translateMode) {
                 // density có sẵn từ PointerInputScope (kế thừa Density)
                 val highlightThresholdPx = HIGHLIGHT_THRESHOLD_DP * density
 

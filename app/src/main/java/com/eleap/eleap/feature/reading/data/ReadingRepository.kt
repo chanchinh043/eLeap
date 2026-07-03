@@ -326,8 +326,12 @@ class ReadingRepository(
         }
 
     // ── Flow 3: route theo userId đã biết từ getAllReadings() ───────────────
-    suspend fun getReading(readingId: String): List<ReadingSentence> =
+    // forceRefresh: bỏ qua cache tầng này (readingCache) và nạp lại từ tầng
+    // dưới (dao / myReadingRepository) — dùng khi biết dữ liệu đã đổi (ví dụ
+    // AI vừa xử lý xong 1 bài MyReading) mà không muốn chờ tắt/mở lại app.
+    suspend fun getReading(readingId: String, forceRefresh: Boolean = false): List<ReadingSentence> =
         withContext(Dispatchers.IO) {
+            if (forceRefresh) readingCache.remove(readingId)
             readingCache[readingId] ?: run {
                 if (userIdOf.isEmpty()) getAllReadings()   // chưa load list lần nào → load trước
 
