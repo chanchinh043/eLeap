@@ -11,6 +11,8 @@ import androidx.compose.ui.platform.LocalContext
 import androidx.compose.ui.unit.dp
 import androidx.activity.ComponentActivity
 import androidx.lifecycle.viewmodel.compose.viewModel
+import com.eleap.eleap.core.auth.CurrentUser
+import com.eleap.eleap.feature.auth.LoginScreen
 import com.eleap.eleap.feature.reading.ReadingListScreen
 import com.eleap.eleap.feature.reading.ReadingScreen
 import com.eleap.eleap.feature.myreading.MyReadingListScreen
@@ -26,6 +28,7 @@ import com.eleap.eleap.ui.FloatingVocabButton
 
 private enum class Screen {
     MAIN,
+    LOGIN,                    // ← mới: màn đăng nhập, mở từ nút ở trang chủ
     READING_LIST,
     READING,
     MY_READING,              // "Bài đọc của tôi" — mở từ menu danh mục ở ReadingListScreen
@@ -43,6 +46,7 @@ private enum class Screen {
 private val READING_ENTRY_SCREENS = setOf(Screen.READING_LIST, Screen.MY_READING)
 
 private fun previousScreenOf(screen: Screen): Screen = when (screen) {
+    Screen.LOGIN                -> Screen.MAIN
     Screen.READING_LIST        -> Screen.MAIN
     Screen.READING             -> Screen.READING_LIST   // fallback mặc định — bị override động trong goBack() khi vào từ MY_READING
     Screen.MY_READING          -> Screen.MAIN   // ← back từ MyReading về thẳng trang chủ
@@ -211,7 +215,12 @@ private fun ScreenContent(
             // ── Bấm "Reading" từ trang chủ → vào màn đã ghé thăm gần nhất
             //    (READING_LIST hoặc MY_READING) ──────────────────────────────
             onReadingClick = { onNavigateTo(lastReadingEntryScreen) },
-            onVocabClick   = { onNavigateTo(Screen.VOCAB) }
+            onVocabClick   = { onNavigateTo(Screen.VOCAB) },
+            onLoginClick   = { onNavigateTo(Screen.LOGIN) },
+        )
+
+        Screen.LOGIN -> LoginScreen(
+            onBack = onBack
         )
 
         Screen.READING_LIST -> ReadingListScreen(
@@ -280,6 +289,7 @@ private fun ScreenContent(
 private fun MainContent(
     onReadingClick: () -> Unit,
     onVocabClick: () -> Unit,
+    onLoginClick: () -> Unit,
 ) {
     Column(
         modifier = Modifier.fillMaxSize(),
@@ -289,5 +299,9 @@ private fun MainContent(
         Button(onClick = onReadingClick) { Text("Reading") }
         Spacer(modifier = Modifier.height(12.dp))
         Button(onClick = onVocabClick) { Text("Ôn từ vựng") }
+        Spacer(modifier = Modifier.height(12.dp))
+        // ── Nút test đăng nhập — tạm thời đặt ở đây để test song song với
+        //    việc cấu hình Google Cloud Console / Supabase Dashboard ──────────
+        OutlinedButton(onClick = onLoginClick) { Text("Đăng nhập") }
     }
 }
