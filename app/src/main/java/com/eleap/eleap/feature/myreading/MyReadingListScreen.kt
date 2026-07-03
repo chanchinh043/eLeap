@@ -58,15 +58,35 @@ fun MyReadingListScreen(
                         }
                     },
                     actions = {
-                        IconButton(onClick = { showMenu = true }) {
-                            Icon(Icons.Filled.Menu, contentDescription = "Menu")
+                        IconButton(onClick = onAddReadingClick) {
+                            Icon(Icons.Filled.Add, contentDescription = "Thêm bài đọc")
                         }
                     }
                 )
             },
             floatingActionButton = {
-                FloatingActionButton(onClick = onAddClick) {
-                    Icon(Icons.Filled.Add, contentDescription = "Thêm bài đọc")
+                Column(
+                    horizontalAlignment = Alignment.End,
+                    verticalArrangement = Arrangement.spacedBy(8.dp)
+                ) {
+                    Button(
+                        onClick = { showMenu = true },
+                        colors  = ButtonDefaults.buttonColors(
+                            containerColor = MaterialTheme.colorScheme.primary,
+                            contentColor   = MaterialTheme.colorScheme.onPrimary
+                        )
+                    ) {
+                        Text("Danh sách")
+                    }
+                    Button(
+                        onClick = onAddClick,
+                        colors  = ButtonDefaults.buttonColors(
+                            containerColor = MaterialTheme.colorScheme.primary,
+                            contentColor   = MaterialTheme.colorScheme.onPrimary
+                        )
+                    ) {
+                        Text("Bài đọc hệ thống")
+                    }
                 }
             }
         ) { padding ->

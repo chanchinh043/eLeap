@@ -14,7 +14,6 @@ import androidx.compose.foundation.lazy.LazyColumn
 import androidx.compose.foundation.lazy.items
 import androidx.compose.material.icons.Icons
 import androidx.compose.material.icons.automirrored.filled.ArrowBack
-import androidx.compose.material.icons.filled.Add
 import androidx.compose.material.icons.filled.Menu
 import androidx.compose.material3.*
 import androidx.compose.runtime.Composable
@@ -65,9 +64,28 @@ fun ReadingListScreen(
                 )
             },
             floatingActionButton = {
-                // (+) giờ đi thẳng tới "Bài đọc của tôi", không mở menu nữa
-                FloatingActionButton(onClick = onMyReadingClick) {
-                    Icon(Icons.Filled.Add, contentDescription = "Bài đọc của tôi")
+                Column(
+                    horizontalAlignment = Alignment.End,
+                    verticalArrangement = Arrangement.spacedBy(8.dp)
+                ) {
+                    Button(
+                        onClick = { showCategoryMenu = true },
+                        colors  = ButtonDefaults.buttonColors(
+                            containerColor = MaterialTheme.colorScheme.primary,
+                            contentColor   = MaterialTheme.colorScheme.onPrimary
+                        )
+                    ) {
+                        Text("Danh sách")
+                    }
+                    Button(
+                        onClick = onMyReadingClick,
+                        colors  = ButtonDefaults.buttonColors(
+                            containerColor = MaterialTheme.colorScheme.primary,
+                            contentColor   = MaterialTheme.colorScheme.onPrimary
+                        )
+                    ) {
+                        Text("Bài đọc của tôi")
+                    }
                 }
             }
         ) { padding ->
