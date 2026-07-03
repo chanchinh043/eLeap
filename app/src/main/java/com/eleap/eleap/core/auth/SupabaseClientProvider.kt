@@ -38,7 +38,12 @@ object SupabaseClientProvider {
         auth.signInWith(
             provider = Google,
             redirectUrl = AUTH_REDIRECT_URL
-        )
+        ) {
+            // Luôn hiện màn hình chọn tài khoản Google, kể cả khi trình duyệt
+            // vẫn còn phiên đăng nhập từ lần trước — tránh tự đăng nhập lại
+            // đúng tài khoản cũ sau khi user đã logout.
+            queryParams["prompt"] = "select_account"
+        }
     }
 
     // Đăng xuất khỏi Supabase — huỷ session hiện tại (xoá access/refresh token
