@@ -22,7 +22,7 @@ import androidx.compose.ui.platform.LocalContext
 import androidx.compose.ui.text.style.TextAlign
 import androidx.compose.ui.unit.dp
 import androidx.lifecycle.viewmodel.compose.viewModel
-import com.eleap.eleap.feature.reading.ui.UserVocabularyEntry
+import com.eleap.eleap.feature.vocab.data.UserVocabularyEntry
 
 // ── Phân loại từ theo số lần ôn ──────────────────────────────────────────────
 private enum class VocabReadingTab(val label: String) {

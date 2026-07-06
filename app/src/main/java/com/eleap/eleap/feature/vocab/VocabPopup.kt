@@ -22,7 +22,7 @@ import androidx.compose.ui.unit.dp
 import androidx.compose.ui.window.Popup
 import androidx.compose.ui.window.PopupPositionProvider
 import androidx.compose.ui.window.PopupProperties
-import com.eleap.eleap.feature.reading.ui.UserVocabularyEntry
+import com.eleap.eleap.feature.vocab.data.UserVocabularyEntry
 import com.eleap.eleap.feature.vocab.data.VocabDictEntry
 
 // ── Vị trí popup linh động: ưu tiên hiện PHÍA TRÊN anchor (từ vừa bấm), ─────

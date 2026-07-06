@@ -16,30 +16,27 @@ import com.eleap.eleap.feature.reading.data.ReadingSentence
 import com.eleap.eleap.feature.reading.data.DictEntry
 import com.eleap.eleap.feature.reading.data.SentencePhrase
 import com.eleap.eleap.feature.reading.data.SentenceWord
-import com.eleap.eleap.feature.reading.ui.UserDatabase
-import kotlinx.coroutines.Dispatchers
+import com.eleap.eleap.feature.vocab.data.VocabRepository
 import kotlinx.coroutines.delay
 import kotlinx.coroutines.flow.MutableStateFlow
+import kotlinx.coroutines.flow.SharingStarted
 import kotlinx.coroutines.flow.StateFlow
 import kotlinx.coroutines.flow.drop
 import kotlinx.coroutines.flow.map
 import kotlinx.coroutines.flow.stateIn
 import kotlinx.coroutines.launch
-import kotlinx.coroutines.withContext
 
 class ReadingViewModel(
     private val repository: ReadingRepository,
-    private val myReadingRepository: MyReadingRepository,   // ← mới: để ViewModel expose ghi/sửa/xoá
-    private val userDb: UserDatabase,
-    private val appContext: Context,   // ← mới: dùng cho watchdog AI xử lý MyReading
+    private val myReadingRepository: MyReadingRepository,
+    private val vocabRepository: VocabRepository,   // ← thay cho UserDatabase
+    private val appContext: Context,
 ) : ViewModel() {
 
     // ── Flow 2 ────────────────────────────────────────────────────────────────
     private val _readings = MutableStateFlow<List<Reading>>(emptyList())
     val readings: StateFlow<List<Reading>> = _readings
 
-    // ── Danh sách tách sẵn theo nguồn — UI (ReadingListScreen / MyReadingListScreen)
-    // dùng trực tiếp, không cần tự filter userId ở lớp Compose.
     val systemReadings: StateFlow<List<Reading>> =
         readings.map { list -> list.filter { it.userId == null } }
             .stateIn(viewModelScope, kotlinx.coroutines.flow.SharingStarted.Eagerly, emptyList())
@@ -80,19 +77,6 @@ class ReadingViewModel(
         loadReadings()
         refreshSavedWordIds()
 
-        // Tự load lại danh sách khi tài khoản đổi (login/logout/chuyển tài
-        // khoản) — không cần UI tự gọi. drop(1) để bỏ giá trị hiện tại lúc
-        // khởi động (đã load ở trên).
-        //
-        // ← sửa: trước đây chỉ gọi loadReadings(forceRefresh = true), THIẾU
-        // refreshSavedWordIds() — khiến _savedWordIds giữ nguyên giá trị cũ
-        // trong RAM (word_id của user trước đó) sau khi đăng nhập/đăng xuất/
-        // chuyển tài khoản. Hậu quả: WordClickableRow vẫn highlight nhầm từ
-        // của user cũ cho tới khi có hành động lưu/bỏ lưu 1 từ khác (thứ duy
-        // nhất từng gọi refreshSavedWordIds() qua onSaveStateChanged). Trong
-        // khi đó SaveWordButton.isWordSaved() luôn query DB trực tiếp mỗi lần
-        // mở popup nên vẫn đúng — 2 luồng lệch pha nhau chính là nguyên nhân
-        // hiện tượng bạn thấy.
         viewModelScope.launch {
             CurrentUser.userId.drop(1).collect {
                 loadReadings(forceRefresh = true)
@@ -100,11 +84,6 @@ class ReadingViewModel(
             }
         }
 
-        // ── Watchdog AI xử lý MyReading — quét NGẦM liên tục, hoàn toàn im
-        // lặng (không snackbar/toast). ReadingViewModel là singleton
-        // (Factory.INSTANCE) nên vòng lặp này sống xuyên suốt vòng đời app,
-        // không phụ thuộc màn hình nào đang hiển thị. Chạy ngay lần đầu (để
-        // xử lý các bài lỡ bị bỏ sót từ phiên trước), sau đó lặp mỗi 15s.
         viewModelScope.launch {
             while (true) {
                 runMyReadingAiWatchdog()
@@ -119,26 +98,15 @@ class ReadingViewModel(
             onStatus = { msg -> Log.d("ReadingVM.AiWatchdog", msg) },
             onUpdated = {
                 loadReadings(forceRefresh = true)
-                // Nếu đang mở sẵn 1 bài đọc (ReadingScreen đang hiển thị) thì nạp lại
-                // câu/cụm từ/từ của đúng bài đó ngay — để phần AI vừa dịch xong hiện
-                // ra tức thì, không cần thoát ra vào lại màn hình hay khởi động lại app.
                 cachedReadingId?.let { reloadCurrentReading(it) }
             },
         )
     }
 
-    // Nạp lại nội dung bài đọc đang mở, bỏ qua mọi cache — dùng sau khi AI vừa
-    // ghi xong dữ liệu cho 1 bài MyReading (gọi từ runMyReadingAiWatchdog ở trên).
     private fun reloadCurrentReading(readingId: String) {
         viewModelScope.launch {
             val result = repository.getReading(readingId, forceRefresh = true)
             _sentences.value = result
-            // Nếu đang có popup từ/cụm từ/câu mở sẵn từ TRƯỚC khi AI ghi xong,
-            // các object đó (selectedWord/selectedPhrase/selectedSentence) vẫn
-            // trỏ tới dữ liệu CŨ (rỗng/null) dù `sentences` bên dưới đã cập nhật
-            // — vì chúng không tự đồng bộ theo StateFlow nào cả, chỉ được set
-            // 1 lần lúc bấm. Đồng bộ lại đây theo đúng id để popup hiện dữ liệu
-            // AI vừa dịch xong ngay lập tức, không cần đóng/mở lại popup.
             resyncSelectedAfterReload(result)
         }
     }
@@ -160,8 +128,6 @@ class ReadingViewModel(
                 }
             }
         } else {
-            // selectedWord null nghĩa là đang ở PhrasePopup độc lập (mode "P") —
-            // đồng bộ riêng theo selectedPhrase.
             val oldPhrase = _selectedPhrase.value
             if (oldPhrase != null) {
                 val freshPhrase = freshSentences
@@ -172,21 +138,16 @@ class ReadingViewModel(
         }
     }
 
-    // ── Flow 2 ────────────────────────────────────────────────────────────────
     private fun loadReadings(forceRefresh: Boolean = false) {
         viewModelScope.launch {
             _readings.value = repository.getAllReadings(forceRefresh)
         }
     }
 
-    // Public wrapper — dùng khi 1 nơi ngoài ViewModel (vd MainScreen, sau khi
-    // migrate dữ liệu guest → user thật) cần ép reload lại danh sách readings
-    // ngay lập tức, bỏ qua mọi cache.
     fun refreshReadings() {
         loadReadings(forceRefresh = true)
     }
 
-    // ── Flow 3: chỉ load khi readingId thay đổi ──────────────────────────────
     fun loadReading(readingId: String) {
         if (readingId == cachedReadingId) {
             Log.d("ReadingVM", "readingId=$readingId đã cache, bỏ qua loadReading()")
@@ -209,15 +170,12 @@ class ReadingViewModel(
         }
     }
 
-    // ── Thêm / xoá bài của user — delegate sang MyReadingRepository ─────────
     fun addMyReading(title: String, content: String, onDone: (readingId: String?) -> Unit) {
         viewModelScope.launch {
             val id = myReadingRepository.saveMyReading(title, content)
-            loadReadings(forceRefresh = true)   // để bài mới xuất hiện trong `readings`/`myReadings`
+            loadReadings(forceRefresh = true)
             onDone(id)
 
-            // Kích hoạt AI dịch ngay cho bài vừa thêm, không chờ vòng watchdog
-            // 15s kế tiếp. Chạy trong coroutine riêng, không chặn onDone().
             if (id != null) {
                 launch { runMyReadingAiWatchdog() }
             }
@@ -232,11 +190,10 @@ class ReadingViewModel(
         }
     }
 
-    // ── savedWordIds: nạp lại từ users.db (chạy nền) ─────────────────────────
+    // ── savedWordIds: nạp lại qua VocabRepository (bỏ deleted_at IS NULL) ────
     fun refreshSavedWordIds() {
         viewModelScope.launch {
-            val ids = withContext(Dispatchers.IO) { userDb.getAllSavedWordIds() }
-            _savedWordIds.value = ids
+            _savedWordIds.value = vocabRepository.getAllSavedWordIds()
         }
     }
 
@@ -317,8 +274,8 @@ class ReadingViewModel(
                     val dao    = ReadingDao(db.db, db.dictDb)
                     val myRepo = MyReadingRepository.getInstance(appCtx)
                     val repo   = ReadingRepository(dao, myRepo)
-                    val userDb = UserDatabase.getInstance(appCtx)
-                    ReadingViewModel(repo, myRepo, userDb, appCtx).also { INSTANCE = it }
+                    val vocabRepo = VocabRepository.getInstance(appCtx)   // thay UserDatabase
+                    ReadingViewModel(repo, myRepo, vocabRepo, appCtx).also { INSTANCE = it }
                 }
             }) as T
         }

@@ -25,7 +25,7 @@ import com.eleap.eleap.feature.vocab.VocabStudyScreen
 import com.eleap.eleap.feature.vocab.VocabReadingScreen
 import com.eleap.eleap.feature.vocab.VocabViewModel
 import com.eleap.eleap.feature.vocab.VocabPopup
-import com.eleap.eleap.feature.reading.ui.UserVocabularyEntry
+import com.eleap.eleap.feature.vocab.data.UserVocabularyEntry
 import com.eleap.eleap.ui.FloatingVocabButton
 import kotlinx.coroutines.launch
 

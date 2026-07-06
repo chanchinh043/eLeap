@@ -10,7 +10,7 @@ import androidx.lifecycle.ViewModelProvider
 import androidx.lifecycle.viewModelScope
 import com.eleap.eleap.core.auth.CurrentUser
 import com.eleap.eleap.feature.reading.ReadingViewModel
-import com.eleap.eleap.feature.reading.ui.UserVocabularyEntry
+import com.eleap.eleap.feature.vocab.data.UserVocabularyEntry
 import com.eleap.eleap.feature.vocab.data.VocabDictEntry
 import com.eleap.eleap.feature.vocab.data.VocabRepository
 import androidx.compose.ui.geometry.Rect
