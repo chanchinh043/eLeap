@@ -19,10 +19,22 @@ import android.util.Log
 import com.eleap.eleap.feature.vocab.data.SyncStatus
 import com.eleap.eleap.feature.vocab.data.UserVocabularyEntry
 import com.eleap.eleap.feature.vocab.data.VocabRepository
+import kotlinx.coroutines.sync.Mutex
+import kotlinx.coroutines.sync.withLock
 
 object SyncEngine {
 
     private lateinit var repo: VocabRepository
+
+    // ── Khoá dùng chung giữa SyncPushWorker (gọi pushPending() trực tiếp,
+    // định kỳ 3h) và SyncPullWorker (gọi syncNow(), bên trong tự gọi lại
+    // pushPending() rồi mới pull, định kỳ 5h). 2 lịch này chạy độc lập nên
+    // hoàn toàn có thể trùng thời điểm — nếu không khoá, 2 luồng có thể cùng
+    // đọc/ghi pending rows đồng thời (vd cùng push 1 dòng PENDING_CREATE 2
+    // lần cùng lúc). Mutex non-reentrant nên syncNow() KHÔNG được gọi lại
+    // pushPending() công khai (sẽ tự deadlock) — dùng pushPendingLocked() nội
+    // bộ cho trường hợp đó.
+    private val syncMutex = Mutex()
 
     // Gọi 1 lần ở MainActivity.onCreate(), sau khi SyncCursor.init() và
     // CurrentUser.init() đã chạy.
@@ -48,9 +60,15 @@ object SyncEngine {
         }
 
         return try {
-            val pushed = pushPending(userId)
-            val (pulled, ranFull) = pullSmart(userId)
-            SyncOutcome(pushedCount = pushed, pulledCount = pulled, ranFullPull = ranFull)
+            // Khoá quanh CẢ push lẫn pull trong 1 lần syncNow — để nếu
+            // SyncPushWorker (chạy pushPending() riêng) rơi đúng vào lúc này
+            // đang chạy, nó phải đợi xong rồi mới push, không đụng độ dữ
+            // liệu pending giữa chừng.
+            syncMutex.withLock {
+                val pushed = pushPendingLocked(userId)
+                val (pulled, ranFull) = pullSmart(userId)
+                SyncOutcome(pushedCount = pushed, pulledCount = pulled, ranFullPull = ranFull)
+            }
         } catch (e: Exception) {
             Log.e("SyncEngine", "syncNow error", e)
             SyncOutcome(pushedCount = 0, pulledCount = 0, ranFullPull = false, error = e.message)
@@ -58,10 +76,16 @@ object SyncEngine {
     }
 
     // ══ PUSH — đẩy toàn bộ dòng đang pending_create/update/delete ═══════════
-    // Dùng cho cả: create/delete "ngay lập tức" (gọi syncNow ngay sau khi
-    // user bấm lưu/xoá từ) lẫn update batch mỗi 3h lẫn bước "flush phụ"
-    // trước mỗi lần pull — cùng 1 hàm, không cần phân biệt.
-    suspend fun pushPending(userId: String): Int {
+    // Điểm vào công khai, dùng riêng bởi SyncPushWorker (chu kỳ 3h). Khoá
+    // syncMutex ở đây — nếu SyncPullWorker đang chạy syncNow() (đã giữ khoá),
+    // lệnh push riêng lẻ này phải đợi thay vì chạy chồng lên.
+    suspend fun pushPending(userId: String): Int = syncMutex.withLock {
+        pushPendingLocked(userId)
+    }
+
+    // Logic push thật sự — KHÔNG tự khoá mutex (mutex không tái nhập được),
+    // để syncNow() gọi lại được từ bên trong lúc đã giữ khoá sẵn.
+    private suspend fun pushPendingLocked(userId: String): Int {
         val pendingRows = repo.getPendingRows(userId)
         if (pendingRows.isEmpty()) return 0
 

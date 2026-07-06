@@ -128,8 +128,19 @@ object SyncApi {
     }
 
     // ── PUSH: tạo mới (dòng đang PENDING_CREATE ở local) ─────────────────────
+    // Dùng upsert (theo id) thay vì insert thuần: nếu lần push trước ĐÃ tạo
+    // thành công ở server nhưng phản hồi bị mất (mất mạng giữa chừng), local
+    // vẫn còn PENDING_CREATE và sẽ gọi lại hàm này ở lần sync kế tiếp. Với
+    // insert() thuần, lần gọi lại đó sẽ báo lỗi trùng khoá chính (id đã tồn
+    // tại) và không bao giờ tự phục hồi — dòng này kẹt PENDING_CREATE mãi
+    // mãi, mỗi chu kỳ sync đều log lỗi. upsert() theo "id" cho phép lần gọi
+    // lại ghi đè an toàn lên đúng dòng đã tạo trước đó (dữ liệu giống hệt vì
+    // cùng 1 lần tạo cục bộ), rồi trả về thành công để markSynced() chạy
+    // bình thường ở SyncEngine.
     suspend fun pushCreate(row: UserVocabularyUpsertDto) {
-        postgrest.from(TABLE).insert(row)
+        postgrest.from(TABLE).upsert(row) {
+            onConflict = "id"
+        }
     }
 
     // ── PUSH: cập nhật (dòng đang PENDING_UPDATE ở local) ────────────────────

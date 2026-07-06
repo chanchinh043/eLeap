@@ -109,6 +109,19 @@ class MainActivity : ComponentActivity() {
                         if (supabaseUserId != null && supabaseUserId != CurrentUser.userId.value) {
                             CurrentUser.setUser(supabaseUserId)
 
+                            // ── Bật lại lịch nền (push 3h, pull 5h) ──────────
+                            // Nếu trước đó user đã từng đăng xuất trong CÙNG
+                            // session app (không restart app), LoginScreen đã
+                            // gọi SyncScheduler.cancelAll() lúc logout — 2
+                            // worker định kỳ bị huỷ hẳn khỏi WorkManager, chứ
+                            // không phải tạm dừng. Nếu không gọi lại
+                            // schedulePeriodicWork() ở đây, user đăng nhập lại
+                            // sẽ không có bất kỳ lịch sync nền nào cho tới khi
+                            // họ tự tắt/mở lại app (lúc đó onCreate() mới gọi
+                            // lại). Gọi lại ở đây an toàn để lặp nhiều lần vì
+                            // bên trong dùng ExistingPeriodicWorkPolicy.KEEP.
+                            SyncScheduler.schedulePeriodicWork(this@MainActivity)
+
                             // Đăng nhập xong → sync ngay lập tức (đặc biệt quan
                             // trọng cho lần đầu đăng nhập / đổi máy: nếu không
                             // gọi ở đây, user phải đợi tới chu kỳ pull 5 tiếng
