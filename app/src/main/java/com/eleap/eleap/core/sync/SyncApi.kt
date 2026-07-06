@@ -9,6 +9,13 @@
 // VocabRepository → gọi các hàm push ở đây → gọi VocabRepository.markSynced();
 // gọi các hàm pull ở đây → gọi VocabRepository.applyServerChange().
 //
+// ⚠️ user_id trong mọi filter update/delete/fetchOne: đây là lớp chặn thứ 2
+// độc lập với RLS trên Supabase. RLS vẫn là hàng rào chính (phải cấu hình
+// đúng policy UPDATE/DELETE theo auth.uid() = user_id), nhưng thêm eq(user_id)
+// ở đây giúp: (1) nếu RLS bị sửa nhầm/tắt sau này, code vẫn tự chặn được;
+// (2) nếu có bug gán sai user_id cục bộ, request tự fail thay vì âm thầm
+// sửa/xoá nhầm dòng của người khác.
+//
 // Singleton thủ công, KHÔNG dùng Hilt/DI — cùng phong cách với
 // SupabaseClientProvider.
 package com.eleap.eleap.core.sync
@@ -93,6 +100,23 @@ object SyncApi {
         }.decodeList()
     }
 
+    // ── PULL: 1 dòng theo id — dùng để kiểm tra optimistic locking TRƯỚC khi
+    // pushUpdate(): so updated_at hiện tại trên server với updated_at cục bộ,
+    // để phát hiện conflict thật sự thay vì ghi đè vô điều kiện. Trả về null
+    // nếu dòng không còn tồn tại trên server (đã bị xoá ở nơi khác — trường
+    // hợp này SyncEngine coi như "server thắng" theo hướng khác, xử lý riêng).
+    //
+    // Kèm theo eq("user_id", userId) — chặn thêm 1 lớp: không cho fetch dòng
+    // của user khác dù id có bị lộ/đoán trúng thế nào.
+    suspend fun fetchOne(id: String, userId: String): UserVocabularyDto? {
+        return postgrest.from(TABLE).select {
+            filter {
+                eq("id", id)
+                eq("user_id", userId)
+            }
+        }.decodeSingleOrNull()
+    }
+
     // ── PULL: full — lấy toàn bộ dữ liệu của user, không lọc theo cursor ────
     suspend fun pullFull(userId: String): List<UserVocabularyDto> {
         return postgrest.from(TABLE).select {
@@ -112,9 +136,16 @@ object SyncApi {
     // Optimistic locking đơn giản: chỉ update nếu id khớp — conflict thật sự
     // (409) sẽ xử lý ở bản mở rộng sau; hiện tại last-write-wins được xử lý ở
     // chiều pull (VocabRepository.applyServerChange so sánh updated_at).
+    //
+    // Thêm eq("user_id", row.userId) — chỉ update đúng dòng thuộc về user
+    // đang đăng nhập, không cho phép sửa nhầm/sửa lén dòng của user khác dù
+    // id có bị trùng hay bị đoán trúng.
     suspend fun pushUpdate(row: UserVocabularyUpsertDto) {
         postgrest.from(TABLE).update(row) {
-            filter { eq("id", row.id) }
+            filter {
+                eq("id", row.id)
+                eq("user_id", row.userId)
+            }
         }
     }
 
@@ -123,11 +154,16 @@ object SyncApi {
     // các thiết bị khác còn thấy tombstone khi pull (delta 5h hoặc full 1
     // tuần). Server cần 1 job purge riêng (SQL cron trên Supabase, không
     // phải code app) để dọn các dòng có deleted_at cũ hơn 30–60 ngày.
-    suspend fun pushDelete(id: String) {
+    //
+    // Thêm userId + eq("user_id", userId) — cùng lý do như pushUpdate().
+    suspend fun pushDelete(id: String, userId: String) {
         postgrest.from(TABLE).update(
             mapOf("deleted_at" to nowUtcIsoForApi())
         ) {
-            filter { eq("id", id) }
+            filter {
+                eq("id", id)
+                eq("user_id", userId)
+            }
         }
     }
 

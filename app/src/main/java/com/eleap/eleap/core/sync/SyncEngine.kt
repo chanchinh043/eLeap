@@ -75,11 +75,22 @@ object SyncEngine {
                         succeededIds += row.id
                     }
                     SyncStatus.PENDING_UPDATE -> {
-                        SyncApi.pushUpdate(row.toUpsertDto())
-                        succeededIds += row.id
+                        if (pushUpdateWithLocking(row)) {
+                            succeededIds += row.id
+                        }
+                        // false nghĩa là conflict và server đã thắng — không
+                        // thêm vào succeededIds vì đây không phải "push thành
+                        // công", mà là local đã bị ghi đè bởi server (đã tự
+                        // chuyển sang SYNCED bên trong pushUpdateWithLocking
+                        // qua applyServerChange, không cần markSynced nữa).
                     }
                     SyncStatus.PENDING_DELETE -> {
-                        SyncApi.pushDelete(row.id)
+                        // row.userId luôn khớp với userId đang đăng nhập (đã
+                        // được lọc từ getPendingRows(userId) ở trên), nên
+                        // dùng thẳng row.userId cho filter phía server —
+                        // vừa đúng ngữ nghĩa "xoá đúng chủ sở hữu", vừa không
+                        // cần truyền thêm tham số userId qua nhiều lớp hàm.
+                        SyncApi.pushDelete(row.id, row.userId)
                         succeededIds += row.id
                     }
                     else -> { /* SYNCED không lọt vào đây vì getPendingRows đã loại */ }
@@ -96,6 +107,42 @@ object SyncEngine {
             repo.markSynced(succeededIds)
         }
         return succeededIds.size
+    }
+
+    // ══ PUSH UPDATE với optimistic locking thật sự ═══════════════════════════
+    // Trước khi PATCH, GET lại đúng dòng này trên server và so updated_at:
+    //   - Server không còn dòng này (đã bị xoá nơi khác) → coi local thua,
+    //     áp dụng tombstone vào local (applyServerChange), không push nữa.
+    //   - Server.updated_at MỚI HƠN local.updated_at → có người khác đã sửa
+    //     sau lần local biết tới → conflict thật sự, SERVER THẮNG (khớp đúng
+    //     quy tắc last-write-wins đã áp dụng ở chiều pull/applyServerChange):
+    //     ghi đè local bằng dữ liệu server, KHÔNG push đè lên server nữa.
+    //   - Ngược lại (local mới hơn hoặc bằng) → local thắng, PATCH như cũ.
+    // Trả về true nếu đã push thành công (cần markSynced ở caller), false nếu
+    // conflict và server đã thắng (local đã tự cập nhật xong, không cần
+    // markSynced nữa vì applyServerChange đã set SYNCED).
+    private suspend fun pushUpdateWithLocking(row: UserVocabularyEntry): Boolean {
+        // row.userId dùng để scope cả fetchOne lẫn pushUpdate — chặn thêm 1
+        // lớp độc lập với RLS, không cho đọc/sửa nhầm dòng của user khác.
+        val serverRow = SyncApi.fetchOne(row.id, row.userId)
+
+        if (serverRow == null) {
+            // Server không còn dòng này — coi như đã bị xoá ở thiết bị khác.
+            // Áp dụng tombstone cục bộ để nhất quán, không push update nữa.
+            Log.d("SyncEngine", "pushUpdate: id=${row.id} không còn trên server, áp tombstone")
+            repo.applyServerChange(row.copy(syncStatus = SyncStatus.SYNCED), isTombstone = true)
+            return false
+        }
+
+        val serverNewer = (serverRow.updatedAt) > (row.updatedAt ?: row.createdAt)
+        if (serverNewer) {
+            Log.d("SyncEngine", "pushUpdate: conflict thật sự cho id=${row.id}, server thắng")
+            repo.applyServerChange(serverRow.toEntry(), isTombstone = serverRow.deletedAt != null)
+            return false
+        }
+
+        SyncApi.pushUpdate(row.toUpsertDto())
+        return true
     }
 
     // ══ PULL — tự chọn delta hay full theo đúng quy tắc đã chốt ═════════════

@@ -9,9 +9,12 @@ import androidx.compose.material3.*
 import androidx.compose.runtime.*
 import androidx.compose.ui.Alignment
 import androidx.compose.ui.Modifier
+import androidx.compose.ui.platform.LocalContext
 import androidx.compose.ui.unit.dp
 import com.eleap.eleap.core.auth.CurrentUser
 import com.eleap.eleap.core.auth.SupabaseClientProvider
+import com.eleap.eleap.core.sync.SyncCursor
+import com.eleap.eleap.core.sync.SyncScheduler
 import kotlinx.coroutines.launch
 
 // Màn đăng nhập — có nút "Đăng nhập với Google" và (khi đã đăng nhập) nút
@@ -24,6 +27,7 @@ fun LoginScreen(
     onBack: () -> Unit,
 ) {
     val scope = rememberCoroutineScope()
+    val context = LocalContext.current
     val userId by CurrentUser.userId.collectAsState()
 
     var isLoading by remember { mutableStateOf(false) }
@@ -94,6 +98,10 @@ fun LoginScreen(
                     onClick = {
                         isLoading = true
                         errorMessage = null
+                        // Lưu lại TRƯỚC khi gọi logout() (logout() sẽ đổi
+                        // CurrentUser.userId về GUEST_ID) — cần đúng id cũ
+                        // để xoá cursor khớp người, không xoá nhầm/xoá thiếu.
+                        val loggedOutUserId = userId
                         // Bật cờ TRƯỚC khi gọi signOut() — để MainActivity.observeSupabaseSession()
                         // biết mà bỏ qua sự kiện Authenticated "trễ" nào đó lọt về
                         // trong lúc đang xử lý, tránh ghi đè ngược userId.
@@ -106,6 +114,19 @@ fun LoginScreen(
                                 // coi là đã đăng nhập (dữ liệu UI/DB có thể đọc sai).
                                 SupabaseClientProvider.signOut()
                                 CurrentUser.logout()
+
+                                // Huỷ 2 lịch chạy nền (push 3h, pull 5h) — không có
+                                // tài khoản nào để đồng bộ nữa cho tới khi đăng nhập
+                                // lại. Xoá luôn last_sync_cursor/last_full_pull_at của
+                                // đúng tài khoản vừa thoát, để nếu sau này đăng nhập
+                                // lại tài khoản KHÁC trên máy này, không bị lẫn mốc
+                                // cursor cũ; còn nếu đăng nhập lại CHÍNH tài khoản đó,
+                                // syncNow() sau đăng nhập (MainActivity) sẽ tự chạy
+                                // full pull vì chưa có last_full_pull_at.
+                                SyncScheduler.cancelAll(context)
+                                if (loggedOutUserId != CurrentUser.GUEST_ID) {
+                                    SyncCursor.clear(loggedOutUserId)
+                                }
                             } catch (e: Exception) {
                                 // signOut thất bại (vd mất mạng) — huỷ cờ logout,
                                 // giữ nguyên userId hiện tại, báo lỗi cho người dùng.

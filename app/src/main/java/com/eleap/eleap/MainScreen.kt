@@ -13,6 +13,7 @@ import androidx.activity.ComponentActivity
 import androidx.lifecycle.viewmodel.compose.viewModel
 import com.eleap.eleap.core.auth.CurrentUser
 import com.eleap.eleap.core.sync.SyncEngine
+import com.eleap.eleap.core.sync.SyncScheduler
 import com.eleap.eleap.feature.auth.LoginScreen
 import com.eleap.eleap.feature.myreading.data.MyReadingRepository
 import com.eleap.eleap.feature.reading.ReadingListScreen
@@ -195,8 +196,22 @@ fun MainScreen() {
                         scope.launch {
                             val myReadingRepo = MyReadingRepository.getInstance(context)
                             myReadingRepo.migrateGuestDataTo(newUserId)
-                            vm.migrateGuestVocabDataTo(newUserId)   // tự refresh vocabList bên trong
+                            vm.migrateGuestVocabDataTo(newUserId)   // suspend thật, await xong mới chạy tiếp
                             readingVm.refreshReadings()
+                            // savedWordIds (dùng để tô màu highlight ở
+                            // WordClickableRow) KHÔNG tự đổi theo — nó chỉ dựa
+                            // vào source_word_id trong bảng user_vocabulary,
+                            // và vừa đổi user_id qua migrateGuestDataTo() ở
+                            // trên nên cần refresh lại để lấy đúng set mới.
+                            readingVm.refreshSavedWordIds()
+
+                            // Dữ liệu vừa migrate đang PENDING_CREATE dưới user
+                            // thật — user vừa chủ động chọn giữ lại, nên đẩy lên
+                            // NGAY thay vì đợi chu kỳ push 3 tiếng tiếp theo.
+                            // Chỉ enqueue lịch (giống SaveWordButton), không tự
+                            // gọi thẳng logic sync ở đây — MainScreen là UI,
+                            // không phải nơi quyết định cách push chạy thế nào.
+                            SyncScheduler.enqueueImmediatePush(context)
 
                             isMigrating = false
                             CurrentUser.clearPendingMigration()

@@ -1,6 +1,7 @@
 package com.eleap.eleap
 import com.eleap.eleap.core.sync.SyncCursor
 import com.eleap.eleap.core.sync.SyncEngine
+import com.eleap.eleap.core.sync.SyncScheduler
 
 import android.content.Intent
 import android.os.Bundle
@@ -13,6 +14,7 @@ import androidx.compose.material3.Scaffold
 import androidx.compose.ui.Modifier
 import com.eleap.eleap.core.auth.CurrentUser
 import com.eleap.eleap.core.auth.SupabaseClientProvider
+import com.eleap.eleap.feature.reading.ReadingViewModel
 import com.eleap.eleap.ui.theme.ELeapTheme
 import dagger.hilt.android.AndroidEntryPoint
 import io.github.jan.supabase.auth.handleDeeplinks
@@ -32,8 +34,16 @@ class MainActivity : ComponentActivity() {
         // Khởi tạo CurrentUser TRƯỚC setContent — để lúc UI vẽ ra,
         // userId đã sẵn sàng đọc được ngay.
         CurrentUser.init(this)
-        SyncCursor.init(this)        // ← thêm dòng này
-        SyncEngine.init(this)        // ← thêm dòng này
+        SyncCursor.init(this)
+        SyncEngine.init(this)
+
+        // Đăng ký 2 lịch chạy nền (push mỗi 3h, pull mỗi 5h) — dùng
+        // enqueueUniquePeriodicWork với policy KEEP bên trong nên gọi lại
+        // nhiều lần (mỗi lần app khởi động) không tạo lịch chồng chéo.
+        // THIẾU dòng này thì SyncPushWorker/SyncPullWorker không bao giờ
+        // được WorkManager biết tới — chỉ có enqueueImmediatePush() (gọi từ
+        // SaveWordButton) là chạy thật.
+        SyncScheduler.schedulePeriodicWork(this)
 
         // Xử lý deep link nếu app được mở LẦN ĐẦU từ link đăng nhập Google
         // (trường hợp app chưa chạy, trình duyệt mở thẳng activity mới).
@@ -98,6 +108,34 @@ class MainActivity : ComponentActivity() {
                         // supabaseUserId == GUEST_ID nên không cần chặn riêng).
                         if (supabaseUserId != null && supabaseUserId != CurrentUser.userId.value) {
                             CurrentUser.setUser(supabaseUserId)
+
+                            // Đăng nhập xong → sync ngay lập tức (đặc biệt quan
+                            // trọng cho lần đầu đăng nhập / đổi máy: nếu không
+                            // gọi ở đây, user phải đợi tới chu kỳ pull 5 tiếng
+                            // mới thấy dữ liệu cũ từ server). syncNow() tự biết
+                            // chạy full pull nếu đây là lần đầu (SyncCursor
+                            // chưa có last_full_pull_at cho userId này).
+                            val outcome = SyncEngine.syncNow(supabaseUserId)
+                            if (outcome.error != null) {
+                                Log.e("MainActivity", "Sync sau đăng nhập lỗi: ${outcome.error}")
+                            } else {
+                                Log.d(
+                                    "MainActivity",
+                                    "Sync sau đăng nhập: gửi ${outcome.pushedCount}, " +
+                                            "nhận ${outcome.pulledCount}, full=${outcome.ranFullPull}"
+                                )
+                            }
+
+                            // savedWordIds (dùng để tô màu highlight ở
+                            // WordClickableRow) sống trong ReadingViewModel,
+                            // KHÔNG tự refresh theo dữ liệu vừa pull về —
+                            // ReadingViewModel chỉ refresh lúc CurrentUser.userId
+                            // ĐỔI GIÁ TRỊ (đã xảy ra ở dòng setUser() phía trên,
+                            // tức là TRƯỚC khi syncNow() pull xong). Gọi lại ở
+                            // đây để set highlight khớp đúng dữ liệu vừa pull.
+                            ReadingViewModel.Factory(this@MainActivity)
+                                .create(ReadingViewModel::class.java)
+                                .refreshSavedWordIds()
                         }
                     }
                     else -> { /* NotAuthenticated / RefreshFailure / Initializing — chưa xử lý */ }

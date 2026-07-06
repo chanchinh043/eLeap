@@ -176,14 +176,19 @@ class VocabViewModel(
     // ── Migrate dữ liệu guest → user thật ────────────────────────────────────
     // Gọi từ MainScreen sau khi người dùng chọn "Có" ở dialog hỏi migrate.
     // Chuyển toàn bộ user_vocabulary từ user_id="guest" sang newUserId rồi
-    // reload lại vocabList để UI (VocabScreen) cập nhật ngay — không cần đợi
-    // qua loadVocab() do 1 nơi khác gọi.
-    fun migrateGuestVocabDataTo(newUserId: String) {
-        viewModelScope.launch {
-            val moved = repository.migrateGuestDataTo(newUserId)
-            Log.d("VocabVM", "migrateGuestVocabDataTo($newUserId) → đã chuyển $moved dòng")
-            loadVocab()
-        }
+    // reload lại vocabList để UI (VocabScreen) cập nhật ngay.
+    //
+    // LÀ SUSPEND FUN THẬT (không tự viewModelScope.launch bên trong) — vì
+    // MainScreen gọi hàm này bên trong scope.launch { ... } của chính nó,
+    // ngay sau đó còn gọi readingVm.refreshSavedWordIds() để đổi màu
+    // highlight. Nếu hàm này tự mở coroutine riêng rồi return ngay (như
+    // trước đây), MainScreen sẽ tưởng migrate đã xong và gọi
+    // refreshSavedWordIds() TRƯỚC KHI repository.migrateGuestDataTo() kịp
+    // ghi xong DB — khiến set trả về vẫn rỗng/cũ, chữ không đổi màu.
+    suspend fun migrateGuestVocabDataTo(newUserId: String) {
+        val moved = repository.migrateGuestDataTo(newUserId)
+        Log.d("VocabVM", "migrateGuestVocabDataTo($newUserId) → đã chuyển $moved dòng")
+        loadVocab()
     }
 
     // ── Toggle selected trong VocabScreen (vocabList) — vẫn ghi DB ───────────
