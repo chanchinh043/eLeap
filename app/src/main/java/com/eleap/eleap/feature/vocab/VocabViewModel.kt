@@ -9,6 +9,7 @@ import androidx.lifecycle.ViewModel
 import androidx.lifecycle.ViewModelProvider
 import androidx.lifecycle.viewModelScope
 import com.eleap.eleap.core.auth.CurrentUser
+import com.eleap.eleap.core.sync.SyncScheduler
 import com.eleap.eleap.feature.reading.ReadingViewModel
 import com.eleap.eleap.feature.vocab.data.UserVocabularyEntry
 import com.eleap.eleap.feature.vocab.data.VocabDictEntry
@@ -25,6 +26,9 @@ class VocabViewModel(
     // giúp màu từ trong ReadingScreen cập nhật ngay mà không cần sửa thêm file nào.
     private val readingVm: ReadingViewModel,
     private val prefs: SharedPreferences,
+    // applicationContext — chỉ dùng để gọi SyncScheduler.enqueueImmediatePush()
+    // sau khi xoá từ (đồng bộ ngay, không đợi chu kỳ 3h).
+    private val appContext: Context,
 ) : ViewModel() {
 
     // ── SharedPreferences key per tab: "reading_sel_<readingId>_<tab>" → "1,2,3" ──
@@ -222,6 +226,8 @@ class VocabViewModel(
                 _selectedCount.value = _vocabList.value.count { it.selected == 1 }
                 // Sync màu từ trong ReadingScreen
                 readingVm.refreshSavedWordIds()
+                // Xoá là thao tác cần đồng bộ NGAY, không đợi chu kỳ 3h.
+                SyncScheduler.enqueueImmediatePush(appContext)
             }
         }
     }
@@ -240,6 +246,8 @@ class VocabViewModel(
                 _readingSelectedByTab.value = updated
                 // Sync màu từ trong ReadingScreen
                 readingVm.refreshSavedWordIds()
+                // Xoá là thao tác cần đồng bộ NGAY, không đợi chu kỳ 3h.
+                SyncScheduler.enqueueImmediatePush(appContext)
             }
         }
     }
@@ -289,6 +297,7 @@ class VocabViewModel(
                 prefs      = context.applicationContext.getSharedPreferences(
                     "vocab_reading_selection", Context.MODE_PRIVATE
                 ),
+                appContext = context.applicationContext,
             ) as T
         }
     }

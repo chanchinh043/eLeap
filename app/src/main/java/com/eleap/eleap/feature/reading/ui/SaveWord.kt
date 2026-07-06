@@ -15,6 +15,7 @@ import androidx.compose.material3.Text
 import androidx.compose.runtime.*
 import androidx.compose.ui.platform.LocalContext
 import com.eleap.eleap.core.auth.CurrentUser
+import com.eleap.eleap.core.sync.SyncScheduler
 import com.eleap.eleap.feature.reading.data.SentenceWord
 import com.eleap.eleap.feature.reading.data.SentencePhrase
 import com.eleap.eleap.feature.reading.data.ReadingSentence
@@ -67,6 +68,8 @@ fun SaveWordButton(
                     if (repo.unsaveWord(word.wordId)) {
                         isSaved = false
                         onSaveStateChanged()
+                        // Xoá là thao tác cần đồng bộ NGAY, không đợi chu kỳ 3h.
+                        SyncScheduler.enqueueImmediatePush(context)
                     }
                 } else {
                     val sentenceTexts = sentence?.let { it.textEn to it.textVi }
@@ -86,6 +89,8 @@ fun SaveWordButton(
                     if (saved) {
                         isSaved = true
                         onSaveStateChanged()
+                        // Tạo mới là thao tác cần đồng bộ NGAY, không đợi chu kỳ 3h.
+                        SyncScheduler.enqueueImmediatePush(context)
                     }
                 }
             }
