@@ -6,6 +6,7 @@ import io.github.jan.supabase.createSupabaseClient
 import io.github.jan.supabase.auth.Auth
 import io.github.jan.supabase.auth.auth
 import io.github.jan.supabase.auth.providers.Google
+import io.github.jan.supabase.postgrest.Postgrest
 
 // ── Singleton thủ công, KHÔNG dùng Hilt/DI — cùng phong cách với CurrentUser ──
 object SupabaseClientProvider {
@@ -25,6 +26,9 @@ object SupabaseClientProvider {
                 scheme = "eleap"
                 host   = "login-callback"
             }
+            // Cần cho SyncApi (core/sync) — mọi truy vấn bảng user_vocabulary
+            // (select/insert/update) đều đi qua plugin này.
+            install(Postgrest)
         }
     }
 

@@ -1,4 +1,6 @@
 package com.eleap.eleap
+import com.eleap.eleap.core.sync.SyncCursor
+import com.eleap.eleap.core.sync.SyncEngine
 
 import android.content.Intent
 import android.os.Bundle
@@ -30,6 +32,8 @@ class MainActivity : ComponentActivity() {
         // Khởi tạo CurrentUser TRƯỚC setContent — để lúc UI vẽ ra,
         // userId đã sẵn sàng đọc được ngay.
         CurrentUser.init(this)
+        SyncCursor.init(this)        // ← thêm dòng này
+        SyncEngine.init(this)        // ← thêm dòng này
 
         // Xử lý deep link nếu app được mở LẦN ĐẦU từ link đăng nhập Google
         // (trường hợp app chưa chạy, trình duyệt mở thẳng activity mới).

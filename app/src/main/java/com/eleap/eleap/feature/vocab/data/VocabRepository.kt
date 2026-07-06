@@ -305,6 +305,172 @@ class VocabRepository private constructor(
             }
         }
 
+    // ══ Phục vụ core/sync — Repository vẫn là nơi DUY NHẤT đọc/ghi bảng ═════
+    // user_vocabulary. SyncWorker (module core/sync riêng, không nằm ở đây,
+    // và KHÔNG dùng Hilt/DI — tự new lên hoặc gọi getInstance() như các chỗ
+    // khác trong project) sẽ gọi 3 hàm dưới đây thay vì tự viết SQL trực tiếp.
+
+    // ── PUSH: lấy toàn bộ dòng chưa đồng bộ (create/update/delete đang chờ) ──
+    // SyncWorker tự nhìn vào entry.syncStatus của từng dòng để quyết định gọi
+    // API nào (PENDING_CREATE → POST, PENDING_UPDATE → PATCH, PENDING_DELETE
+    // → DELETE). Không lọc deleted_at IS NULL ở đây vì chính các dòng
+    // pending_delete mới là thứ cần gửi lên server.
+    suspend fun getPendingRows(userId: String = CurrentUser.userId.value): List<UserVocabularyEntry> =
+        withContext(Dispatchers.IO) {
+            val list = mutableListOf<UserVocabularyEntry>()
+            val cursor = userDb.db.rawQuery(
+                "SELECT * FROM user_vocabulary WHERE user_id = ? AND sync_status != ?",
+                arrayOf(userId, SyncStatus.SYNCED)
+            )
+            cursor.use { while (it.moveToNext()) list.add(entryFromCursor(it)) }
+            list
+        }
+
+    // ── PUSH: sau khi server xác nhận push thành công cho các id này ────────
+    // → hạ về SYNCED. Dòng PENDING_DELETE mà server xác nhận xong thì hard
+    // delete luôn tại local (không cần giữ tombstone cục bộ nữa).
+    suspend fun markSynced(ids: List<String>): Int = withContext(Dispatchers.IO) {
+        if (ids.isEmpty()) return@withContext 0
+        try {
+            var affected = 0
+            val placeholders = ids.joinToString(",") { "?" }
+
+            // Các dòng đang pending_delete + đã được server xác nhận xoá → hard delete
+            affected += userDb.db.delete(
+                "user_vocabulary",
+                "id IN ($placeholders) AND sync_status = ?",
+                (ids + SyncStatus.PENDING_DELETE).toTypedArray()
+            )
+
+            // Các dòng còn lại (pending_create/pending_update) → chuyển synced
+            val cv = ContentValues().apply { put("sync_status", SyncStatus.SYNCED) }
+            affected += userDb.db.update(
+                "user_vocabulary",
+                cv,
+                "id IN ($placeholders) AND sync_status != ?",
+                (ids + SyncStatus.PENDING_DELETE).toTypedArray()
+            )
+            affected
+        } catch (e: Exception) {
+            Log.e("VocabRepository", "markSynced error", e)
+            0
+        }
+    }
+
+    // ── PULL: áp dụng 1 dòng nhận được từ server (delta hoặc full pull) ─────
+    // Quy tắc theo đúng thiết kế đã thống nhất:
+    //   - Tombstone + local có        → hard delete
+    //   - Tombstone + local không có  → bỏ qua
+    //   - Còn sống + local chưa có    → insert (đánh dấu SYNCED, vì đây là dữ
+    //     liệu đã có sẵn trên server)
+    //   - Còn sống + local đang SYNCED         → ghi đè bằng dữ liệu server
+    //   - Còn sống + local đang PENDING_UPDATE (hiếm, do flush trước pull lỡ
+    //     thất bại) → conflict, last-write-wins theo updated_at
+    //   - Còn sống + local đang PENDING_CREATE/PENDING_DELETE → giữ nguyên,
+    //     không ghi đè (local biết rõ hơn server về trạng thái sắp tới)
+    suspend fun applyServerChange(
+        entry: UserVocabularyEntry,
+        isTombstone: Boolean,
+    ) = withContext(Dispatchers.IO) {
+        try {
+            val cursor = userDb.db.rawQuery(
+                "SELECT sync_status, updated_at FROM user_vocabulary WHERE id = ? LIMIT 1",
+                arrayOf(entry.id)
+            )
+            val (localStatus, localUpdatedAt) = cursor.use {
+                if (it.moveToFirst()) it.getString(0) to it.getString(1) else null to null
+            }
+
+            when {
+                isTombstone && localStatus != null -> {
+                    userDb.db.delete("user_vocabulary", "id = ?", arrayOf(entry.id))
+                    Log.d("VocabRepository", "applyServerChange: tombstone → hard delete ${entry.id}")
+                }
+
+                isTombstone && localStatus == null -> {
+                    // Không có ở local, không cần làm gì.
+                }
+
+                !isTombstone && localStatus == null -> {
+                    insertFromServer(entry)
+                    Log.d("VocabRepository", "applyServerChange: insert mới ${entry.id}")
+                }
+
+                !isTombstone && localStatus == SyncStatus.SYNCED -> {
+                    overwriteFromServer(entry)
+                    Log.d("VocabRepository", "applyServerChange: ghi đè synced ${entry.id}")
+                }
+
+                !isTombstone && localStatus == SyncStatus.PENDING_UPDATE -> {
+                    // Conflict: last-write-wins theo updated_at.
+                    val serverNewer = compareIso(entry.updatedAt, localUpdatedAt) > 0
+                    if (serverNewer) {
+                        overwriteFromServer(entry)
+                        Log.d("VocabRepository", "applyServerChange: conflict, server thắng ${entry.id}")
+                    } else {
+                        Log.d("VocabRepository", "applyServerChange: conflict, local thắng ${entry.id}")
+                    }
+                }
+
+                else -> {
+                    // localStatus == PENDING_CREATE hoặc PENDING_DELETE → giữ
+                    // nguyên, không có lý do server biết trước local ở đây.
+                    Log.d("VocabRepository", "applyServerChange: giữ nguyên local ($localStatus) ${entry.id}")
+                }
+            }
+        } catch (e: Exception) {
+            Log.e("VocabRepository", "applyServerChange error", e)
+        }
+    }
+
+    private fun insertFromServer(entry: UserVocabularyEntry) {
+        val cv = ContentValues().apply {
+            put("id", entry.id)
+            put("user_id", entry.userId)
+            put("source_sentence_id", entry.sourceSentenceId)
+            put("source_word_id", entry.sourceWordId)
+            put("source_phrase_id", entry.sourcePhraseId)
+            put("text_en", entry.textEn)
+            put("text_vi", entry.textVi)
+            put("phrase_text_en", entry.phraseTextEn)
+            put("phrase_text_vi", entry.phraseTextVi)
+            put("sentence_text_en", entry.sentenceTextEn)
+            put("sentence_text_vi", entry.sentenceTextVi)
+            put("selected", entry.selected)
+            put("count", entry.count)
+            put("score", entry.score)
+            put("created_at", entry.createdAt)
+            put("updated_at", entry.updatedAt)
+            put("sync_status", SyncStatus.SYNCED)
+        }
+        userDb.db.insert("user_vocabulary", null, cv)
+    }
+
+    private fun overwriteFromServer(entry: UserVocabularyEntry) {
+        val cv = ContentValues().apply {
+            put("text_en", entry.textEn)
+            put("text_vi", entry.textVi)
+            put("phrase_text_en", entry.phraseTextEn)
+            put("phrase_text_vi", entry.phraseTextVi)
+            put("sentence_text_en", entry.sentenceTextEn)
+            put("sentence_text_vi", entry.sentenceTextVi)
+            put("selected", entry.selected)
+            put("count", entry.count)
+            put("score", entry.score)
+            put("updated_at", entry.updatedAt)
+            put("sync_status", SyncStatus.SYNCED)
+        }
+        userDb.db.update("user_vocabulary", cv, "id = ?", arrayOf(entry.id))
+    }
+
+    // So sánh 2 chuỗi ISO8601 UTC (nowUtcIso() format) — an toàn so sánh
+    // string trực tiếp vì cùng format cố định yyyy-MM-dd'T'HH:mm:ss'Z'.
+    // Trả về >0 nếu a mới hơn b, <0 nếu b mới hơn a, 0 nếu bằng/không rõ.
+    private fun compareIso(a: String?, b: String?): Int {
+        if (a == null || b == null) return 0
+        return a.compareTo(b)
+    }
+
     suspend fun getSelectedVocabulary(userId: String = CurrentUser.userId.value): List<UserVocabularyEntry> =
         withContext(Dispatchers.IO) {
             val list = mutableListOf<UserVocabularyEntry>()

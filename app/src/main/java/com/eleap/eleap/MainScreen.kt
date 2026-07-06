@@ -12,6 +12,7 @@ import androidx.compose.ui.unit.dp
 import androidx.activity.ComponentActivity
 import androidx.lifecycle.viewmodel.compose.viewModel
 import com.eleap.eleap.core.auth.CurrentUser
+import com.eleap.eleap.core.sync.SyncEngine
 import com.eleap.eleap.feature.auth.LoginScreen
 import com.eleap.eleap.feature.myreading.data.MyReadingRepository
 import com.eleap.eleap.feature.reading.ReadingListScreen
@@ -154,6 +155,27 @@ fun MainScreen() {
     val pendingMigrationUserId by CurrentUser.pendingMigrationUserId.collectAsState()
     var isMigrating by remember { mutableStateOf(false) }
 
+    // ── Trạng thái nút "Đồng bộ" — chỉ có ý nghĩa khi đã đăng nhập thật ─────
+    val currentUserId by CurrentUser.userId.collectAsState()
+    var isSyncing by remember { mutableStateOf(false) }
+    var syncMessage by remember { mutableStateOf<String?>(null) }
+    val isLoggedIn = currentUserId != CurrentUser.GUEST_ID
+
+    fun onSyncClick() {
+        if (isSyncing) return
+        isSyncing = true
+        syncMessage = null
+        scope.launch {
+            val result = SyncEngine.syncNow(currentUserId)
+            syncMessage = when {
+                result.error != null -> "Lỗi đồng bộ: ${result.error}"
+                else -> "Đã đồng bộ: gửi ${result.pushedCount}, nhận ${result.pulledCount}" +
+                        if (result.ranFullPull) " (full pull)" else ""
+            }
+            isSyncing = false
+        }
+    }
+
     pendingMigrationUserId?.let { newUserId ->
         AlertDialog(
             onDismissRequest = {
@@ -229,6 +251,10 @@ fun MainScreen() {
             vocabStudyPool          = vocabList.filter { it.selected == 1 },
             readingStudyPool        = readingStudyPool,
             lastReadingEntryScreen  = lastReadingEntryScreen,
+            isLoggedIn              = isLoggedIn,
+            isSyncing               = isSyncing,
+            syncMessage             = syncMessage,
+            onSyncClick             = { onSyncClick() },
             onNavigateTo            = { navigateTo(it) },
             onSelectReading         = { id ->
                 readingEntryPoint = screen   // ghi nhớ đang đứng ở READING_LIST hay MY_READING
@@ -266,6 +292,10 @@ private fun ScreenContent(
     vocabStudyPool: List<UserVocabularyEntry>,
     readingStudyPool: List<UserVocabularyEntry>,
     lastReadingEntryScreen: Screen,
+    isLoggedIn: Boolean,
+    isSyncing: Boolean,
+    syncMessage: String?,
+    onSyncClick: () -> Unit,
     onNavigateTo: (Screen) -> Unit,
     onSelectReading: (String) -> Unit,
     onReadingStudyClick: (tabName: String, nextScreen: Screen) -> Unit,
@@ -278,8 +308,11 @@ private fun ScreenContent(
             onReadingClick = { onNavigateTo(lastReadingEntryScreen) },
             onVocabClick   = { onNavigateTo(Screen.VOCAB) },
             onLoginClick   = { onNavigateTo(Screen.LOGIN) },
+            isLoggedIn     = isLoggedIn,
+            isSyncing      = isSyncing,
+            syncMessage    = syncMessage,
+            onSyncClick    = onSyncClick,
         )
-
         Screen.LOGIN -> LoginScreen(
             onBack = onBack
         )
@@ -351,6 +384,10 @@ private fun MainContent(
     onReadingClick: () -> Unit,
     onVocabClick: () -> Unit,
     onLoginClick: () -> Unit,
+    isLoggedIn: Boolean,
+    isSyncing: Boolean,
+    syncMessage: String?,
+    onSyncClick: () -> Unit,
 ) {
     Column(
         modifier = Modifier.fillMaxSize(),
@@ -364,5 +401,29 @@ private fun MainContent(
         // ── Nút test đăng nhập — tạm thời đặt ở đây để test song song với
         //    việc cấu hình Google Cloud Console / Supabase Dashboard ──────────
         OutlinedButton(onClick = onLoginClick) { Text("Đăng nhập") }
+
+        // ── Nút "Đồng bộ" — chỉ hiện khi đã đăng nhập thật, guest bấm vô
+        //    nghĩa vì không có tài khoản trên server để đồng bộ vào ─────────
+        if (isLoggedIn) {
+            Spacer(modifier = Modifier.height(12.dp))
+            OutlinedButton(
+                onClick = onSyncClick,
+                enabled = !isSyncing,
+            ) {
+                if (isSyncing) {
+                    CircularProgressIndicator(modifier = Modifier.size(18.dp), strokeWidth = 2.dp)
+                } else {
+                    Text("Đồng bộ")
+                }
+            }
+            syncMessage?.let {
+                Spacer(modifier = Modifier.height(8.dp))
+                Text(
+                    text = it,
+                    style = MaterialTheme.typography.bodySmall,
+                    color = MaterialTheme.colorScheme.onSurfaceVariant,
+                )
+            }
+        }
     }
 }
