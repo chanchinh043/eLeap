@@ -19,12 +19,33 @@ import android.util.Log
 import com.eleap.eleap.feature.vocab.data.SyncStatus
 import com.eleap.eleap.feature.vocab.data.UserVocabularyEntry
 import com.eleap.eleap.feature.vocab.data.VocabRepository
+import kotlinx.coroutines.flow.MutableSharedFlow
+import kotlinx.coroutines.flow.SharedFlow
+import kotlinx.coroutines.flow.asSharedFlow
 import kotlinx.coroutines.sync.Mutex
 import kotlinx.coroutines.sync.withLock
 
 object SyncEngine {
 
     private lateinit var repo: VocabRepository
+
+    // ── Tín hiệu "vừa có dữ liệu vocab thay đổi do sync" ─────────────────────
+    // Phát ra userId mỗi khi syncNow()/pushPending() vừa xong VÀ thực sự có
+    // thay đổi (pushed > 0 hoặc pulled > 0) — dùng để VocabViewModel tự gọi
+    // lại loadVocab()/loadVocabForReading() mà không cần UI tự nhớ gọi.
+    // Không phát khi không có gì thay đổi, tránh reload vô ích mỗi lần bấm
+    // nút Đồng bộ dù server không có gì mới.
+    //
+    // extraBufferCapacity = 1 — nếu lúc phát ra chưa có ai collect (màn hình
+    // vocab chưa mở), tín hiệu vẫn không bị mất hoàn toàn cho lần collect
+    // đầu tiên ngay sau đó; replay = 0 vì không cần phát lại tín hiệu cũ cho
+    // collector mới (collector mới nên tự load 1 lần khi khởi tạo, không
+    // dựa vào tín hiệu quá khứ).
+    private val _dataChanged = MutableSharedFlow<String>(
+        replay = 0,
+        extraBufferCapacity = 1,
+    )
+    val dataChanged: SharedFlow<String> = _dataChanged.asSharedFlow()
 
     // ── Khoá dùng chung giữa SyncPushWorker (gọi pushPending() trực tiếp,
     // định kỳ 3h) và SyncPullWorker (gọi syncNow(), bên trong tự gọi lại
@@ -64,11 +85,17 @@ object SyncEngine {
             // SyncPushWorker (chạy pushPending() riêng) rơi đúng vào lúc này
             // đang chạy, nó phải đợi xong rồi mới push, không đụng độ dữ
             // liệu pending giữa chừng.
-            syncMutex.withLock {
+            val outcome = syncMutex.withLock {
                 val pushed = pushPendingLocked(userId)
                 val (pulled, ranFull) = pullSmart(userId)
                 SyncOutcome(pushedCount = pushed, pulledCount = pulled, ranFullPull = ranFull)
             }
+            // Chỉ báo cho VocabViewModel reload khi thực sự có thay đổi —
+            // tránh reload vô ích nếu bấm Đồng bộ mà server không có gì mới.
+            if (outcome.pushedCount > 0 || outcome.pulledCount > 0) {
+                _dataChanged.tryEmit(userId)
+            }
+            outcome
         } catch (e: Exception) {
             Log.e("SyncEngine", "syncNow error", e)
             SyncOutcome(pushedCount = 0, pulledCount = 0, ranFullPull = false, error = e.message)
@@ -79,8 +106,12 @@ object SyncEngine {
     // Điểm vào công khai, dùng riêng bởi SyncPushWorker (chu kỳ 3h). Khoá
     // syncMutex ở đây — nếu SyncPullWorker đang chạy syncNow() (đã giữ khoá),
     // lệnh push riêng lẻ này phải đợi thay vì chạy chồng lên.
-    suspend fun pushPending(userId: String): Int = syncMutex.withLock {
-        pushPendingLocked(userId)
+    suspend fun pushPending(userId: String): Int {
+        val count = syncMutex.withLock { pushPendingLocked(userId) }
+        if (count > 0) {
+            _dataChanged.tryEmit(userId)
+        }
+        return count
     }
 
     // Logic push thật sự — KHÔNG tự khoá mutex (mutex không tái nhập được),
@@ -95,8 +126,9 @@ object SyncEngine {
             try {
                 when (row.syncStatus) {
                     SyncStatus.PENDING_CREATE -> {
-                        SyncApi.pushCreate(row.toUpsertDto())
-                        succeededIds += row.id
+                        if (handlePendingCreate(row)) {
+                            succeededIds += row.id
+                        }
                     }
                     SyncStatus.PENDING_UPDATE -> {
                         if (pushUpdateWithLocking(row)) {
@@ -131,6 +163,83 @@ object SyncEngine {
             repo.markSynced(succeededIds)
         }
         return succeededIds.size
+    }
+
+    // ══ CHỐNG TRÙNG LẶP GIỮA NHIỀU THIẾT BỊ (cùng source_word_id) ══════════
+    // Trường hợp: máy A và máy B cùng offline, cùng lưu 1 từ (cùng
+    // source_word_id) → 2 id khác nhau, đều PENDING_CREATE ở local riêng.
+    // Máy nào push trước sẽ tạo dòng thật trên server; máy push sau phải
+    // NHẬN RA điều đó và merge, thay vì tạo thêm 1 dòng trùng.
+    //
+    // Trả về true nếu đã xử lý xong (server đã có đúng 1 dòng cho word này,
+    // local đã nhất quán) → caller thêm row.id vào succeededIds để
+    // markSynced() dọn sync_status. Trả về false nếu push lỗi thật sự (mạng,
+    // v.v.) → giữ nguyên PENDING_CREATE, retry ở lần sync kế tiếp.
+    private suspend fun handlePendingCreate(row: UserVocabularyEntry): Boolean {
+        val wordId = row.sourceWordId
+
+        // Không có source_word_id (vd từ tự nhập tay, nếu app có luồng đó)
+        // → không có gì để so khớp trùng lặp, push bình thường.
+        if (wordId == null) {
+            return try {
+                SyncApi.pushCreate(row.toUpsertDto())
+                true
+            } catch (e: Exception) {
+                Log.e("SyncEngine", "pushCreate lỗi cho id=${row.id}", e)
+                false
+            }
+        }
+
+        // Bước 1: hỏi trước — tránh phần lớn trường hợp trùng lặp mà không
+        // cần chạm tới ràng buộc unique trên server (rẻ hơn, ít lỗi hơn).
+        val existingBeforePush = try {
+            SyncApi.fetchByWordId(row.userId, wordId)
+        } catch (e: Exception) {
+            Log.e("SyncEngine", "fetchByWordId lỗi cho wordId=$wordId", e)
+            return false // lỗi mạng thật sự — retry ở lần sync sau
+        }
+
+        if (existingBeforePush != null && existingBeforePush.id != row.id) {
+            mergeIntoWinner(existingBeforePush.toEntry(), loserId = row.id, loserCount = row.count)
+            return true
+        }
+
+        // Bước 2: không thấy trùng → push như bình thường. Vẫn có thể race
+        // (máy kia push đúng lúc giữa bước 1 và bước 2) — bắt riêng
+        // VocabDuplicateWordException để merge lại thay vì coi là lỗi.
+        return try {
+            SyncApi.pushCreate(row.toUpsertDto())
+            true
+        } catch (e: VocabDuplicateWordException) {
+            Log.d("SyncEngine", "handlePendingCreate: race condition cho wordId=$wordId, merge lại")
+            val winner = try {
+                SyncApi.fetchByWordId(row.userId, wordId)
+            } catch (e2: Exception) {
+                Log.e("SyncEngine", "fetchByWordId (retry sau race) lỗi cho wordId=$wordId", e2)
+                null
+            }
+            if (winner != null && winner.id != row.id) {
+                mergeIntoWinner(winner.toEntry(), loserId = row.id, loserCount = row.count)
+                true
+            } else {
+                // Không tìm lại được — để nguyên PENDING_CREATE, retry sau.
+                false
+            }
+        } catch (e: Exception) {
+            Log.e("SyncEngine", "pushCreate lỗi cho id=${row.id}", e)
+            false
+        }
+    }
+
+    // Ghi dữ liệu server (đã merge count) vào local dưới đúng id server, rồi
+    // xoá cứng dòng local trùng (loserId). Xem chi tiết ở
+    // VocabRepository.mergeDuplicateIntoServerRow().
+    private suspend fun mergeIntoWinner(
+        winner: UserVocabularyEntry,
+        loserId: String,
+        loserCount: Int,
+    ) {
+        repo.mergeDuplicateIntoServerRow(winner = winner, loserId = loserId, loserCount = loserCount)
     }
 
     // ══ PUSH UPDATE với optimistic locking thật sự ═══════════════════════════

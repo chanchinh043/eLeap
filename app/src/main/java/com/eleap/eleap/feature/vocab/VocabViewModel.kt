@@ -9,6 +9,7 @@ import androidx.lifecycle.ViewModel
 import androidx.lifecycle.ViewModelProvider
 import androidx.lifecycle.viewModelScope
 import com.eleap.eleap.core.auth.CurrentUser
+import com.eleap.eleap.core.sync.SyncEngine
 import com.eleap.eleap.core.sync.SyncScheduler
 import com.eleap.eleap.feature.reading.ReadingViewModel
 import com.eleap.eleap.feature.vocab.data.UserVocabularyEntry
@@ -18,6 +19,7 @@ import androidx.compose.ui.geometry.Rect
 import kotlinx.coroutines.flow.MutableStateFlow
 import kotlinx.coroutines.flow.StateFlow
 import kotlinx.coroutines.flow.drop
+import kotlinx.coroutines.flow.filter
 import kotlinx.coroutines.launch
 
 class VocabViewModel(
@@ -130,6 +132,21 @@ class VocabViewModel(
             CurrentUser.userId.drop(1).collect {
                 loadVocab()
             }
+        }
+
+        // Tự reload khi SyncEngine vừa push/pull xong VÀ thực sự có thay đổi
+        // (bấm nút Đồng bộ ở MainScreen, SyncPushWorker/SyncPullWorker chạy
+        // nền, hoặc syncNow() sau khi đăng nhập ở MainActivity) — không cần
+        // rời màn rồi quay lại mới thấy dữ liệu mới.
+        // filter đúng userId đang active — phòng trường hợp tín hiệu cũ của
+        // 1 lượt sync trước đó (vd của tài khoản khác) lọt về trễ.
+        viewModelScope.launch {
+            SyncEngine.dataChanged
+                .filter { changedUserId -> changedUserId == CurrentUser.userId.value }
+                .collect {
+                    loadVocab()
+                    currentReadingId?.let { readingId -> loadVocabForReading(readingId) }
+                }
         }
     }
 

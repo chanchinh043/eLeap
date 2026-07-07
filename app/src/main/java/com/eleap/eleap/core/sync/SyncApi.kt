@@ -21,6 +21,7 @@
 package com.eleap.eleap.core.sync
 
 import com.eleap.eleap.core.auth.SupabaseClientProvider
+import io.github.jan.supabase.exceptions.RestException
 import io.github.jan.supabase.postgrest.postgrest
 import io.github.jan.supabase.postgrest.query.Columns
 import io.github.jan.supabase.postgrest.query.Order
@@ -28,6 +29,17 @@ import kotlinx.serialization.SerialName
 import kotlinx.serialization.Serializable
 
 private const val TABLE = "user_vocabulary"
+
+// ── Ném ra khi pushCreate() đụng unique constraint (user_id, source_word_id)
+// trên server — nghĩa là 1 thiết bị KHÁC đã tạo/push 1 dòng khác cho cùng
+// source_word_id này TRƯỚC, ngay trong khoảng thời gian giữa lúc
+// SyncEngine gọi fetchByWordId() (trả về null) và lúc gọi pushCreate() thật
+// sự (race condition hiếm). SyncEngine bắt exception này để chạy lại
+// fetchByWordId() (lúc này chắc chắn có kết quả) rồi merge, thay vì coi là
+// lỗi mạng chung chung rồi retry vô ích ở chu kỳ sync kế tiếp.
+class VocabDuplicateWordException(val sourceWordId: String?) : Exception(
+    "Trùng source_word_id=$sourceWordId với 1 dòng khác đã có trên server"
+)
 
 // ── DTO khớp cột trên Supabase (snake_case qua @SerialName) ─────────────────
 // Không có sync_status — cột này chỉ tồn tại ở local (VocabDatabase.kt).
@@ -117,6 +129,29 @@ object SyncApi {
         }.decodeSingleOrNull()
     }
 
+    // ── Tìm dòng "còn sống" trên server theo (user_id, source_word_id) ──────
+    // Dùng để CHỐNG TRÙNG LẶP GIỮA NHIỀU THIẾT BỊ: gọi trước pushCreate() —
+    // nếu trả về khác null nghĩa là 1 thiết bị khác đã tạo/push xong dòng
+    // này rồi (id khác với dòng local đang PENDING_CREATE), SyncEngine sẽ
+    // merge thay vì tạo thêm 1 dòng trùng trên server.
+    //
+    // Lọc "deleted_at IS NULL" ở phía KOTLIN (sau khi lấy về) thay vì trong
+    // câu query — tránh phụ thuộc vào tên hàm filter-null cụ thể của từng
+    // version supabase-kt (đã đổi tên nhiều lần: FilterOperator.IS, is_,
+    // isNull...). Với unique index uq_vocab_user_word_alive trên server,
+    // tối đa CHỈ CÓ 1 dòng "còn sống" cho mỗi (user_id, source_word_id) nên
+    // decodeList() rồi lọc + lấy dòng đầu là an toàn, không lo có 2 dòng
+    // cùng sống trở lên.
+    suspend fun fetchByWordId(userId: String, sourceWordId: String): UserVocabularyDto? {
+        val rows = postgrest.from(TABLE).select {
+            filter {
+                eq("user_id", userId)
+                eq("source_word_id", sourceWordId)
+            }
+        }.decodeList<UserVocabularyDto>()
+        return rows.firstOrNull { it.deletedAt == null }
+    }
+
     // ── PULL: full — lấy toàn bộ dữ liệu của user, không lọc theo cursor ────
     suspend fun pullFull(userId: String): List<UserVocabularyDto> {
         return postgrest.from(TABLE).select {
@@ -137,9 +172,27 @@ object SyncApi {
     // lại ghi đè an toàn lên đúng dòng đã tạo trước đó (dữ liệu giống hệt vì
     // cùng 1 lần tạo cục bộ), rồi trả về thành công để markSynced() chạy
     // bình thường ở SyncEngine.
+    // Bắt riêng lỗi 23505 (unique_violation) từ unique index
+    // uq_vocab_user_word_alive trên Supabase — xảy ra khi 2 thiết bị push
+    // gần như đồng thời cho cùng source_word_id (race condition, hiếm hơn
+    // trường hợp SyncEngine đã chặn trước qua fetchByWordId()). Ném lại
+    // dưới dạng VocabDuplicateWordException để SyncEngine phân biệt được với
+    // lỗi mạng/lỗi khác — và biết cần chạy lại fetchByWordId() để merge,
+    // thay vì để nguyên PENDING_CREATE rồi lỗi lặp lại y hệt ở lần sync sau.
     suspend fun pushCreate(row: UserVocabularyUpsertDto) {
-        postgrest.from(TABLE).upsert(row) {
-            onConflict = "id"
+        try {
+            postgrest.from(TABLE).upsert(row) {
+                onConflict = "id"
+            }
+        } catch (e: RestException) {
+            val message = e.message.orEmpty()
+            val isUniqueViolation = message.contains("23505") ||
+                    message.contains("duplicate key", ignoreCase = true) ||
+                    message.contains("uq_vocab_user_word_alive", ignoreCase = true)
+            if (isUniqueViolation) {
+                throw VocabDuplicateWordException(row.sourceWordId)
+            }
+            throw e
         }
     }
 

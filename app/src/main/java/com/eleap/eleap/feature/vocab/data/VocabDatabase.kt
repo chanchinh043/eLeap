@@ -210,6 +210,22 @@ class UserDatabase private constructor(context: Context) {
                 """.trimIndent()
             )
 
+            // ── Chống trùng lặp giữa nhiều thiết bị ────────────────────────
+            // Partial unique index: 1 user chỉ được có TỐI ĐA 1 dòng "còn
+            // sống" (deleted_at IS NULL) cho mỗi source_word_id. Đây là lưới
+            // an toàn ở LOCAL — chặn app tự tạo trùng ngay trên 1 máy (vd
+            // double-tap nút lưu từ). Việc chống trùng giữa 2 máy khác nhau
+            // (cả 2 offline cùng lưu 1 từ) được xử lý ở tầng sync
+            // (SyncEngine.pushPendingLocked() + unique index tương tự trên
+            // Supabase) — xem ghi chú ở đó.
+            db.execSQL(
+                """
+                CREATE UNIQUE INDEX IF NOT EXISTS idx_vocab_user_word_alive
+                ON user_vocabulary(user_id, source_word_id)
+                WHERE deleted_at IS NULL AND source_word_id IS NOT NULL
+                """.trimIndent()
+            )
+
             createUpdatedAtTrigger(db)
         }
 
@@ -239,7 +255,11 @@ class UserDatabase private constructor(context: Context) {
     val dbPath: String get() = db.path
 
     companion object {
-        private const val DB_VERSION = 2
+        // DB_VERSION 2 → 3: thêm idx_vocab_user_word_alive (unique index
+        // chống trùng source_word_id giữa nhiều thiết bị/nhiều lần lưu).
+        // Vẫn dùng DROP + tạo lại (xem ghi chú ở onUpgrade()) — CHỈ chấp
+        // nhận được vì app chưa có người dùng thật.
+        private const val DB_VERSION = 3
         @Volatile private var INSTANCE: UserDatabase? = null
 
         fun getInstance(context: Context): UserDatabase =

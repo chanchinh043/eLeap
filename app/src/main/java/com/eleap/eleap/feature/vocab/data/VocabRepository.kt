@@ -126,6 +126,14 @@ class VocabRepository private constructor(
                 val rowId = userDb.db.insert("user_vocabulary", null, cv)
                 Log.d("VocabRepository", "saveWord: \"$textEn\" → rowId=$rowId")
                 rowId != -1L
+            } catch (e: android.database.sqlite.SQLiteConstraintException) {
+                // Vi phạm idx_vocab_user_word_alive — nghĩa là từ này đã có
+                // sẵn 1 dòng "còn sống" tại local (vd bấm Lưu 2 lần liên tiếp
+                // nhanh trước khi UI kịp cập nhật trạng thái "đã lưu"). Không
+                // phải lỗi thật — coi như đã lưu thành công, không tạo dòng
+                // trùng thứ 2 tại local.
+                Log.d("VocabRepository", "saveWord: \"$textEn\" đã tồn tại (unique constraint), bỏ qua")
+                true
             } catch (e: Exception) {
                 Log.e("VocabRepository", "saveWord error", e)
                 false
@@ -179,6 +187,79 @@ class VocabRepository private constructor(
             whereClause = "source_word_id = ? AND user_id = ?",
             whereArgs   = arrayOf(wordId, userId),
         )
+
+    // ── Lấy dòng "còn sống" (chưa xoá) theo source_word_id, nếu có ──────────
+    // Dùng ở SyncEngine để phát hiện trùng lặp giữa nhiều thiết bị: trước khi
+    // push 1 dòng PENDING_CREATE lên server, hỏi ngược lại xem LOCAL đã tự
+    // merge/xoá dòng đó chưa (tránh double push nếu syncNow() bị gọi chồng).
+    suspend fun findAliveByWordId(
+        wordId: String,
+        userId: String = CurrentUser.userId.value,
+    ): UserVocabularyEntry? = withContext(Dispatchers.IO) {
+        val cursor = userDb.db.rawQuery(
+            """SELECT * FROM user_vocabulary
+               WHERE source_word_id = ? AND user_id = ? AND deleted_at IS NULL
+               LIMIT 1""",
+            arrayOf(wordId, userId)
+        )
+        cursor.use { if (it.moveToFirst()) entryFromCursor(it) else null }
+    }
+
+    // ── Xoá CỨNG 1 dòng theo id, không qua soft-delete/không đẩy tombstone ──
+    // Dùng khi phát hiện dòng này là bản TRÙNG LẶP do 2 thiết bị cùng offline
+    // tạo ra 2 id khác nhau cho cùng 1 source_word_id: dòng "thua" (không
+    // phải dòng server đã chấp nhận) cần biến mất hoàn toàn khỏi local, kể cả
+    // khỏi lịch sử — vì đây không phải hành động xoá của user, không cần
+    // server biết tới nó (server chưa từng có id này).
+    suspend fun hardDeleteLocal(id: String): Boolean = withContext(Dispatchers.IO) {
+        try {
+            userDb.db.delete("user_vocabulary", "id = ?", arrayOf(id)) > 0
+        } catch (e: Exception) {
+            Log.e("VocabRepository", "hardDeleteLocal error", e)
+            false
+        }
+    }
+
+    // ── Merge 1 dòng local trùng lặp vào dòng đã thắng trên server ──────────
+    // Gọi khi SyncEngine phát hiện: local đang PENDING_CREATE cho word X,
+    // nhưng server ĐÃ có sẵn 1 dòng khác (id khác) cho đúng word X đó (do
+    // thiết bị kia push trước). Xử lý:
+    //   1. Ghi dữ liệu server (đã merge count) vào local dưới ĐÚNG id server,
+    //      đánh dấu SYNCED — insert nếu local chưa có id đó, update nếu có.
+    //   2. Xoá cứng dòng local trùng (loserId) — không giữ lại, không soft-delete.
+    // count: cộng dồn 2 bên (loserCount + winner.count) — coi "count" là bộ
+    // đếm số lần ôn thực tế, cộng dồn đúng ý nghĩa. Nếu ngữ nghĩa count/score
+    // trong app là "điểm cao nhất" thay vì "cộng dồn", đổi phép cộng dưới
+    // đây thành maxOf(...) cho phù hợp.
+    suspend fun mergeDuplicateIntoServerRow(
+        winner: UserVocabularyEntry,
+        loserId: String,
+        loserCount: Int,
+    ) = withContext(Dispatchers.IO) {
+        try {
+            val merged = winner.copy(count = winner.count + loserCount)
+
+            val existsCursor = userDb.db.rawQuery(
+                "SELECT 1 FROM user_vocabulary WHERE id = ? LIMIT 1",
+                arrayOf(merged.id)
+            )
+            val alreadyExists = existsCursor.use { it.moveToFirst() }
+
+            if (alreadyExists) {
+                overwriteFromServer(merged)
+            } else {
+                insertFromServer(merged)
+            }
+
+            userDb.db.delete("user_vocabulary", "id = ?", arrayOf(loserId))
+            Log.d(
+                "VocabRepository",
+                "mergeDuplicateIntoServerRow: giữ ${merged.id} (count=${merged.count}), xoá $loserId"
+            )
+        } catch (e: Exception) {
+            Log.e("VocabRepository", "mergeDuplicateIntoServerRow error", e)
+        }
+    }
 
     // ── Kiểm tra 1 từ (theo source_word_id) đã lưu chưa — bỏ qua dòng đã xoá ──
     suspend fun isWordSaved(wordId: String, userId: String = CurrentUser.userId.value): Boolean =

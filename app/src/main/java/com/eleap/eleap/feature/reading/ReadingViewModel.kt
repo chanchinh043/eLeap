@@ -6,6 +6,7 @@ import androidx.lifecycle.ViewModel
 import androidx.lifecycle.ViewModelProvider
 import androidx.lifecycle.viewModelScope
 import com.eleap.eleap.core.auth.CurrentUser
+import com.eleap.eleap.core.sync.SyncEngine
 import com.eleap.eleap.feature.myreading.data.MyReadingRepository
 import com.eleap.eleap.feature.myreading.data.processUnhandledMyReadings
 import com.eleap.eleap.feature.reading.data.Reading
@@ -22,6 +23,7 @@ import kotlinx.coroutines.flow.MutableStateFlow
 import kotlinx.coroutines.flow.SharingStarted
 import kotlinx.coroutines.flow.StateFlow
 import kotlinx.coroutines.flow.drop
+import kotlinx.coroutines.flow.filter
 import kotlinx.coroutines.flow.map
 import kotlinx.coroutines.flow.stateIn
 import kotlinx.coroutines.launch
@@ -82,6 +84,20 @@ class ReadingViewModel(
                 loadReadings(forceRefresh = true)
                 refreshSavedWordIds()
             }
+        }
+
+        // Tự refresh highlight từ đã lưu khi SyncEngine vừa push/pull xong VÀ
+        // thực sự có thay đổi (bấm nút Đồng bộ, SyncPushWorker/SyncPullWorker
+        // chạy nền, hoặc syncNow() sau khi đăng nhập ở MainActivity) — không
+        // cần rời ReadingScreen rồi quay lại mới thấy màu từ cập nhật.
+        // filter đúng userId đang active — phòng tín hiệu cũ của 1 lượt sync
+        // trước đó (vd tài khoản khác) lọt về trễ.
+        viewModelScope.launch {
+            SyncEngine.dataChanged
+                .filter { changedUserId -> changedUserId == CurrentUser.userId.value }
+                .collect {
+                    refreshSavedWordIds()
+                }
         }
 
         viewModelScope.launch {
