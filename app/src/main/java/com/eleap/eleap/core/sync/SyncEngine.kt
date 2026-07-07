@@ -6,10 +6,13 @@
 // để đọc/ghi mốc pull. VocabRepository không tự gọi mạng; SyncApi không biết
 // SQLite; SyncCursor không biết gì về cả hai — SyncEngine là tầng ráp nối.
 //
-// Dùng chung cho cả 2 nơi gọi vào:
+// Dùng chung cho cả 3 nơi gọi vào:
 //   - Nút "Đồng bộ" ở MainScreen → gọi syncNow() ngay lập tức, 1 lần.
-//   - SyncWorker (bước sau, chạy nền theo lịch 3h/5h/1 tuần) → cũng gọi lại
-//     đúng các hàm ở đây, không viết lại logic.
+//   - SyncWorker (chạy nền theo lịch 3h/5h) → cũng gọi lại đúng các hàm ở
+//     đây, không viết lại logic.
+//   - SyncRealtime (core/sync/SyncRealtime.kt) → khi nhận sự kiện qua
+//     WebSocket, gọi notifyDataChanged() để tái sử dụng đúng tín hiệu
+//     dataChanged, không tạo cơ chế signal riêng.
 //
 // Singleton thủ công, KHÔNG dùng Hilt/DI.
 package com.eleap.eleap.core.sync
@@ -31,10 +34,11 @@ object SyncEngine {
 
     // ── Tín hiệu "vừa có dữ liệu vocab thay đổi do sync" ─────────────────────
     // Phát ra userId mỗi khi syncNow()/pushPending() vừa xong VÀ thực sự có
-    // thay đổi (pushed > 0 hoặc pulled > 0) — dùng để VocabViewModel tự gọi
-    // lại loadVocab()/loadVocabForReading() mà không cần UI tự nhớ gọi.
-    // Không phát khi không có gì thay đổi, tránh reload vô ích mỗi lần bấm
-    // nút Đồng bộ dù server không có gì mới.
+    // thay đổi (pushed > 0 hoặc pulled > 0), HOẶC khi SyncRealtime vừa áp
+    // dụng xong 1 sự kiện realtime (qua notifyDataChanged()) — dùng để
+    // VocabViewModel tự gọi lại loadVocab()/loadVocabForReading() mà không
+    // cần UI tự nhớ gọi. Không phát khi không có gì thay đổi, tránh reload
+    // vô ích mỗi lần bấm nút Đồng bộ dù server không có gì mới.
     //
     // extraBufferCapacity = 1 — nếu lúc phát ra chưa có ai collect (màn hình
     // vocab chưa mở), tín hiệu vẫn không bị mất hoàn toàn cho lần collect
@@ -46,6 +50,15 @@ object SyncEngine {
         extraBufferCapacity = 1,
     )
     val dataChanged: SharedFlow<String> = _dataChanged.asSharedFlow()
+
+    // ── Điểm vào công khai DUY NHẤT để phát tín hiệu dataChanged từ BÊN
+    // NGOÀI SyncEngine — hiện chỉ dùng bởi SyncRealtime, sau khi đã áp dụng
+    // xong 1 sự kiện INSERT/UPDATE/DELETE nhận qua WebSocket vào local DB.
+    // Không expose thẳng _dataChanged (MutableSharedFlow) ra ngoài để tránh
+    // nơi khác lỡ tay emit sai lúc không có thay đổi thật.
+    fun notifyDataChanged(userId: String) {
+        _dataChanged.tryEmit(userId)
+    }
 
     // ── Khoá dùng chung giữa SyncPushWorker (gọi pushPending() trực tiếp,
     // định kỳ 3h) và SyncPullWorker (gọi syncNow(), bên trong tự gọi lại
@@ -172,31 +185,30 @@ object SyncEngine {
     // NHẬN RA điều đó và merge, thay vì tạo thêm 1 dòng trùng.
     //
     // Trả về true nếu đã xử lý xong (server đã có đúng 1 dòng cho word này,
-    // local đã nhất quán) → caller thêm row.id vào succeededIds để
-    // markSynced() dọn sync_status. Trả về false nếu push lỗi thật sự (mạng,
-    // v.v.) → giữ nguyên PENDING_CREATE, retry ở lần sync kế tiếp.
+    // dù là do row.id này tạo ra hay đã merge vào dòng có sẵn), false nếu
+    // cần retry ở lần sync sau (lỗi mạng/không xác định được).
     private suspend fun handlePendingCreate(row: UserVocabularyEntry): Boolean {
         val wordId = row.sourceWordId
 
-        // Không có source_word_id (vd từ tự nhập tay, nếu app có luồng đó)
-        // → không có gì để so khớp trùng lặp, push bình thường.
+        // Không có sourceWordId (hiếm, dữ liệu cũ) → không thể chống trùng
+        // theo word, push thẳng như bình thường.
         if (wordId == null) {
             return try {
                 SyncApi.pushCreate(row.toUpsertDto())
                 true
             } catch (e: Exception) {
-                Log.e("SyncEngine", "pushCreate lỗi cho id=${row.id}", e)
+                Log.e("SyncEngine", "pushCreate (không có wordId) lỗi cho id=${row.id}", e)
                 false
             }
         }
 
-        // Bước 1: hỏi trước — tránh phần lớn trường hợp trùng lặp mà không
-        // cần chạm tới ràng buộc unique trên server (rẻ hơn, ít lỗi hơn).
+        // Bước 1: kiểm tra xem server đã có dòng "còn sống" nào cho word này
+        // chưa (do máy khác tạo trước).
         val existingBeforePush = try {
             SyncApi.fetchByWordId(row.userId, wordId)
         } catch (e: Exception) {
             Log.e("SyncEngine", "fetchByWordId lỗi cho wordId=$wordId", e)
-            return false // lỗi mạng thật sự — retry ở lần sync sau
+            null
         }
 
         if (existingBeforePush != null && existingBeforePush.id != row.id) {

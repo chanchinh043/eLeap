@@ -69,6 +69,9 @@ dependencies {
     implementation(libs.androidx.core.ktx)
     implementation(libs.androidx.lifecycle.runtime.ktx)
     implementation(libs.androidx.lifecycle.viewmodel.compose)
+    // lifecycle-process — ProcessLifecycleOwner, dùng ở MainActivity để
+    // bật/tắt SyncRealtime theo lifecycle của toàn app (foreground/background).
+    implementation(libs.androidx.lifecycle.process)
     implementation(libs.androidx.activity.compose)
     implementation(libs.androidx.navigation.compose)
 
@@ -93,6 +96,9 @@ dependencies {
     implementation(platform(libs.supabase.bom))
     implementation(libs.supabase.auth)
     implementation(libs.supabase.postgrest)
+    // Realtime — lắng nghe thay đổi bảng user_vocabulary qua WebSocket, để các
+    // thiết bị khác biết ngay khi có create/xoá (core/sync/SyncRealtime.kt).
+    implementation(libs.supabase.realtime)
     implementation(libs.ktor.client.okhttp)
     implementation(libs.kotlinx.serialization.json)
 

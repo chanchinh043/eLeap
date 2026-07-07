@@ -7,6 +7,7 @@ import io.github.jan.supabase.auth.Auth
 import io.github.jan.supabase.auth.auth
 import io.github.jan.supabase.auth.providers.Google
 import io.github.jan.supabase.postgrest.Postgrest
+import io.github.jan.supabase.realtime.Realtime
 
 // ── Singleton thủ công, KHÔNG dùng Hilt/DI — cùng phong cách với CurrentUser ──
 object SupabaseClientProvider {
@@ -29,6 +30,11 @@ object SupabaseClientProvider {
             // Cần cho SyncApi (core/sync) — mọi truy vấn bảng user_vocabulary
             // (select/insert/update) đều đi qua plugin này.
             install(Postgrest)
+            // Cần cho SyncRealtime (core/sync) — lắng nghe INSERT/UPDATE/DELETE
+            // trên bảng user_vocabulary qua WebSocket, để các thiết bị khác
+            // đang đăng nhập cùng tài khoản nhận được thay đổi gần như ngay lập
+            // tức, không cần đợi chu kỳ pull định kỳ (SyncPullWorker, 5h).
+            install(Realtime)
         }
     }
 
