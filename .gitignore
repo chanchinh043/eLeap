@@ -13,3 +13,9 @@
 .externalNativeBuild
 .cxx
 local.properties
+
+# Ignore jniLibs folder
+app/src/main/jniLibs/
+
+# Ignore kokoro folder
+app/src/main/assets/kokoro/

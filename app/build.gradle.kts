@@ -35,6 +35,16 @@ android {
             "OPENAI_API_KEY",
             "\"${localProperties.getProperty("OPENAI_API_KEY", "")}\""
         )
+
+        // Chỉ đóng gói .so cho arm64-v8a — quyết định đã chốt khi thêm
+        // sherpa-onnx (Kokoro TTS on-device): không hỗ trợ máy 32-bit đời cũ
+        // hay emulator x86, đổi lại giảm đáng kể size APK/AAB vì
+        // libonnxruntime.so khá nặng (~20-40MB/kiến trúc). Nếu sau này cần
+        // hỗ trợ thêm kiến trúc khác, sửa lại danh sách này VÀ copy thêm
+        // đúng thư mục .so tương ứng vào app/src/main/jniLibs/.
+        ndk {
+            abiFilters += "arm64-v8a"
+        }
     }
 
     buildTypes {
@@ -62,9 +72,24 @@ android {
         compose = true
         buildConfig = true
     }
+
+    // Model Kokoro (.onnx) và voice data (.bin) trong assets/kokoro/ — KHÔNG
+    // nén khi đóng gói APK/AAB. Nếu để mặc định nén, sherpa-onnx đọc file
+    // trực tiếp từ đường dẫn trên disk (sau khi copy ra filesDir ở bước
+    // KokoroTtsEngine sau này) có thể đọc sai/hỏng dữ liệu, hoặc chậm hơn
+    // hẳn lúc copy vì phải giải nén trước.
+    androidResources {
+        noCompress += listOf("onnx", "bin")
+    }
 }
 
 dependencies {
+    // sherpa-onnx (Kokoro TTS on-device) — .aar để trực tiếp trong app/libs/,
+    // KHÔNG qua Maven vì đây là bản build sẵn bạn tự tải về, không có trên
+    // registry công khai nào. implementation(files(...)) đủ dùng cho 1 file
+    // .aar đơn lẻ, không cần khai báo thêm flatDir repository.
+    implementation(files("libs/sherpa-onnx-1.13.2.aar"))
+
     // AndroidX Core
     implementation(libs.androidx.core.ktx)
     implementation(libs.androidx.lifecycle.runtime.ktx)

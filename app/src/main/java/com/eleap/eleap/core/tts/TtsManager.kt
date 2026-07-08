@@ -4,17 +4,29 @@
 // Singleton thủ công, KHÔNG dùng Hilt/DI — cùng phong cách với CurrentUser,
 // SyncCursor, SupabaseClientProvider.
 //
-// Bước 1 của lộ trình TTS toàn app: chỉ bọc Android TextToSpeech có sẵn
-// (on-device, offline, zero-latency setup). Sau này khi có KokoroTtsEngine,
-// sẽ trừu tượng hoá thành interface TtsEngine + TtsManager chọn/fallback
-// giữa 2 engine — CHƯA làm ở bước này, giữ đơn giản trước.
+// ⚠️ ĐÃ ĐỔI THIẾT KẾ: trước đây TtsManager tự cầm luôn 1 TextToSpeech bên
+// trong. Giờ trừu tượng hoá qua interface TtsEngine (xem TtsEngine.kt) — có
+// 2 cài đặt: AndroidTtsEngine (bọc TextToSpeech cũ) và KokoroTtsEngine (bọc
+// sherpa-onnx, chất lượng cao hơn, on-device). TtsManager là nơi DUY NHẤT
+// quyết định dùng engine nào, và API công khai (init/speak/stop/
+// setSpeechRate/getSpeechRate/shutdown) giữ NGUYÊN như cũ — mọi nơi khác
+// đang gọi TtsManager (ReadingScreen, WordPopup, SentencePopup, PhrasePopup,
+// VocabPopup) KHÔNG cần sửa gì.
+//
+// ── Chiến lược chọn engine ───────────────────────────────────────────────
+// Thử khởi tạo Kokoro TRƯỚC (chất lượng đọc tốt hơn nhiều so với
+// TextToSpeech mặc định của Android, đặc biệt với giọng US/UK tự nhiên).
+// Nếu Kokoro init lỗi (model thiếu file, sai định dạng, lỗi native
+// library,...) → tự động rơi về AndroidTtsEngine, đảm bảo app luôn có TTS
+// hoạt động, không phụ thuộc hoàn toàn vào Kokoro load thành công.
+//
+// activeEngine chỉ được set SAU KHI biết chắc engine đó init thành công —
+// tránh trường hợp gọi speak() vào 1 engine chưa sẵn sàng.
 package com.eleap.eleap.core.tts
 
 import android.content.Context
 import android.content.SharedPreferences
-import android.speech.tts.TextToSpeech
 import android.util.Log
-import java.util.Locale
 
 object TtsManager {
 
@@ -28,86 +40,93 @@ object TtsManager {
 
     private lateinit var prefs: SharedPreferences
 
-    private var tts: TextToSpeech? = null
-    private var isReady: Boolean = false
+    private var activeEngine: TtsEngine? = null
+    private var isInitializing = false
 
     // Tốc độ đọc hiện tại — đọc từ prefs khi init(), áp lại mỗi lần app mở
-    // lại (không cần người dùng chỉnh lại từ đầu mỗi phiên).
+    // lại, và áp lại cho engine MỚI nếu sau này engine active bị đổi (hiện
+    // tại chưa có UI đổi engine giữa chừng, nhưng giữ logic này để an toàn).
     private var currentRate: Float = DEFAULT_RATE
 
-    // Hàng đợi 1 phần tử: nếu speak() được gọi TRƯỚC khi engine init xong
-    // (hiếm, chỉ xảy ra ở vài trăm ms đầu tiên sau init()), giữ lại text
-    // cuối cùng để nói ngay khi sẵn sàng — không cần người dùng bấm lại.
+    // Hàng đợi 1 phần tử: nếu speak() được gọi TRƯỚC khi engine nào đó init
+    // xong (cả Kokoro lẫn fallback Android đều có thể mất vài trăm ms tới
+    // vài giây với Kokoro do phải copy asset + load model lần đầu).
     private var pendingText: String? = null
 
-    // Gọi 1 lần duy nhất, ở MainActivity.onCreate() — giống cách
-    // CurrentUser.init(context)/SyncCursor.init(context) đang làm.
+    // Gọi 1 lần duy nhất, ở MainActivity.onCreate().
     fun init(context: Context) {
-        if (tts != null) {
-            Log.d(TAG, "init: đã init từ trước, bỏ qua")
+        if (activeEngine != null || isInitializing) {
+            Log.d(TAG, "init: đã init hoặc đang init, bỏ qua")
             return
         }
+        isInitializing = true
 
         prefs = context.applicationContext
             .getSharedPreferences(PREFS_NAME, Context.MODE_PRIVATE)
         currentRate = prefs.getFloat(KEY_RATE, DEFAULT_RATE)
 
-        tts = TextToSpeech(context.applicationContext) { status ->
-            if (status == TextToSpeech.SUCCESS) {
-                val result = tts?.setLanguage(Locale.US)
-                isReady = result != TextToSpeech.LANG_MISSING_DATA &&
-                        result != TextToSpeech.LANG_NOT_SUPPORTED
-                Log.d(TAG, "init: engine sẵn sàng, isReady=$isReady")
-
-                if (isReady) {
-                    // Áp lại tốc độ đã lưu từ lần trước — PHẢI làm sau khi
-                    // engine sẵn sàng, setSpeechRate() gọi trước đó sẽ vô nghĩa.
-                    tts?.setSpeechRate(currentRate)
-
-                    pendingText?.let { text ->
-                        pendingText = null
-                        speak(text)
+        val kokoro = KokoroTtsEngine()
+        kokoro.init(context) { kokoroReady ->
+            if (kokoroReady) {
+                Log.d(TAG, "init: dùng KokoroTtsEngine")
+                activateEngine(kokoro)
+            } else {
+                Log.w(TAG, "init: Kokoro init thất bại, fallback sang AndroidTtsEngine")
+                val android = AndroidTtsEngine()
+                android.init(context) { androidReady ->
+                    if (androidReady) {
+                        Log.d(TAG, "init: dùng AndroidTtsEngine (fallback)")
+                        activateEngine(android)
+                    } else {
+                        // Cả 2 engine đều lỗi — hiếm khi xảy ra (AndroidTtsEngine
+                        // hầu như luôn init được vì là engine hệ thống), nhưng
+                        // vẫn xử lý để không crash: giữ isInitializing = false,
+                        // speak() sau này sẽ tự no-op vì activeEngine vẫn null.
+                        Log.e(TAG, "init: cả Kokoro lẫn Android TTS đều lỗi")
+                        isInitializing = false
                     }
                 }
-            } else {
-                isReady = false
-                Log.e(TAG, "init: khởi tạo TextToSpeech thất bại, status=$status")
             }
         }
     }
 
-    // Nói 1 câu — luôn NGẮT câu đang đọc dở (QUEUE_FLUSH) để tránh chồng
-    // âm thanh khi người dùng bấm/chuyển từ liên tiếp nhanh.
-    fun speak(text: String) {
-        if (text.isBlank()) return
+    private fun activateEngine(engine: TtsEngine) {
+        engine.setSpeechRate(currentRate)
+        activeEngine = engine
+        isInitializing = false
 
-        val engine = tts
-        if (engine == null || !isReady) {
-            // Engine chưa sẵn sàng — lưu lại, init() sẽ tự nói khi xong.
-            pendingText = text
-            Log.d(TAG, "speak: engine chưa sẵn sàng, lưu tạm: \"$text\"")
-            return
-        }
-
-        val utteranceId = "eleap_tts_${System.currentTimeMillis()}"
-        val result = engine.speak(text, TextToSpeech.QUEUE_FLUSH, null, utteranceId)
-        if (result == TextToSpeech.ERROR) {
-            Log.e(TAG, "speak: lỗi khi phát \"$text\"")
+        pendingText?.let { text ->
+            pendingText = null
+            speak(text)
         }
     }
 
+    // Nói 1 câu — luôn NGẮT câu đang đọc dở, uỷ quyền thẳng xuống engine
+    // đang active.
+    fun speak(text: String) {
+        if (text.isBlank()) return
+
+        val engine = activeEngine
+        if (engine == null || !engine.isReady()) {
+            pendingText = text
+            Log.d(TAG, "speak: chưa có engine sẵn sàng, lưu tạm: \"$text\"")
+            return
+        }
+        engine.speak(text)
+    }
+
     fun stop() {
-        tts?.stop()
+        activeEngine?.stop()
     }
 
     // ── Đổi tốc độ đọc — 1.0 = bình thường, <1.0 chậm hơn, >1.0 nhanh hơn.
     // Clamp về [MIN_RATE, MAX_RATE] để tránh giá trị quá nhỏ/lớn làm giọng
-    // đọc vô nghĩa (Android không tự chặn giá trị bất hợp lý). Lưu ngay vào
-    // SharedPreferences để giữ nguyên lựa chọn qua lần mở app sau.
+    // đọc vô nghĩa. Lưu ngay vào SharedPreferences để giữ nguyên lựa chọn
+    // qua lần mở app sau.
     fun setSpeechRate(rate: Float) {
         val clamped = rate.coerceIn(MIN_RATE, MAX_RATE)
         currentRate = clamped
-        tts?.setSpeechRate(clamped)
+        activeEngine?.setSpeechRate(clamped)
         if (::prefs.isInitialized) {
             prefs.edit().putFloat(KEY_RATE, clamped).apply()
         }
@@ -118,10 +137,9 @@ object TtsManager {
 
     // Gọi ở MainActivity.onDestroy() — giải phóng engine, tránh rò rỉ.
     fun shutdown() {
-        tts?.stop()
-        tts?.shutdown()
-        tts = null
-        isReady = false
+        activeEngine?.shutdown()
+        activeEngine = null
+        isInitializing = false
         pendingText = null
         Log.d(TAG, "shutdown: đã giải phóng engine")
     }
