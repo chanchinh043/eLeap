@@ -15,6 +15,7 @@ import androidx.compose.ui.layout.onGloballyPositioned
 import androidx.compose.ui.platform.LocalContext
 import androidx.compose.ui.unit.dp
 import androidx.lifecycle.viewmodel.compose.viewModel
+import com.eleap.eleap.core.tts.TtsManager
 import com.eleap.eleap.feature.reading.ui.PhrasePopup
 import com.eleap.eleap.feature.reading.ui.PopupAnchorInfo
 import com.eleap.eleap.feature.reading.ui.SentencePopup
@@ -40,6 +41,18 @@ fun ReadingScreen(
 
     val prefs = remember { context.getSharedPreferences("reading_settings", android.content.Context.MODE_PRIVATE) }
     var fontSize by remember { mutableStateOf(prefs.getInt("font_size", 16)) }
+
+    // ── Tốc độ đọc (TTS) — đọc giá trị đã lưu từ TtsManager (persist qua
+    // SharedPreferences riêng của nó, xem TtsManager.kt), không dùng chung
+    // `prefs` (reading_settings) vì tốc độ đọc là thuộc tính CHUNG toàn app,
+    // không riêng cho reading. ────────────────────────────────────────────
+    var speechRate by remember { mutableStateOf(TtsManager.getSpeechRate()) }
+
+    // ── Toggle hiển thị: false = đang hiện cụm chỉnh cỡ chữ (-/16/+),
+    // true = đang hiện cụm chỉnh tốc độ đọc (-/1.0x/+). Bấm nút "R" để
+    // chuyển qua lại — không lưu trạng thái này (luôn về lại font size mỗi
+    // khi mở lại màn hình, đúng hành vi mặc định quen thuộc). ─────────────
+    var showSpeedControl by remember { mutableStateOf(false) }
 
     // ── Chế độ dịch khi kéo bôi đen ≥2 từ: "S" = dịch câu, "P" = dịch cụm từ ──
     var translateMode by remember { mutableStateOf(prefs.getString("translate_mode", "S") ?: "S") }
@@ -140,33 +153,80 @@ fun ReadingScreen(
                             style = MaterialTheme.typography.titleMedium
                         )
                     }
-                    IconButton(
-                        onClick = {
-                            if (fontSize > 10) {
-                                fontSize--
-                                prefs.edit().putInt("font_size", fontSize).apply()
-                            }
-                        },
-                        enabled = fontSize > 10
+                    // ── Toggle chuyển đổi cụm điều khiển bên cạnh: cỡ chữ ↔ tốc độ đọc.
+                    //    Bấm lại lần nữa quay về cỡ chữ — chỉ đổi hiển thị, không
+                    //    lưu trạng thái này (luôn mặc định về cỡ chữ khi mở lại màn).
+                    TextButton(
+                        onClick = { showSpeedControl = !showSpeedControl }
                     ) {
-                        Text(text = "−", style = MaterialTheme.typography.titleLarge)
+                        Text(
+                            text = "R",
+                            style = MaterialTheme.typography.titleMedium,
+                            color = if (showSpeedControl)
+                                MaterialTheme.colorScheme.primary
+                            else
+                                MaterialTheme.colorScheme.onSurface
+                        )
                     }
-                    Text(
-                        text = "$fontSize",
-                        style = MaterialTheme.typography.bodyMedium,
-                        modifier = Modifier.widthIn(min = 28.dp),
-                        textAlign = androidx.compose.ui.text.style.TextAlign.Center
-                    )
-                    IconButton(
-                        onClick = {
-                            if (fontSize < 30) {
-                                fontSize++
-                                prefs.edit().putInt("font_size", fontSize).apply()
-                            }
-                        },
-                        enabled = fontSize < 30
-                    ) {
-                        Text(text = "+", style = MaterialTheme.typography.titleLarge)
+                    if (showSpeedControl) {
+                        // ── Cụm chỉnh tốc độ đọc (-/1.0x/+), bước 0.1, giới hạn
+                        // theo TtsManager.MIN_RATE..MAX_RATE — thay thế đúng chỗ
+                        // của cụm cỡ chữ khi đang ở chế độ này.
+                        IconButton(
+                            onClick = {
+                                val next = (speechRate - 0.1f).coerceAtLeast(TtsManager.MIN_RATE)
+                                speechRate = next
+                                TtsManager.setSpeechRate(next)
+                            },
+                            enabled = speechRate > TtsManager.MIN_RATE
+                        ) {
+                            Text(text = "−", style = MaterialTheme.typography.titleLarge)
+                        }
+                        Text(
+                            text = String.format("%.1fx", speechRate),
+                            style = MaterialTheme.typography.bodyMedium,
+                            modifier = Modifier.widthIn(min = 40.dp),
+                            textAlign = androidx.compose.ui.text.style.TextAlign.Center
+                        )
+                        IconButton(
+                            onClick = {
+                                val next = (speechRate + 0.1f).coerceAtMost(TtsManager.MAX_RATE)
+                                speechRate = next
+                                TtsManager.setSpeechRate(next)
+                            },
+                            enabled = speechRate < TtsManager.MAX_RATE
+                        ) {
+                            Text(text = "+", style = MaterialTheme.typography.titleLarge)
+                        }
+                    } else {
+                        IconButton(
+                            onClick = {
+                                if (fontSize > 10) {
+                                    fontSize--
+                                    prefs.edit().putInt("font_size", fontSize).apply()
+                                }
+                            },
+                            enabled = fontSize > 10
+                        ) {
+                            Text(text = "−", style = MaterialTheme.typography.titleLarge)
+                        }
+                        Text(
+                            text = "$fontSize",
+                            style = MaterialTheme.typography.bodyMedium,
+                            modifier = Modifier.widthIn(min = 28.dp),
+                            textAlign = androidx.compose.ui.text.style.TextAlign.Center
+                        )
+                        IconButton(
+                            onClick = {
+                                if (fontSize < 30) {
+                                    fontSize++
+                                    prefs.edit().putInt("font_size", fontSize).apply()
+                                }
+                            },
+                            enabled = fontSize < 30
+                        ) {
+                            Text(text = "+", style = MaterialTheme.typography.titleLarge)
+                        }
                     }
                 }
             )

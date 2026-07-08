@@ -5,6 +5,7 @@ import androidx.compose.foundation.rememberScrollState
 import androidx.compose.foundation.verticalScroll
 import androidx.compose.material3.*
 import androidx.compose.runtime.Composable
+import androidx.compose.runtime.LaunchedEffect
 import androidx.compose.runtime.remember
 import androidx.compose.ui.Alignment
 import androidx.compose.ui.Modifier
@@ -14,6 +15,7 @@ import androidx.compose.ui.text.font.FontStyle
 import androidx.compose.ui.unit.dp
 import androidx.compose.ui.window.Popup
 import androidx.compose.ui.window.PopupProperties
+import com.eleap.eleap.core.tts.TtsManager
 import com.eleap.eleap.feature.reading.data.DictEntry
 import com.eleap.eleap.feature.reading.data.SentencePhrase
 import com.eleap.eleap.feature.reading.data.SentenceWord
@@ -32,6 +34,14 @@ fun WordPopup(
 ) {
     val density = LocalDensity.current
     val spacingPx = with(density) { 8.dp.toPx() }
+
+    // ── Tự động đọc từ 1 lần khi popup hiện lên cho đúng word này ───────────
+    // key = word.wordId → chỉ nói lại khi người dùng chuyển sang từ KHÁC
+    // (bấm từ khác trong khi popup đang mở), không nói lặp lại nếu Composable
+    // này chỉ recompose vì lý do khác (vd toggle "Xem thêm" ở phần từ điển).
+    LaunchedEffect(word.wordId) {
+        word.textEn?.let { TtsManager.speak(it) }
+    }
 
     val positionProvider = remember(anchorInfo, viewportRect) {
         if (anchorInfo != null && viewportRect != null) {

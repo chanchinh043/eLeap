@@ -3,6 +3,7 @@ import com.eleap.eleap.core.sync.SyncCursor
 import com.eleap.eleap.core.sync.SyncEngine
 import com.eleap.eleap.core.sync.SyncRealtime
 import com.eleap.eleap.core.sync.SyncScheduler
+import com.eleap.eleap.core.tts.TtsManager
 import com.eleap.eleap.feature.myreading.data.MyReadingRepository
 import com.eleap.eleap.feature.myreading.sync.MyReadingSyncCursor
 import com.eleap.eleap.feature.myreading.sync.MyReadingSyncEngine
@@ -75,6 +76,7 @@ class MainActivity : ComponentActivity() {
         MyReadingSyncCursor.init(this)
         MyReadingSyncEngine.init(this)
         MyReadingSyncRealtime.init(this)
+        TtsManager.init(this)
 
         // Đăng ký 2 lịch chạy nền (push mỗi 3h, pull mỗi 5h) — dùng
         // enqueueUniquePeriodicWork với policy KEEP bên trong nên gọi lại
@@ -116,6 +118,7 @@ class MainActivity : ComponentActivity() {
         // Activity đã chết trong ProcessLifecycleOwner (vốn sống cùng cả
         // vòng đời process, lâu hơn nhiều so với 1 Activity).
         ProcessLifecycleOwner.get().lifecycle.removeObserver(realtimeLifecycleObserver)
+        TtsManager.shutdown()
     }
 
     // Trường hợp app ĐÃ chạy sẵn (singleTop) — trình duyệt redirect về sẽ

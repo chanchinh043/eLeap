@@ -7,6 +7,7 @@ import androidx.compose.foundation.rememberScrollState
 import androidx.compose.foundation.verticalScroll
 import androidx.compose.material3.*
 import androidx.compose.runtime.Composable
+import androidx.compose.runtime.LaunchedEffect
 import androidx.compose.runtime.remember
 import androidx.compose.ui.Alignment
 import androidx.compose.ui.Modifier
@@ -22,6 +23,7 @@ import androidx.compose.ui.unit.dp
 import androidx.compose.ui.window.Popup
 import androidx.compose.ui.window.PopupPositionProvider
 import androidx.compose.ui.window.PopupProperties
+import com.eleap.eleap.core.tts.TtsManager
 import com.eleap.eleap.feature.vocab.data.UserVocabularyEntry
 import com.eleap.eleap.feature.vocab.data.VocabDictEntry
 
@@ -88,6 +90,13 @@ fun VocabPopup(
 ) {
     val density: Density = LocalDensity.current
     val spacingPx = with(density) { 8.dp.toPx() }
+
+    // ── Tự động đọc từ 1 lần khi popup hiện lên cho đúng entry này ───────────
+    // key = entry.id → chỉ nói lại khi người dùng chọn sang từ KHÁC, không
+    // lặp lại nếu Composable chỉ recompose vì lý do khác (vd toggle "Xem thêm").
+    LaunchedEffect(entry.id) {
+        entry.textEn?.let { TtsManager.speak(it) }
+    }
 
     val positionProvider = remember(anchorRect, spacingPx) {
         if (anchorRect != null) {

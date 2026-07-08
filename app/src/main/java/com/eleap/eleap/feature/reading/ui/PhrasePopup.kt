@@ -5,6 +5,7 @@ import androidx.compose.foundation.rememberScrollState
 import androidx.compose.foundation.verticalScroll
 import androidx.compose.material3.*
 import androidx.compose.runtime.Composable
+import androidx.compose.runtime.LaunchedEffect
 import androidx.compose.runtime.remember
 import androidx.compose.ui.Alignment
 import androidx.compose.ui.Modifier
@@ -13,6 +14,7 @@ import androidx.compose.ui.platform.LocalDensity
 import androidx.compose.ui.unit.dp
 import androidx.compose.ui.window.Popup
 import androidx.compose.ui.window.PopupProperties
+import com.eleap.eleap.core.tts.TtsManager
 import com.eleap.eleap.feature.reading.data.SentencePhrase
 
 /**
@@ -28,6 +30,13 @@ fun PhrasePopup(
 ) {
     val density = LocalDensity.current
     val spacingPx = with(density) { 8.dp.toPx() }
+
+    // ── Tự động đọc cụm từ 1 lần khi popup hiện lên cho đúng phrase này ──────
+    // key = phrase.phraseId → chỉ nói lại khi người dùng chọn sang cụm từ
+    // KHÁC, không lặp lại nếu Composable chỉ recompose vì lý do khác.
+    LaunchedEffect(phrase.phraseId) {
+        phrase.textEn?.let { TtsManager.speak(it) }
+    }
 
     // ── Vị trí popup: ưu tiên TRÊN cụm từ được chọn; không đủ chỗ thì lật XUỐNG,
     //    và khi xuống thì chừa thêm 1 dòng để không che chữ sắp đọc ──────────
