@@ -505,8 +505,13 @@ class MyReadingDao(private val db: SQLiteDatabase) {
      */
     fun getPendingReadings(userId: String): List<Reading> {
         val list = mutableListOf<Reading>()
+        // ⚠️ Điều kiện "sẵn sàng push" (chặn bài pending_create chưa qua AI)
+        // định nghĩa DUY NHẤT ở MyReadingPushReadiness.SQL_CONDITION — xem
+        // giải thích lý do ở MyReadingSchema.kt. Muốn đổi quy tắc thì sửa Ở
+        // ĐÓ, không sửa trực tiếp chuỗi SQL ở đây.
         db.rawQuery(
-            "SELECT * FROM readings WHERE user_id = ? AND sync_status != ? ORDER BY updated_at ASC",
+            "SELECT * FROM readings WHERE user_id = ? AND sync_status != ? " +
+                    "AND (${MyReadingPushReadiness.SQL_CONDITION}) ORDER BY updated_at ASC",
             arrayOf(userId, MyReadingSyncStatus.SYNCED)
         ).use { c ->
             while (c.moveToNext()) list.add(cursorToReading(c))

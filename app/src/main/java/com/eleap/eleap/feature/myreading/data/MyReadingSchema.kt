@@ -53,6 +53,59 @@ object MyReadingSyncStatus {
 }
 
 // ─────────────────────────────────────────────────────────────────────────────
+// 0.5. Điều kiện "sẵn sàng push" cho bài MỚI TẠO (pending_create) — nơi DUY
+// NHẤT định nghĩa quy tắc này, để sau này muốn đổi chỉ cần sửa Ở ĐÂY.
+//
+// LÝ DO CÓ OBJECT NÀY: watchdog AI (MyReadingAiProcessor.processUnhandledMyReadings
+// → MyReadingDao.getPendingAiReadings()) chạy ở MỌI thiết bị đang đăng nhập
+// cùng tài khoản, quét toàn bộ bài is_ai_processed = 0 mà nó THẤY ĐƯỢC ở
+// local. Nếu 1 bài vừa tạo (chưa qua AI) bị push lên server ngay rồi các
+// thiết bị khác pull/realtime về sớm, thiết bị nào cũng sẽ thấy
+// is_ai_processed = 0 và tự chạy AI xử lý — TRÙNG LẶP, tốn token vô ích
+// (thậm chí có thể ghi đè lẫn nhau).
+//
+// GIẢI PHÁP: KHÔNG cho bài pending_create được push lên server cho tới khi
+// AI xử lý xong (is_ai_processed = 1) — xem chỗ dùng ở
+// MyReadingDao.getPendingReadings(). Nhờ vậy các thiết bị khác CHỈ pull được
+// bài này SAU KHI đã có đủ nội dung, is_ai_processed lúc đó luôn = 1 sẵn →
+// watchdog AI ở các thiết bị khác không bao giờ thấy bài này ở trạng thái
+// is_ai_processed = 0 nữa → không xử lý trùng.
+//
+// pending_update/pending_delete KHÔNG bị chặn bởi điều kiện này — chúng chỉ
+// phát sinh sau khi bài đã từng SYNCED (tức đã qua AI ít nhất 1 lần), nên
+// is_ai_processed lúc đó chắc chắn đã = 1.
+//
+// ⚠️ ĐÁNH ĐỔI cần biết: nếu AI xử lý bài đó liên tục lỗi (xem cooldown ở
+// MyReadingAiProcessor.kt, tối đa lùi 10 phút/lần, không có giới hạn số lần
+// thử), bài đó sẽ KHÔNG được đẩy lên server cho tới khi AI thành công — tức
+// là bài chỉ tồn tại trên đúng 1 thiết bị (thiết bị tạo) cho tới lúc đó,
+// KHÔNG có ở server để làm backup. Chấp nhận được vì 1 bài chưa dịch coi như
+// chưa dùng được, nhưng nếu sau này muốn có giới hạn "dù AI lỗi vẫn cứ đẩy
+// lên sau X lần/X giờ để không mất bài", sửa hàm isReadyToPush() bên dưới.
+// ─────────────────────────────────────────────────────────────────────────────
+
+object MyReadingPushReadiness {
+
+    /**
+     * Mệnh đề SQL dùng trực tiếp trong WHERE của
+     * MyReadingDao.getPendingReadings() — TRUE nghĩa là bài đó được phép có
+     * mặt trong danh sách push. Giữ đúng 1 định nghĩa, không lặp lại logic
+     * này bằng tay ở nơi khác.
+     */
+    const val SQL_CONDITION =
+        "NOT (sync_status = '${MyReadingSyncStatus.PENDING_CREATE}' AND is_ai_processed = 0)"
+
+    /**
+     * Bản Kotlin tương đương SQL_CONDITION ở trên — dùng khi cần kiểm tra lại
+     * ở tầng ứng dụng (vd trước khi tự tay gọi enqueueImmediatePush()) mà
+     * không muốn/không tiện query DB. PHẢI giữ đồng bộ ý nghĩa với
+     * SQL_CONDITION nếu sửa 1 trong 2 bên.
+     */
+    fun isReadyToPush(syncStatus: String, isAiProcessed: Boolean): Boolean =
+        !(syncStatus == MyReadingSyncStatus.PENDING_CREATE && !isAiProcessed)
+}
+
+// ─────────────────────────────────────────────────────────────────────────────
 // 1. UUID v7 — time-ordered UUID (RFC 9562 draft), dùng làm primary key
 // ─────────────────────────────────────────────────────────────────────────────
 
