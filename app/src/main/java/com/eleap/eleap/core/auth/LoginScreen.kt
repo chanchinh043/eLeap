@@ -15,6 +15,8 @@ import com.eleap.eleap.core.auth.CurrentUser
 import com.eleap.eleap.core.auth.SupabaseClientProvider
 import com.eleap.eleap.core.sync.SyncCursor
 import com.eleap.eleap.core.sync.SyncScheduler
+import com.eleap.eleap.feature.myreading.sync.MyReadingSyncCursor
+import com.eleap.eleap.feature.myreading.sync.MyReadingSyncScheduler
 import kotlinx.coroutines.launch
 
 // Màn đăng nhập — có nút "Đăng nhập với Google" và (khi đã đăng nhập) nút
@@ -124,8 +126,10 @@ fun LoginScreen(
                                 // syncNow() sau đăng nhập (MainActivity) sẽ tự chạy
                                 // full pull vì chưa có last_full_pull_at.
                                 SyncScheduler.cancelAll(context)
+                                MyReadingSyncScheduler.cancelAll(context)
                                 if (loggedOutUserId != CurrentUser.GUEST_ID) {
                                     SyncCursor.clear(loggedOutUserId)
+                                    MyReadingSyncCursor.clear(loggedOutUserId)
                                 }
                             } catch (e: Exception) {
                                 // signOut thất bại (vd mất mạng) — huỷ cờ logout,

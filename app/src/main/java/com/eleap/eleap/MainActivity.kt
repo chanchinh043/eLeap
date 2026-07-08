@@ -3,6 +3,11 @@ import com.eleap.eleap.core.sync.SyncCursor
 import com.eleap.eleap.core.sync.SyncEngine
 import com.eleap.eleap.core.sync.SyncRealtime
 import com.eleap.eleap.core.sync.SyncScheduler
+import com.eleap.eleap.feature.myreading.data.MyReadingRepository
+import com.eleap.eleap.feature.myreading.sync.MyReadingSyncCursor
+import com.eleap.eleap.feature.myreading.sync.MyReadingSyncEngine
+import com.eleap.eleap.feature.myreading.sync.MyReadingSyncRealtime
+import com.eleap.eleap.feature.myreading.sync.MyReadingSyncScheduler
 
 import android.content.Intent
 import android.os.Bundle
@@ -47,10 +52,12 @@ class MainActivity : ComponentActivity() {
                 val userId = CurrentUser.userId.value
                 if (userId != CurrentUser.GUEST_ID) {
                     SyncRealtime.startListening(userId)
+                    MyReadingSyncRealtime.startListening(userId)
                 }
             }
             Lifecycle.Event.ON_STOP -> {
                 SyncRealtime.stopListening()
+                MyReadingSyncRealtime.stopListening()
             }
             else -> { /* ON_CREATE/ON_RESUME/ON_PAUSE/ON_DESTROY — không cần xử lý */ }
         }
@@ -65,6 +72,9 @@ class MainActivity : ComponentActivity() {
         SyncCursor.init(this)
         SyncEngine.init(this)
         SyncRealtime.init(this)
+        MyReadingSyncCursor.init(this)
+        MyReadingSyncEngine.init(this)
+        MyReadingSyncRealtime.init(this)
 
         // Đăng ký 2 lịch chạy nền (push mỗi 3h, pull mỗi 5h) — dùng
         // enqueueUniquePeriodicWork với policy KEEP bên trong nên gọi lại
@@ -73,6 +83,7 @@ class MainActivity : ComponentActivity() {
         // được WorkManager biết tới — chỉ có enqueueImmediatePush() (gọi từ
         // SaveWordButton) là chạy thật.
         SyncScheduler.schedulePeriodicWork(this)
+        MyReadingSyncScheduler.schedulePeriodicWork(this)
 
         // Đăng ký lifecycle observer TRƯỚC khi xử lý deep link/session — để
         // không bỏ lỡ ON_START đầu tiên của app (ProcessLifecycleOwner phát
@@ -201,6 +212,49 @@ class MainActivity : ComponentActivity() {
                             ReadingViewModel.Factory(this@MainActivity)
                                 .create(ReadingViewModel::class.java)
                                 .refreshSavedWordIds()
+
+                            // ── Đồng bộ MyReading (bài đọc tự tạo) ───────────
+                            // a. Migrate dữ liệu MyReading của guest (nếu có,
+                            // vd user vừa tạo vài bài đọc lúc chưa đăng nhập)
+                            // sang đúng userId thật vừa đăng nhập — hàm này đã
+                            // có sẵn từ trước nhưng chưa từng được gọi ở đâu.
+                            // Gọi TRƯỚC khi sync để các bài mới migrate cũng
+                            // được đẩy lên server trong cùng lượt syncNow() bên
+                            // dưới, không phải đợi chu kỳ push 3h kế tiếp.
+                            val migratedCount =
+                                MyReadingRepository.getInstance(this@MainActivity)
+                                    .migrateGuestDataTo(supabaseUserId)
+                            Log.d(
+                                "MainActivity",
+                                "Đã migrate $migratedCount bài MyReading sang userId=$supabaseUserId"
+                            )
+
+                            // b. Bật lại lịch nền cho bộ MyReading — cùng lý do
+                            // như SyncScheduler.schedulePeriodicWork() ở trên
+                            // (đề phòng đã bị cancelAll() lúc đăng xuất trước
+                            // đó trong cùng session app).
+                            MyReadingSyncScheduler.schedulePeriodicWork(this@MainActivity)
+
+                            // c. Sync ngay lập tức, tương tự SyncEngine.syncNow()
+                            // của vocab ở trên — không đợi tới chu kỳ pull 5h.
+                            val myReadingOutcome = MyReadingSyncEngine.syncNow(supabaseUserId)
+                            if (myReadingOutcome.error != null) {
+                                Log.e(
+                                    "MainActivity",
+                                    "Sync MyReading sau đăng nhập lỗi: ${myReadingOutcome.error}"
+                                )
+                            } else {
+                                Log.d(
+                                    "MainActivity",
+                                    "Sync MyReading sau đăng nhập: gửi ${myReadingOutcome.pushedCount}, " +
+                                            "nhận ${myReadingOutcome.pulledCount}, full=${myReadingOutcome.ranFullPull}"
+                                )
+                            }
+
+                            // d. Bắt đầu lắng nghe Realtime cho bộ MyReading —
+                            // gọi SAU syncNow() cùng lý do như SyncRealtime ở
+                            // trên (đảm bảo full/delta pull xong trước).
+                            MyReadingSyncRealtime.startListening(supabaseUserId)
                         }
                     }
                     is SessionStatus.NotAuthenticated -> {
@@ -209,6 +263,7 @@ class MainActivity : ComponentActivity() {
                         // lắng nghe — stopListening() tự an toàn khi gọi lúc
                         // không có gì đang chạy (channel null → không làm gì).
                         SyncRealtime.stopListening()
+                        MyReadingSyncRealtime.stopListening()
                     }
                     else -> { /* RefreshFailure / Initializing — chưa xử lý */ }
                 }

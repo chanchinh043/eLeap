@@ -16,6 +16,8 @@ import com.eleap.eleap.core.sync.SyncEngine
 import com.eleap.eleap.core.sync.SyncScheduler
 import com.eleap.eleap.feature.auth.LoginScreen
 import com.eleap.eleap.feature.myreading.data.MyReadingRepository
+import com.eleap.eleap.feature.myreading.sync.MyReadingSyncEngine
+import com.eleap.eleap.feature.myreading.sync.MyReadingSyncScheduler
 import com.eleap.eleap.feature.reading.ReadingListScreen
 import com.eleap.eleap.feature.reading.ReadingScreen
 import com.eleap.eleap.feature.reading.ReadingViewModel
@@ -29,6 +31,7 @@ import com.eleap.eleap.feature.vocab.VocabViewModel
 import com.eleap.eleap.feature.vocab.VocabPopup
 import com.eleap.eleap.feature.vocab.data.UserVocabularyEntry
 import com.eleap.eleap.ui.FloatingVocabButton
+import kotlinx.coroutines.async
 import kotlinx.coroutines.launch
 
 private enum class Screen {
@@ -167,11 +170,23 @@ fun MainScreen() {
         isSyncing = true
         syncMessage = null
         scope.launch {
-            val result = SyncEngine.syncNow(currentUserId)
-            syncMessage = when {
-                result.error != null -> "Lỗi đồng bộ: ${result.error}"
-                else -> "Đã đồng bộ: gửi ${result.pushedCount}, nhận ${result.pulledCount}" +
-                        if (result.ranFullPull) " (full pull)" else ""
+            // Chạy song song cả 2 bộ đồng bộ — vocab (user_vocabulary) và
+            // MyReading (bài đọc tự tạo). Trước đây chỗ này chỉ gọi
+            // SyncEngine.syncNow() nên bấm "Đồng bộ" chỉ đẩy/kéo vocab,
+            // MyReading bị bỏ sót hoàn toàn.
+            val vocabDeferred = async { SyncEngine.syncNow(currentUserId) }
+            val myReadingDeferred = async { MyReadingSyncEngine.syncNow(currentUserId) }
+            val result = vocabDeferred.await()
+            val myReadingResult = myReadingDeferred.await()
+
+            val errors = listOfNotNull(result.error, myReadingResult.error)
+            syncMessage = if (errors.isNotEmpty()) {
+                "Lỗi đồng bộ: ${errors.joinToString("; ")}"
+            } else {
+                val totalPushed = result.pushedCount + myReadingResult.pushedCount
+                val totalPulled = result.pulledCount + myReadingResult.pulledCount
+                val ranFull = result.ranFullPull || myReadingResult.ranFullPull
+                "Đã đồng bộ: gửi $totalPushed, nhận $totalPulled" + if (ranFull) " (full pull)" else ""
             }
             isSyncing = false
         }
@@ -212,6 +227,11 @@ fun MainScreen() {
                             // gọi thẳng logic sync ở đây — MainScreen là UI,
                             // không phải nơi quyết định cách push chạy thế nào.
                             SyncScheduler.enqueueImmediatePush(context)
+                            // Bài MyReading vừa migrate cũng đang PENDING_CREATE
+                            // dưới user thật — đẩy lên NGAY, cùng lý do như
+                            // SyncScheduler ở trên (trước đây thiếu dòng này nên
+                            // MyReading migrate xong vẫn phải đợi tới chu kỳ 3h).
+                            MyReadingSyncScheduler.enqueueImmediatePush(context)
 
                             isMigrating = false
                             CurrentUser.clearPendingMigration()

@@ -20,7 +20,40 @@ import java.util.TimeZone
 private const val TAG = "MyReadingRepository"
 
 // ─────────────────────────────────────────────────────────────────────────────
-// 0. UUID v7 — time-ordered UUID (RFC 9562 draft), dùng làm primary key
+// 0. Sync status — 4 trạng thái, dùng cho bảng readings (myreading.db) khi
+//    đồng bộ với bảng my_readings trên Supabase. Ý nghĩa từng trạng thái
+//    GIỐNG HỆT object SyncStatus bên feature/vocab/data/VocabDatabase.kt —
+//    khai báo riêng ở đây (không import chéo) để feature/myreading không
+//    phải phụ thuộc vào feature/vocab.
+//
+//    PENDING_CREATE → dòng CHƯA từng lên server. Nếu bị xoá lúc còn ở trạng
+//                      thái này thì HARD DELETE ngay tại local, không cần
+//                      báo server (vì server không hề biết dòng này tồn tại).
+//    PENDING_UPDATE → dòng ĐÃ có trên server (từng SYNCED), vừa bị sửa ở
+//                      local (title_vi, phrases/words do AI xử lý xong,...)
+//                      và cần đẩy (upsert) lại lên server.
+//    PENDING_DELETE → dòng đã có trên server, user xoá ở local → cần soft
+//                      delete (deleted_at) rồi chờ sync gửi cập nhật lên
+//                      server (tombstone).
+//    SYNCED         → dòng đã đồng bộ xong, không có thay đổi cục bộ nào
+//                      chưa gửi lên server.
+//
+//    QUY TẮC CHUYỂN TRẠNG THÁI (không được hạ cấp):
+//    - Đang PENDING_CREATE mà bị sửa (vd AI ghi xong phrase/word) → GIỮ
+//      NGUYÊN PENDING_CREATE (server chưa có gì để "update").
+//    - Đang PENDING_DELETE thì không được ghi đè trở lại.
+//    - Chỉ khi đang SYNCED mới hạ xuống PENDING_UPDATE khi có sửa đổi.
+// ─────────────────────────────────────────────────────────────────────────────
+
+object MyReadingSyncStatus {
+    const val PENDING_CREATE = "pending_create"
+    const val PENDING_UPDATE = "pending_update"
+    const val PENDING_DELETE = "pending_delete"
+    const val SYNCED         = "synced"
+}
+
+// ─────────────────────────────────────────────────────────────────────────────
+// 1. UUID v7 — time-ordered UUID (RFC 9562 draft), dùng làm primary key
 // ─────────────────────────────────────────────────────────────────────────────
 
 object UuidV7 {
@@ -56,7 +89,7 @@ fun nowIso8601(): String {
 }
 
 // ─────────────────────────────────────────────────────────────────────────────
-// 1. Tách nội dung thành câu / từ
+// 2. Tách nội dung thành câu / từ
 // ─────────────────────────────────────────────────────────────────────────────
 
 data class MyParsedSentence(
@@ -103,11 +136,19 @@ fun splitMyWords(sentenceText: String): List<String> =
         .filter { it.isNotEmpty() }
 
 // ─────────────────────────────────────────────────────────────────────────────
-// 2. SQLiteOpenHelper — mở/tạo myreading.db, độc lập với readings.db và users.db
+// 3. SQLiteOpenHelper — mở/tạo myreading.db, độc lập với readings.db và users.db
+//
+//    DB_VERSION 2 → 3: thêm 2 cột sync metadata vào bảng readings —
+//    deleted_at (soft delete) và sync_status (4 trạng thái, xem
+//    MyReadingSyncStatus ở trên) — chuẩn bị cho việc đồng bộ bảng readings
+//    lên Supabase (bảng my_readings), đơn vị đồng bộ là CẢ 1 bài đọc.
+//
+//    ⚠️ Dự án CHƯA có người dùng thật nào ngoài kia, nên không cần migration
+//    bảo toàn dữ liệu phức tạp — dùng ALTER TABLE ADD COLUMN đơn giản là đủ.
 // ─────────────────────────────────────────────────────────────────────────────
 
 private const val DB_NAME    = "myreading.db"
-private const val DB_VERSION = 2
+private const val DB_VERSION = 3
 
 class MyReadingDbHelper(context: Context) :
     SQLiteOpenHelper(context.applicationContext, DB_NAME, null, DB_VERSION) {
@@ -121,15 +162,25 @@ class MyReadingDbHelper(context: Context) :
         db.execSQL(
             """
             CREATE TABLE readings (
+                -- Định danh
                 reading_id       TEXT PRIMARY KEY,
                 user_id          TEXT,
+
+                -- Nội dung
                 title_en         TEXT,
                 title_vi         TEXT,
                 level            TEXT,
                 topic            TEXT,
+
+                -- Trạng thái xử lý
                 is_ai_processed  INTEGER DEFAULT 0,
+
+                -- Sync metadata (đồng bộ với Supabase — bảng my_readings)
+                -- 4 trạng thái: pending_create / pending_update / pending_delete / synced
                 created_at       TEXT,
-                updated_at       TEXT
+                updated_at       TEXT,
+                deleted_at       TEXT,
+                sync_status      TEXT NOT NULL DEFAULT 'pending_create'
             )
             """.trimIndent()
         )
@@ -183,6 +234,8 @@ class MyReadingDbHelper(context: Context) :
         db.execSQL("CREATE INDEX idx_words_sentence_id ON sentence_words(sentence_id)")
         db.execSQL("CREATE INDEX idx_words_phrase_id ON sentence_words(phrase_id)")
 
+        createUpdatedAtTrigger(db)
+
         Log.d(TAG, "onCreate: đã tạo schema myreading.db (version $DB_VERSION)")
     }
 
@@ -192,5 +245,33 @@ class MyReadingDbHelper(context: Context) :
             db.execSQL("ALTER TABLE readings ADD COLUMN is_ai_processed INTEGER DEFAULT 0")
             Log.d(TAG, "onUpgrade $oldVersion→$newVersion: đã thêm cột user_id, is_ai_processed")
         }
+        if (oldVersion < 3) {
+            db.execSQL("ALTER TABLE readings ADD COLUMN deleted_at TEXT")
+            db.execSQL(
+                "ALTER TABLE readings ADD COLUMN sync_status TEXT NOT NULL DEFAULT 'pending_create'"
+            )
+            createUpdatedAtTrigger(db)
+            Log.d(TAG, "onUpgrade $oldVersion→$newVersion: đã thêm cột deleted_at, sync_status + trigger trg_myreading_updated_at")
+        }
+    }
+
+    // ── Trigger tự động cập nhật updated_at khi readings bị UPDATE mà
+    // updated_at không tự đổi trong chính câu UPDATE đó — copy đúng logic
+    // trg_vocab_updated_at bên VocabDatabase.kt, áp dụng cho bảng readings.
+    private fun createUpdatedAtTrigger(db: SQLiteDatabase) {
+        db.execSQL("DROP TRIGGER IF EXISTS trg_myreading_updated_at")
+        db.execSQL(
+            """
+            CREATE TRIGGER trg_myreading_updated_at
+            AFTER UPDATE ON readings
+            FOR EACH ROW
+            WHEN NEW.updated_at IS OLD.updated_at
+            BEGIN
+                UPDATE readings
+                SET updated_at = strftime('%Y-%m-%dT%H:%M:%fZ', 'now')
+                WHERE reading_id = NEW.reading_id;
+            END;
+            """.trimIndent()
+        )
     }
 }

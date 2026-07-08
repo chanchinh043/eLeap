@@ -9,6 +9,8 @@ import com.eleap.eleap.core.auth.CurrentUser
 import com.eleap.eleap.core.sync.SyncEngine
 import com.eleap.eleap.feature.myreading.data.MyReadingRepository
 import com.eleap.eleap.feature.myreading.data.processUnhandledMyReadings
+import com.eleap.eleap.feature.myreading.sync.MyReadingSyncEngine
+import com.eleap.eleap.feature.myreading.sync.MyReadingSyncScheduler
 import com.eleap.eleap.feature.reading.data.Reading
 import com.eleap.eleap.feature.reading.data.ReadingDao
 import com.eleap.eleap.feature.reading.data.ReadingDatabase
@@ -100,6 +102,22 @@ class ReadingViewModel(
                 }
         }
 
+        // Tự refresh danh sách readings (myReadings/systemReadings) khi
+        // MyReadingSyncEngine vừa push/pull xong VÀ thực sự có thay đổi (bấm
+        // nút Đồng bộ, MyReadingSyncPushWorker/MyReadingSyncPullWorker chạy
+        // nền, hoặc syncNow() sau khi đăng nhập ở MainActivity, hoặc
+        // MyReadingSyncRealtime vừa áp 1 sự kiện realtime) — để danh sách bài
+        // đọc tự cập nhật khi 1 thiết bị khác vừa tạo/sửa/xoá bài đọc và đồng
+        // bộ về, không cần rời màn rồi quay lại mới thấy. filter đúng userId
+        // đang active — cùng lý do như khối SyncEngine.dataChanged ở trên.
+        viewModelScope.launch {
+            MyReadingSyncEngine.dataChanged
+                .filter { changedUserId -> changedUserId == CurrentUser.userId.value }
+                .collect {
+                    loadReadings(forceRefresh = true)
+                }
+        }
+
         viewModelScope.launch {
             while (true) {
                 runMyReadingAiWatchdog()
@@ -115,6 +133,11 @@ class ReadingViewModel(
             onUpdated = {
                 loadReadings(forceRefresh = true)
                 cachedReadingId?.let { reloadCurrentReading(it) }
+                // AI vừa ghi xong dữ liệu (title_vi/phrases/words) — đẩy lên
+                // server NGAY, phòng trường hợp lượt push trước đó (lúc mới
+                // tạo bài) đã chạy TRƯỚC khi AI kịp xong, khiến bài bị đánh
+                // dấu synced khi payload còn thiếu title_vi/phrases.
+                MyReadingSyncScheduler.enqueueImmediatePush(appContext)
             },
         )
     }
@@ -194,6 +217,8 @@ class ReadingViewModel(
 
             if (id != null) {
                 launch { runMyReadingAiWatchdog() }
+                // Tạo mới là thao tác cần đồng bộ NGAY, không đợi chu kỳ 3h.
+                MyReadingSyncScheduler.enqueueImmediatePush(appContext)
             }
         }
     }
@@ -201,7 +226,11 @@ class ReadingViewModel(
     fun deleteMyReading(readingId: String, onDone: (success: Boolean) -> Unit = {}) {
         viewModelScope.launch {
             val ok = myReadingRepository.deleteMyReading(readingId)
-            if (ok) loadReadings(forceRefresh = true)
+            if (ok) {
+                loadReadings(forceRefresh = true)
+                // Xoá là thao tác cần đồng bộ NGAY, không đợi chu kỳ 3h.
+                MyReadingSyncScheduler.enqueueImmediatePush(appContext)
+            }
             onDone(ok)
         }
     }

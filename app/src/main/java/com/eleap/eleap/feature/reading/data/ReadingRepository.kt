@@ -28,6 +28,15 @@ data class Reading(
     val isAiProcessed: Boolean,
     val createdAt: String?,
     val updatedAt: String?,
+    // ── Chỉ có ý nghĩa với bài đọc MyReading (myreading.db) — null với bài
+    // đọc hệ thống (readings.db, không có cột sync_status). Giá trị 1 trong
+    // 4 hằng số MyReadingSyncStatus (feature/myreading/data/MyReadingSchema.kt):
+    // pending_create/pending_update/pending_delete/synced. Dùng bởi
+    // MyReadingSyncEngine để quyết định gọi pushCreate/pushUpdate/pushDelete
+    // cho đúng — thêm dưới dạng optional có default null để không phá vỡ
+    // các nơi đang khởi tạo Reading() bằng named argument mà chưa truyền
+    // field này (ReadingDao.getAllReadings() bên readings.db).
+    val syncStatus: String? = null,
 )
 
 // ── reading_sentences ─────────────────────────────────────────────────────────
@@ -38,6 +47,14 @@ data class ReadingSentence(
     val textVi: String?,
     val sentenceExplanation: String?,
     val sentenceOrder: Int,
+    // Cột paragraph_order đã có sẵn trong schema myreading.db từ trước
+    // (MyReadingSchema.kt), nhưng entity này trước đây bỏ sót không mang
+    // theo — thêm ở đây (default = 1, an toàn với mọi chỗ đang khởi tạo
+    // ReadingSentence(...) bằng named argument mà chưa truyền field này,
+    // gồm cả readings.db hệ thống — bài hệ thống không đồng bộ Supabase nên
+    // không cần giá trị thật) để có thể đẩy đúng khớp lên Supabase (bảng
+    // reading_sentences, cột paragraph_order) khi push/pull MyReading.
+    val paragraphOrder: Int = 1,
     val phrases: List<SentencePhrase> = emptyList(),
     val words: List<SentenceWord>   = emptyList(),
 )
