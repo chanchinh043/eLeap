@@ -9,6 +9,12 @@
 // TtsManager.kt hiện tại: init/speak/stop/setSpeechRate/shutdown). Không thêm
 // tính năng thừa (vd chọn giọng đọc, ngôn ngữ khác) ở bước này — có thể mở
 // rộng interface sau nếu cần.
+//
+// ⚠️ MỚI: setSpeaker(sid) — chỉ có ý nghĩa với KokoroTtsEngine (nhiều giọng
+// trong 1 model multi-speaker). Có default body RỖNG để AndroidTtsEngine
+// không cần override gì (TextToSpeech không có khái niệm speaker id kiểu
+// này) — tránh phải sửa AndroidTtsEngine.kt chỉ vì thêm tính năng debug tạm
+// thời cho riêng Kokoro.
 package com.eleap.eleap.core.tts
 
 import android.content.Context
@@ -33,6 +39,12 @@ interface TtsEngine {
     // Đổi tốc độ đọc — rate đã được TtsManager clamp về [MIN_RATE, MAX_RATE]
     // từ trước khi gọi xuống đây, engine không cần tự clamp lại.
     fun setSpeechRate(rate: Float)
+
+    // ── MỚI (tạm thời, để debug/thử nghiệm chọn giọng Kokoro) ───────────────
+    // Đổi giọng đọc theo speaker id — chỉ KokoroTtsEngine implement thật,
+    // AndroidTtsEngine dùng default rỗng (không áp dụng được với
+    // TextToSpeech).
+    fun setSpeaker(sid: Int) {}
 
     // Engine đã init xong và sẵn sàng nhận speak() chưa.
     fun isReady(): Boolean

@@ -4,24 +4,16 @@
 // Singleton thủ công, KHÔNG dùng Hilt/DI — cùng phong cách với CurrentUser,
 // SyncCursor, SupabaseClientProvider.
 //
-// ⚠️ ĐÃ ĐỔI THIẾT KẾ: trước đây TtsManager tự cầm luôn 1 TextToSpeech bên
-// trong. Giờ trừu tượng hoá qua interface TtsEngine (xem TtsEngine.kt) — có
+// TtsManager trừu tượng hoá qua interface TtsEngine (xem TtsEngine.kt) — có
 // 2 cài đặt: AndroidTtsEngine (bọc TextToSpeech cũ) và KokoroTtsEngine (bọc
-// sherpa-onnx, chất lượng cao hơn, on-device). TtsManager là nơi DUY NHẤT
-// quyết định dùng engine nào, và API công khai (init/speak/stop/
-// setSpeechRate/getSpeechRate/shutdown) giữ NGUYÊN như cũ — mọi nơi khác
-// đang gọi TtsManager (ReadingScreen, WordPopup, SentencePopup, PhrasePopup,
-// VocabPopup) KHÔNG cần sửa gì.
+// sherpa-onnx). API công khai cũ (init/speak/stop/setSpeechRate/
+// getSpeechRate/shutdown) giữ NGUYÊN.
 //
-// ── Chiến lược chọn engine ───────────────────────────────────────────────
-// Thử khởi tạo Kokoro TRƯỚC (chất lượng đọc tốt hơn nhiều so với
-// TextToSpeech mặc định của Android, đặc biệt với giọng US/UK tự nhiên).
-// Nếu Kokoro init lỗi (model thiếu file, sai định dạng, lỗi native
-// library,...) → tự động rơi về AndroidTtsEngine, đảm bảo app luôn có TTS
-// hoạt động, không phụ thuộc hoàn toàn vào Kokoro load thành công.
-//
-// activeEngine chỉ được set SAU KHI biết chắc engine đó init thành công —
-// tránh trường hợp gọi speak() vào 1 engine chưa sẵn sàng.
+// ⚠️ MỚI (tạm thời, để debug/thử nghiệm chọn giọng): giờ TtsManager khởi
+// tạo và giữ CẢ 2 engine cùng lúc (thay vì chỉ giữ 1 "activeEngine" chọn
+// một lần lúc init rồi thôi) — để có thể chuyển qua lại giữa Android TTS và
+// Kokoro bất kỳ lúc nào qua switchEngine(), và đổi giọng Kokoro qua
+// setKokoroSpeaker(), phục vụ nút bấm thử nghiệm tạm thời ở ReadingScreen.
 package com.eleap.eleap.core.tts
 
 import android.content.Context
@@ -38,19 +30,24 @@ object TtsManager {
     const val MIN_RATE = 0.1f
     const val MAX_RATE = 2.0f
 
+    enum class EngineType { ANDROID, KOKORO }
+
     private lateinit var prefs: SharedPreferences
 
+    private var androidEngine: AndroidTtsEngine? = null
+    private var kokoroEngine: KokoroTtsEngine? = null
+
     private var activeEngine: TtsEngine? = null
+    private var activeEngineType: EngineType = EngineType.KOKORO
+
     private var isInitializing = false
 
     // Tốc độ đọc hiện tại — đọc từ prefs khi init(), áp lại mỗi lần app mở
-    // lại, và áp lại cho engine MỚI nếu sau này engine active bị đổi (hiện
-    // tại chưa có UI đổi engine giữa chừng, nhưng giữ logic này để an toàn).
+    // lại, và áp lại cho engine MỚI mỗi khi switchEngine().
     private var currentRate: Float = DEFAULT_RATE
 
     // Hàng đợi 1 phần tử: nếu speak() được gọi TRƯỚC khi engine nào đó init
-    // xong (cả Kokoro lẫn fallback Android đều có thể mất vài trăm ms tới
-    // vài giây với Kokoro do phải copy asset + load model lần đầu).
+    // xong.
     private var pendingText: String? = null
 
     // Gọi 1 lần duy nhất, ở MainActivity.onCreate().
@@ -66,39 +63,73 @@ object TtsManager {
         currentRate = prefs.getFloat(KEY_RATE, DEFAULT_RATE)
 
         val kokoro = KokoroTtsEngine()
+        kokoroEngine = kokoro
         kokoro.init(context) { kokoroReady ->
             if (kokoroReady) {
-                Log.d(TAG, "init: dùng KokoroTtsEngine")
-                activateEngine(kokoro)
-            } else {
-                Log.w(TAG, "init: Kokoro init thất bại, fallback sang AndroidTtsEngine")
-                val android = AndroidTtsEngine()
-                android.init(context) { androidReady ->
-                    if (androidReady) {
-                        Log.d(TAG, "init: dùng AndroidTtsEngine (fallback)")
-                        activateEngine(android)
-                    } else {
-                        // Cả 2 engine đều lỗi — hiếm khi xảy ra (AndroidTtsEngine
-                        // hầu như luôn init được vì là engine hệ thống), nhưng
-                        // vẫn xử lý để không crash: giữ isInitializing = false,
-                        // speak() sau này sẽ tự no-op vì activeEngine vẫn null.
-                        Log.e(TAG, "init: cả Kokoro lẫn Android TTS đều lỗi")
-                        isInitializing = false
-                    }
+                Log.d(TAG, "init: Kokoro sẵn sàng")
+                if (activeEngine == null) {
+                    activateEngine(kokoro, EngineType.KOKORO)
                 }
+            } else {
+                Log.w(TAG, "init: Kokoro init thất bại")
             }
+        }
+
+        // Luôn init cả Android TTS song song — dù Kokoro có sẵn sàng hay
+        // không, để có thể chuyển qua lại bất kỳ lúc nào qua switchEngine().
+        val android = AndroidTtsEngine()
+        androidEngine = android
+        android.init(context) { androidReady ->
+            if (androidReady) {
+                Log.d(TAG, "init: Android TTS sẵn sàng")
+                if (activeEngine == null) {
+                    // Chỉ dùng làm fallback active nếu tới giờ Kokoro vẫn
+                    // chưa sẵn sàng (giữ đúng hành vi fallback cũ).
+                    activateEngine(android, EngineType.ANDROID)
+                }
+            } else {
+                Log.e(TAG, "init: Android TTS init thất bại")
+            }
+            isInitializing = false
         }
     }
 
-    private fun activateEngine(engine: TtsEngine) {
+    private fun activateEngine(engine: TtsEngine, type: EngineType) {
         engine.setSpeechRate(currentRate)
         activeEngine = engine
-        isInitializing = false
+        activeEngineType = type
 
         pendingText?.let { text ->
             pendingText = null
             speak(text)
         }
+    }
+
+    // ── MỚI: chuyển đổi engine đang active — trả về true nếu chuyển thành
+    // công (engine đích đã sẵn sàng), false nếu chưa sẵn sàng (giữ nguyên
+    // engine cũ). ────────────────────────────────────────────────────────
+    fun switchEngine(type: EngineType): Boolean {
+        val target: TtsEngine? = when (type) {
+            EngineType.ANDROID -> androidEngine
+            EngineType.KOKORO  -> kokoroEngine
+        }
+        if (target == null || !target.isReady()) {
+            Log.w(TAG, "switchEngine: $type chưa sẵn sàng, không chuyển")
+            return false
+        }
+        activeEngine?.stop()
+        activateEngine(target, type)
+        Log.d(TAG, "switchEngine: đã chuyển sang $type")
+        return true
+    }
+
+    fun getCurrentEngineType(): EngineType = activeEngineType
+
+    // ── MỚI: đổi giọng Kokoro (speaker id) — không có tác dụng gì nếu
+    // Kokoro chưa init hoặc đang không active, nhưng vẫn set để lần switch
+    // sang Kokoro kế tiếp dùng đúng giọng đã chọn. ─────────────────────────
+    fun setKokoroSpeaker(sid: Int) {
+        kokoroEngine?.setSpeaker(sid)
     }
 
     // Nói 1 câu — luôn NGẮT câu đang đọc dở, uỷ quyền thẳng xuống engine
@@ -119,10 +150,6 @@ object TtsManager {
         activeEngine?.stop()
     }
 
-    // ── Đổi tốc độ đọc — 1.0 = bình thường, <1.0 chậm hơn, >1.0 nhanh hơn.
-    // Clamp về [MIN_RATE, MAX_RATE] để tránh giá trị quá nhỏ/lớn làm giọng
-    // đọc vô nghĩa. Lưu ngay vào SharedPreferences để giữ nguyên lựa chọn
-    // qua lần mở app sau.
     fun setSpeechRate(rate: Float) {
         val clamped = rate.coerceIn(MIN_RATE, MAX_RATE)
         currentRate = clamped
@@ -135,9 +162,12 @@ object TtsManager {
 
     fun getSpeechRate(): Float = currentRate
 
-    // Gọi ở MainActivity.onDestroy() — giải phóng engine, tránh rò rỉ.
+    // Gọi ở MainActivity.onDestroy() — giải phóng cả 2 engine, tránh rò rỉ.
     fun shutdown() {
-        activeEngine?.shutdown()
+        androidEngine?.shutdown()
+        kokoroEngine?.shutdown()
+        androidEngine = null
+        kokoroEngine = null
         activeEngine = null
         isInitializing = false
         pendingText = null

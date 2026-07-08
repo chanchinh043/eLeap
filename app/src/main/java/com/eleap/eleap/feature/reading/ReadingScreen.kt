@@ -1,11 +1,13 @@
 package com.eleap.eleap.feature.reading
 
+import androidx.compose.foundation.horizontalScroll
 import androidx.compose.foundation.layout.*
 import androidx.compose.foundation.lazy.LazyColumn
 import androidx.compose.foundation.lazy.items
 import androidx.compose.material.icons.Icons
 import androidx.compose.material.icons.automirrored.filled.ArrowBack
 import androidx.compose.material3.*
+import androidx.compose.foundation.rememberScrollState
 import androidx.compose.runtime.*
 import androidx.compose.ui.Alignment
 import androidx.compose.ui.Modifier
@@ -21,6 +23,37 @@ import com.eleap.eleap.feature.reading.ui.PopupAnchorInfo
 import com.eleap.eleap.feature.reading.ui.SentencePopup
 import com.eleap.eleap.feature.reading.ui.WordClickableRow
 import com.eleap.eleap.feature.reading.ui.WordPopup
+
+// ── DEBUG TẠM THỜI: danh sách các lựa chọn giọng đọc để thử nghiệm/so sánh.
+// Xoay vòng qua nút "V" ở TopAppBar. Xoá khối này (và đoạn nút "V" tương
+// ứng bên dưới) khi đã chọn được giọng cuối cùng dùng chính thức. ──────────
+private data class VoiceOption(val label: String, val apply: () -> Unit)
+
+private val voiceOptions = listOf(
+    VoiceOption("Kokoro#0") {
+        TtsManager.switchEngine(TtsManager.EngineType.KOKORO)
+        TtsManager.setKokoroSpeaker(0)
+    },
+    VoiceOption("Kokoro#1") {
+        TtsManager.switchEngine(TtsManager.EngineType.KOKORO)
+        TtsManager.setKokoroSpeaker(1)
+    },
+    VoiceOption("Kokoro#2") {
+        TtsManager.switchEngine(TtsManager.EngineType.KOKORO)
+        TtsManager.setKokoroSpeaker(2)
+    },
+    VoiceOption("Kokoro#10") {
+        TtsManager.switchEngine(TtsManager.EngineType.KOKORO)
+        TtsManager.setKokoroSpeaker(10)
+    },
+    VoiceOption("Kokoro#20") {
+        TtsManager.switchEngine(TtsManager.EngineType.KOKORO)
+        TtsManager.setKokoroSpeaker(20)
+    },
+    VoiceOption("Android") {
+        TtsManager.switchEngine(TtsManager.EngineType.ANDROID)
+    },
+)
 
 @OptIn(ExperimentalMaterial3Api::class)
 @Composable
@@ -61,6 +94,11 @@ fun ReadingScreen(
     //    "underline" = gạch chân nhẹ dưới các từ cùng phrase, vẫn chảy chữ bình thường
     //    "line"      = mỗi phrase xuống 1 dòng riêng
     var phraseFormat by remember { mutableStateOf(prefs.getString("phrase_format", "underline") ?: "underline") }
+
+    // ── DEBUG TẠM THỜI: index đang chọn trong voiceOptions, xoay vòng mỗi
+    // lần bấm nút "V". Không lưu SharedPreferences — chỉ để thử nghiệm
+    // trong phiên hiện tại, mất khi thoát app là bình thường. ───────────────
+    var voiceIndex by remember { mutableStateOf(0) }
 
     var anchorInfo   by remember { mutableStateOf<PopupAnchorInfo?>(null) }
     var viewportRect by remember { mutableStateOf<Rect?>(null) }
@@ -127,107 +165,132 @@ fun ReadingScreen(
                     }
                 },
                 actions = {
-                    // ── Toggle chế độ dịch khi kéo bôi đen ≥2 từ: S (câu) ↔ P (cụm từ) ──
-                    TextButton(
-                        onClick = {
-                            translateMode = if (translateMode == "S") "P" else "S"
-                            prefs.edit().putString("translate_mode", translateMode).apply()
-                        }
+                    // ── Bọc toàn bộ actions trong Row có thể cuộn ngang — TopAppBar
+                    // actions mặc định KHÔNG tự wrap/cuộn, nên khi có nhiều nút
+                    // (S/P, F, V, R, rồi cụm −/giá trị/+) tổng chiều rộng dễ vượt
+                    // quá màn hình, các nút bên phải sẽ bị cắt mất mà không báo
+                    // lỗi gì (đây chính là lý do nút "V" trước đó không hiện ra).
+                    Row(
+                        modifier = Modifier.horizontalScroll(rememberScrollState()),
+                        verticalAlignment = Alignment.CenterVertically,
                     ) {
-                        Text(
-                            text = translateMode,
-                            style = MaterialTheme.typography.titleMedium
-                        )
-                    }
-                    // ── Toggle định dạng hiển thị cụm từ (chỉ có ý nghĩa ở mode "P"):
-                    //    "underline" ↔ "line". Mờ đi khi đang ở mode "S" vì không áp dụng.
-                    TextButton(
-                        onClick = {
-                            phraseFormat = if (phraseFormat == "underline") "line" else "underline"
-                            prefs.edit().putString("phrase_format", phraseFormat).apply()
-                        },
-                        enabled = translateMode == "P"
-                    ) {
-                        Text(
-                            text = "F",
-                            style = MaterialTheme.typography.titleMedium
-                        )
-                    }
-                    // ── Toggle chuyển đổi cụm điều khiển bên cạnh: cỡ chữ ↔ tốc độ đọc.
-                    //    Bấm lại lần nữa quay về cỡ chữ — chỉ đổi hiển thị, không
-                    //    lưu trạng thái này (luôn mặc định về cỡ chữ khi mở lại màn).
-                    TextButton(
-                        onClick = { showSpeedControl = !showSpeedControl }
-                    ) {
-                        Text(
-                            text = "R",
-                            style = MaterialTheme.typography.titleMedium,
-                            color = if (showSpeedControl)
-                                MaterialTheme.colorScheme.primary
-                            else
-                                MaterialTheme.colorScheme.onSurface
-                        )
-                    }
-                    if (showSpeedControl) {
-                        // ── Cụm chỉnh tốc độ đọc (-/1.0x/+), bước 0.1, giới hạn
-                        // theo TtsManager.MIN_RATE..MAX_RATE — thay thế đúng chỗ
-                        // của cụm cỡ chữ khi đang ở chế độ này.
-                        IconButton(
+                        // ── Toggle chế độ dịch khi kéo bôi đen ≥2 từ: S (câu) ↔ P (cụm từ) ──
+                        TextButton(
                             onClick = {
-                                val next = (speechRate - 0.1f).coerceAtLeast(TtsManager.MIN_RATE)
-                                speechRate = next
-                                TtsManager.setSpeechRate(next)
-                            },
-                            enabled = speechRate > TtsManager.MIN_RATE
+                                translateMode = if (translateMode == "S") "P" else "S"
+                                prefs.edit().putString("translate_mode", translateMode).apply()
+                            }
                         ) {
-                            Text(text = "−", style = MaterialTheme.typography.titleLarge)
+                            Text(
+                                text = translateMode,
+                                style = MaterialTheme.typography.titleMedium
+                            )
                         }
-                        Text(
-                            text = String.format("%.1fx", speechRate),
-                            style = MaterialTheme.typography.bodyMedium,
-                            modifier = Modifier.widthIn(min = 40.dp),
-                            textAlign = androidx.compose.ui.text.style.TextAlign.Center
-                        )
-                        IconButton(
+                        // ── Toggle định dạng hiển thị cụm từ (chỉ có ý nghĩa ở mode "P"):
+                        //    "underline" ↔ "line". Mờ đi khi đang ở mode "S" vì không áp dụng.
+                        TextButton(
                             onClick = {
-                                val next = (speechRate + 0.1f).coerceAtMost(TtsManager.MAX_RATE)
-                                speechRate = next
-                                TtsManager.setSpeechRate(next)
+                                phraseFormat = if (phraseFormat == "underline") "line" else "underline"
+                                prefs.edit().putString("phrase_format", phraseFormat).apply()
                             },
-                            enabled = speechRate < TtsManager.MAX_RATE
+                            enabled = translateMode == "P"
                         ) {
-                            Text(text = "+", style = MaterialTheme.typography.titleLarge)
+                            Text(
+                                text = "F",
+                                style = MaterialTheme.typography.titleMedium
+                            )
                         }
-                    } else {
-                        IconButton(
+                        // ── DEBUG TẠM THỜI: nút "V" — bấm để xoay vòng qua các
+                        // giọng đọc trong voiceOptions (Kokoro nhiều sid khác
+                        // nhau + Android TTS). Xoá nút này khi đã chốt giọng
+                        // dùng chính thức. ─────────────────────────────────────
+                        TextButton(
                             onClick = {
-                                if (fontSize > 10) {
-                                    fontSize--
-                                    prefs.edit().putInt("font_size", fontSize).apply()
-                                }
-                            },
-                            enabled = fontSize > 10
+                                voiceIndex = (voiceIndex + 1) % voiceOptions.size
+                                voiceOptions[voiceIndex].apply()
+                            }
                         ) {
-                            Text(text = "−", style = MaterialTheme.typography.titleLarge)
+                            Text(
+                                text = "V:${voiceOptions[voiceIndex].label}",
+                                style = MaterialTheme.typography.labelMedium
+                            )
                         }
-                        Text(
-                            text = "$fontSize",
-                            style = MaterialTheme.typography.bodyMedium,
-                            modifier = Modifier.widthIn(min = 28.dp),
-                            textAlign = androidx.compose.ui.text.style.TextAlign.Center
-                        )
-                        IconButton(
-                            onClick = {
-                                if (fontSize < 30) {
-                                    fontSize++
-                                    prefs.edit().putInt("font_size", fontSize).apply()
-                                }
-                            },
-                            enabled = fontSize < 30
+                        // ── Toggle chuyển đổi cụm điều khiển bên cạnh: cỡ chữ ↔ tốc độ đọc.
+                        //    Bấm lại lần nữa quay về cỡ chữ — chỉ đổi hiển thị, không
+                        //    lưu trạng thái này (luôn mặc định về cỡ chữ khi mở lại màn).
+                        TextButton(
+                            onClick = { showSpeedControl = !showSpeedControl }
                         ) {
-                            Text(text = "+", style = MaterialTheme.typography.titleLarge)
+                            Text(
+                                text = "R",
+                                style = MaterialTheme.typography.titleMedium,
+                                color = if (showSpeedControl)
+                                    MaterialTheme.colorScheme.primary
+                                else
+                                    MaterialTheme.colorScheme.onSurface
+                            )
                         }
-                    }
+                        if (showSpeedControl) {
+                            // ── Cụm chỉnh tốc độ đọc (-/1.0x/+), bước 0.1, giới hạn
+                            // theo TtsManager.MIN_RATE..MAX_RATE — thay thế đúng chỗ
+                            // của cụm cỡ chữ khi đang ở chế độ này.
+                            IconButton(
+                                onClick = {
+                                    val next = (speechRate - 0.1f).coerceAtLeast(TtsManager.MIN_RATE)
+                                    speechRate = next
+                                    TtsManager.setSpeechRate(next)
+                                },
+                                enabled = speechRate > TtsManager.MIN_RATE
+                            ) {
+                                Text(text = "−", style = MaterialTheme.typography.titleLarge)
+                            }
+                            Text(
+                                text = String.format("%.1fx", speechRate),
+                                style = MaterialTheme.typography.bodyMedium,
+                                modifier = Modifier.widthIn(min = 40.dp),
+                                textAlign = androidx.compose.ui.text.style.TextAlign.Center
+                            )
+                            IconButton(
+                                onClick = {
+                                    val next = (speechRate + 0.1f).coerceAtMost(TtsManager.MAX_RATE)
+                                    speechRate = next
+                                    TtsManager.setSpeechRate(next)
+                                },
+                                enabled = speechRate < TtsManager.MAX_RATE
+                            ) {
+                                Text(text = "+", style = MaterialTheme.typography.titleLarge)
+                            }
+                        } else {
+                            IconButton(
+                                onClick = {
+                                    if (fontSize > 10) {
+                                        fontSize--
+                                        prefs.edit().putInt("font_size", fontSize).apply()
+                                    }
+                                },
+                                enabled = fontSize > 10
+                            ) {
+                                Text(text = "−", style = MaterialTheme.typography.titleLarge)
+                            }
+                            Text(
+                                text = "$fontSize",
+                                style = MaterialTheme.typography.bodyMedium,
+                                modifier = Modifier.widthIn(min = 28.dp),
+                                textAlign = androidx.compose.ui.text.style.TextAlign.Center
+                            )
+                            IconButton(
+                                onClick = {
+                                    if (fontSize < 30) {
+                                        fontSize++
+                                        prefs.edit().putInt("font_size", fontSize).apply()
+                                    }
+                                },
+                                enabled = fontSize < 30
+                            ) {
+                                Text(text = "+", style = MaterialTheme.typography.titleLarge)
+                            }
+                        }
+                    } // đóng Row cuộn ngang
                 }
             )
         }
