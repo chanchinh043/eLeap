@@ -519,16 +519,68 @@ class MyReadingDao(private val db: SQLiteDatabase) {
         return list
     }
 
-    /** Đánh dấu synced cho danh sách reading_id — gọi sau khi push thành công. */
+    /**
+     * Đánh dấu synced cho danh sách reading_id — gọi sau khi push thành công.
+     *
+     * Các bài đang PENDING_DELETE mà server đã xác nhận xoá xong thì HARD
+     * DELETE luôn tại local (không cần giữ tombstone cục bộ nữa) — cùng tinh
+     * thần VocabRepository.markSynced() bên vocab. Các bài còn lại
+     * (pending_create/pending_update vừa push xong) → hạ về SYNCED như cũ.
+     */
     fun markSynced(readingIds: List<String>) {
         if (readingIds.isEmpty()) return
-        val placeholders = readingIds.joinToString(",") { "?" }
-        val bindArgs = (listOf(MyReadingSyncStatus.SYNCED) + readingIds).toTypedArray()
-        db.execSQL(
-            "UPDATE readings SET sync_status = ? WHERE reading_id IN ($placeholders)",
-            bindArgs
-        )
-        Log.d(TAG, "markSynced: đã đánh dấu synced cho ${readingIds.size} bài: $readingIds")
+        db.beginTransaction()
+        try {
+            val placeholders = readingIds.joinToString(",") { "?" }
+
+            // ── Tìm trong số readingIds, những bài nào đang PENDING_DELETE ──
+            val toHardDelete = mutableListOf<String>()
+            db.rawQuery(
+                "SELECT reading_id FROM readings WHERE reading_id IN ($placeholders) AND sync_status = ?",
+                (readingIds + MyReadingSyncStatus.PENDING_DELETE).toTypedArray()
+            ).use { c -> while (c.moveToNext()) toHardDelete.add(c.getString(0)) }
+
+            if (toHardDelete.isNotEmpty()) {
+                // Dọn con trước cha (sentence_words → sentence_phrases →
+                // reading_sentences → readings) — cùng thứ tự như nhánh hard
+                // delete ở deleteReadingById().
+                toHardDelete.forEach { readingId ->
+                    val sentenceIds = mutableListOf<String>()
+                    db.rawQuery(
+                        "SELECT sentence_id FROM reading_sentences WHERE reading_id = ?",
+                        arrayOf(readingId)
+                    ).use { c -> while (c.moveToNext()) sentenceIds.add(c.getString(0)) }
+
+                    sentenceIds.forEach { sid ->
+                        db.delete("sentence_words", "sentence_id = ?", arrayOf(sid))
+                        db.delete("sentence_phrases", "sentence_id = ?", arrayOf(sid))
+                    }
+                    db.delete("reading_sentences", "reading_id = ?", arrayOf(readingId))
+                }
+                val hardPlaceholders = toHardDelete.joinToString(",") { "?" }
+                db.delete("readings", "reading_id IN ($hardPlaceholders)", toHardDelete.toTypedArray())
+                Log.d(TAG, "markSynced: HARD DELETE ${toHardDelete.size} bài đã được server xác nhận xoá: $toHardDelete")
+            }
+
+            // ── Các dòng còn lại (pending_create/pending_update vừa push) → synced ──
+            val remaining = readingIds - toHardDelete.toSet()
+            if (remaining.isNotEmpty()) {
+                val remainingPlaceholders = remaining.joinToString(",") { "?" }
+                val cv = ContentValues().apply { put("sync_status", MyReadingSyncStatus.SYNCED) }
+                db.update(
+                    "readings", cv,
+                    "reading_id IN ($remainingPlaceholders)",
+                    remaining.toTypedArray()
+                )
+                Log.d(TAG, "markSynced: đã đánh dấu synced cho ${remaining.size} bài: $remaining")
+            }
+
+            db.setTransactionSuccessful()
+        } catch (e: Exception) {
+            Log.e(TAG, "markSynced error", e)
+        } finally {
+            db.endTransaction()
+        }
     }
 
     /** 1 dòng readings theo reading_id, không lọc user_id — null nếu không tồn tại. */
@@ -590,18 +642,27 @@ class MyReadingDao(private val db: SQLiteDatabase) {
         db.beginTransaction()
         return try {
             if (isTombstone) {
-                val exists = db.rawQuery(
-                    "SELECT 1 FROM readings WHERE reading_id = ? LIMIT 1",
+                // ── Cùng quy tắc như VocabRepository.applyServerChange():
+                // tombstone + local đang có (bất kể sync_status nào) →
+                // HARD DELETE luôn, không giữ lại tombstone cục bộ nữa.
+                // Trước đây chỉ set deleted_at (soft-delete) → khiến các
+                // thiết bị khác nhận được tin "đã xoá" từ server nhưng vẫn
+                // giữ nguyên dòng readings mãi mãi ở local.
+                val sentenceIds = mutableListOf<String>()
+                db.rawQuery(
+                    "SELECT sentence_id FROM reading_sentences WHERE reading_id = ?",
                     arrayOf(reading.readingId)
-                ).use { it.moveToFirst() }
+                ).use { c -> while (c.moveToNext()) sentenceIds.add(c.getString(0)) }
 
-                if (exists) {
-                    val cv = ContentValues().apply {
-                        put("deleted_at", deletedAt ?: nowIso8601())
-                        put("sync_status", MyReadingSyncStatus.SYNCED)
-                    }
-                    db.update("readings", cv, "reading_id = ?", arrayOf(reading.readingId))
-                    Log.d(TAG, "applyServerReading: áp tombstone reading_id=${reading.readingId}")
+                sentenceIds.forEach { sid ->
+                    db.delete("sentence_words", "sentence_id = ?", arrayOf(sid))
+                    db.delete("sentence_phrases", "sentence_id = ?", arrayOf(sid))
+                }
+                db.delete("reading_sentences", "reading_id = ?", arrayOf(reading.readingId))
+                val rRows = db.delete("readings", "reading_id = ?", arrayOf(reading.readingId))
+
+                if (rRows > 0) {
+                    Log.d(TAG, "applyServerReading: tombstone → HARD DELETE reading_id=${reading.readingId}")
                 } else {
                     Log.d(TAG, "applyServerReading: tombstone reading_id=${reading.readingId} nhưng local chưa từng có, bỏ qua")
                 }
