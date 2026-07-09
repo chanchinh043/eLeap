@@ -1,8 +1,9 @@
 // KokoroTtsEngine.kt
 // Đặt tại: com/eleap/eleap/core/tts/KokoroTtsEngine.kt
 //
-// Bọc sherpa-onnx (OfflineTts, model Kokoro int8) — implement TtsEngine để
-// TtsManager dùng chung interface với AndroidTtsEngine.
+// Bọc sherpa-onnx (OfflineTts, model Kokoro int8 — bản kokoro-int8-en-v0_19,
+// CHỈ tiếng Anh, 11 giọng) — implement TtsEngine để TtsManager dùng chung
+// interface với AndroidTtsEngine.
 //
 // ⚠️ TÊN CLASS/PACKAGE CỦA SHERPA-ONNX: import bên dưới dựa theo API phổ
 // biến nhất của sherpa-onnx-kotlin (package com.k2fsa.sherpa.onnx). Nếu bản
@@ -18,10 +19,19 @@
 // phân ARM→x86 (ndk_translation) — đây là giới hạn môi trường emulator,
 // KHÔNG phải bug logic. Chạy bình thường trên thiết bị Android thật (arm64).
 //
-// ⚠️ MỚI: currentSid (speaker id) — có thể đổi qua setSpeaker(sid), dùng
-// tạm thời để thử nghiệm/so sánh các giọng khác nhau trong model
-// kokoro-multi-lang (numSpeakers=53). Mặc định vẫn là 0 để không đổi hành
-// vi cũ nếu không ai gọi setSpeaker().
+// ⚠️ ĐÃ ĐỔI MODEL: chuyển từ kokoro-multi-lang-v1_0 (Anh+Trung, 53 giọng,
+// fp32, model.onnx ~310MB, có lexicon riêng) sang kokoro-int8-en-v0_19
+// (chỉ tiếng Anh, 11 giọng, int8, model.int8.onnx ~86-103MB, KHÔNG cần
+// lexicon). Do đó:
+//   - Tên file model đổi thành "model.int8.onnx".
+//   - Bỏ tham số "lexicon" khỏi OfflineTtsKokoroModelConfig — bản en-v0_19
+//     không có file lexicon-us-en.txt/lexicon-gb-en.txt đi kèm.
+//   - numSpeakers giờ là 11 (sid 0-10) thay vì 53 — nếu có UI/code khác
+//     hardcode range speaker id cũ, cần rà lại riêng.
+//
+// ⚠️ currentSid (speaker id) — có thể đổi qua setSpeaker(sid), dùng tạm
+// thời để thử nghiệm/so sánh các giọng khác nhau trong model. Mặc định vẫn
+// là 0 để không đổi hành vi cũ nếu không ai gọi setSpeaker().
 package com.eleap.eleap.core.tts
 
 import android.content.Context
@@ -53,7 +63,8 @@ class KokoroTtsEngine : TtsEngine {
     // quy đổi gì thêm khi TtsManager gọi setSpeechRate() xuống đây.
     private var currentSpeed: Float = 1.0f
 
-    // ── MỚI: giọng đang chọn (speaker id trong model multi-speaker) ────────
+    // ── Giọng đang chọn (speaker id trong model multi-speaker) ─────────────
+    // Model kokoro-int8-en-v0_19 có 11 giọng, sid hợp lệ: 0-10.
     @Volatile
     private var currentSid: Int = 0
 
@@ -91,11 +102,13 @@ class KokoroTtsEngine : TtsEngine {
                 // các lần sau tự bỏ qua nhờ marker file — xem AssetCopier.kt).
                 val modelDir = AssetCopier.copyAssetDirIfNeeded(context, "kokoro")
 
+                // ⚠️ ĐÃ ĐỔI: model.int8.onnx (kokoro-int8-en-v0_19), không
+                // còn tham số "lexicon" — bản chỉ tiếng Anh này không cần
+                // file lexicon-us-en.txt/lexicon-gb-en.txt riêng.
                 val kokoroConfig = OfflineTtsKokoroModelConfig(
-                    model   = "$modelDir/model.onnx",
+                    model   = "$modelDir/model.int8.onnx",
                     voices  = "$modelDir/voices.bin",
                     tokens  = "$modelDir/tokens.txt",
-                    lexicon = "$modelDir/lexicon-us-en.txt,$modelDir/lexicon-gb-en.txt",
                     dataDir = "$modelDir/espeak-ng-data",
                 )
 
@@ -174,7 +187,8 @@ class KokoroTtsEngine : TtsEngine {
         }
     }
 
-    // ── MỚI: đổi giọng đọc theo speaker id ──────────────────────────────────
+    // ── Đổi giọng đọc theo speaker id ────────────────────────────────────
+    // Model kokoro-int8-en-v0_19 có 11 giọng: sid hợp lệ 0-10.
     override fun setSpeaker(sid: Int) {
         currentSid = sid
         Log.d(TAG, "setSpeaker: đổi sang sid=$sid")
