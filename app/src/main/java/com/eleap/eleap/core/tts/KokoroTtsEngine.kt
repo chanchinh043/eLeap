@@ -100,6 +100,28 @@ class KokoroTtsEngine : TtsEngine {
     // thời, không phát audio nữa dù generate() đã hoàn tất.
     private var latestRequestId = 0L
 
+    // ── Tự động tính numThreads theo số core thiết bị, thay vì hardcode cố
+    // định — công thức bậc thang, KHÔNG dùng hết toàn bộ core:
+    //   - ≤4 core:  dùng hết (máy yếu, không có core dư để chừa)
+    //   - 5-8 core: giới hạn 4 (tránh dính core LITTLE yếu trong kiến trúc
+    //               big.LITTLE khi ONNX Runtime chia việc đều ra mọi core —
+    //               core chậm nhất sẽ kéo chậm cả batch)
+    //   - >8 core:  giới hạn 6 (máy cao cấp, vẫn chừa core cho UI thread +
+    //               hệ thống chạy song song lúc generate(), lợi ích thêm
+    //               thread cũng đã bão hoà sau ngưỡng này)
+    // Tính 1 lần, cache lại — availableProcessors() không đổi trong 1 phiên
+    // chạy app.
+    private fun calculateOptimalThreads(): Int {
+        val coreCount = Runtime.getRuntime().availableProcessors()
+        val numThreads = when {
+            coreCount <= 4 -> coreCount
+            coreCount <= 8 -> 4
+            else           -> 6
+        }
+        Log.d(TAG, "calculateOptimalThreads: thiết bị có $coreCount core → dùng $numThreads thread")
+        return numThreads
+    }
+
     override fun init(context: Context, onReady: (success: Boolean) -> Unit) {
         if (tts != null) {
             Log.d(TAG, "init: đã init từ trước, bỏ qua")
@@ -128,7 +150,7 @@ class KokoroTtsEngine : TtsEngine {
 
                 val modelConfig = OfflineTtsModelConfig(
                     kokoro     = kokoroConfig,
-                    numThreads = 2,
+                    numThreads = calculateOptimalThreads(),
                     debug      = false,
                     provider   = "cpu",
                 )
