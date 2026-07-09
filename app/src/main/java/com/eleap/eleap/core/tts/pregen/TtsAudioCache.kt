@@ -157,7 +157,8 @@ object TtsAudioCache {
             Log.d(
                 TAG,
                 "saveGenerated: đã lưu '${targetFile.name}' " +
-                        "(reading=$readingId, sid=$sid, samples=${samples.size}, sampleRate=$sampleRate)"
+                        "(reading=$readingId, sid=$sid, samples=${samples.size}, sampleRate=$sampleRate) " +
+                        "path=${targetFile.absolutePath}"
             )
             targetFile
         } catch (e: Exception) {

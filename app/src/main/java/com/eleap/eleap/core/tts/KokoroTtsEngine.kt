@@ -108,6 +108,30 @@ class KokoroTtsEngine : TtsEngine {
     // TtsPregenWorker) — xem ghi chú ở đầu file.
     private val generateMutex = Mutex()
 
+    // ── MỚI: kiểm tra biên độ audio vừa generate xong — phát hiện trường
+    // hợp generate() "chạy xong bình thường, không exception, số samples
+    // đúng" NHƯNG nội dung lại gần như toàn số 0 (im lặng thật sự, không
+    // phải lỗi hiển thị/playback). Đây là cách DUY NHẤT phân biệt chắc chắn
+    // 2 khả năng: (a) generate() ra audio câm thật (bug ở model/input text),
+    // hay (b) audio bình thường nhưng lỗi ở tầng phát lại (MediaPlayer/
+    // AudioTrack/cache). Ngưỡng 0.01f là biên độ tối đa (thang [-1,1]) — âm
+    // thanh giọng nói bình thường luôn có đỉnh cao hơn nhiều so với mức
+    // này, kể cả đoạn nói khẽ nhất; dưới ngưỡng này gần như chắc chắn là im
+    // lặng/câm chứ không phải giọng nhỏ.
+    private fun logAmplitudeCheck(tag: String, text: String, samples: FloatArray) {
+        val maxAmplitude = samples.maxOfOrNull { kotlin.math.abs(it) } ?: 0f
+        Log.d(TAG, "$tag: biên độ tối đa=$maxAmplitude cho \"$text\"")
+        if (maxAmplitude < 0.01f) {
+            Log.w(
+                TAG,
+                "$tag: audio CÂM THẬT SỰ (biên độ tối đa=$maxAmplitude, gần như toàn số 0) " +
+                        "cho \"$text\" — đây là lỗi ở generate()/model, KHÔNG PHẢI lỗi playback. " +
+                        "Nếu thấy log này, vấn đề nằm ở input text hoặc model, không phải ở " +
+                        "TtsPlaybackRouter/TtsAudioCache/MediaPlayer."
+            )
+        }
+    }
+
     // Đếm số lần gọi speak() — dùng để lời gọi generate() cũ (đang đợi tới
     // lượt hoặc vừa generate xong sau khi bị "vượt mặt") tự biết mình đã lỗi
     // thời, không phát audio nữa dù generate() đã hoàn tất.
@@ -218,6 +242,7 @@ class KokoroTtsEngine : TtsEngine {
                         "speak: generate() xong trong ${elapsed}ms (requestId=$myRequestId, sid=$sidToUse), " +
                                 "samples=${audio.samples.size}, sampleRate=${audio.sampleRate}"
                     )
+                    logAmplitudeCheck("speak", text, audio.samples)
 
                     if (myRequestId != latestRequestId) {
                         Log.d(TAG, "speak: \"$text\" generate xong nhưng đã lỗi thời, bỏ qua phát")
@@ -276,6 +301,7 @@ class KokoroTtsEngine : TtsEngine {
                         "generateAudio: generate() xong trong ${elapsed}ms (sid=$sid), " +
                                 "samples=${audio.samples.size}, sampleRate=${audio.sampleRate}"
                     )
+                    logAmplitudeCheck("generateAudio", text, audio.samples)
 
                     if (audio.samples.isEmpty()) {
                         Log.w(TAG, "generateAudio: generate() trả về 0 sample cho \"$text\" (sid=$sid)")

@@ -66,9 +66,14 @@ data class TtsReadingRef(
 // ── Item thô đọc được từ DB — chỉ giữ đúng những gì cần để generate TTS
 // (id + text_en), không cần các cột khác (text_vi, explanation...) vì
 // TtsPregenWorker chỉ đọc tiếng Anh ra để generate audio.
-data class TtsWordItem(val wordId: String, val textEn: String)
+// ⚠️ SỬA: thêm sentenceId vào TtsWordItem/TtsPhraseItem — trước đây không
+// cần vì TtsPregenWorker xử lý phẳng "hết từ → hết câu → hết cụm" cho cả
+// bài. Giờ đổi sang thứ tự theo TỪNG CÂU (từ của câu → câu → cụm của câu,
+// rồi mới sang câu tiếp theo), nên cần biết mỗi từ/cụm thuộc sentenceId nào
+// để group lại đúng theo câu ở TtsPregenWorker.processReading().
+data class TtsWordItem(val wordId: String, val sentenceId: String, val textEn: String)
 data class TtsSentenceItem(val sentenceId: String, val textEn: String)
-data class TtsPhraseItem(val phraseId: String, val textEn: String)
+data class TtsPhraseItem(val phraseId: String, val sentenceId: String, val textEn: String)
 
 object TtsReadingContentReader {
 
@@ -139,7 +144,7 @@ object TtsReadingContentReader {
             openReadOnly(context, dbName).use { db ->
                 val cursor = db.rawQuery(
                     """
-                    SELECT w.word_id AS word_id, w.text_en AS text_en
+                    SELECT w.word_id AS word_id, w.sentence_id AS sentence_id, w.text_en AS text_en
                     FROM sentence_words w
                     INNER JOIN reading_sentences s ON s.sentence_id = w.sentence_id
                     WHERE s.reading_id = ?
@@ -148,11 +153,12 @@ object TtsReadingContentReader {
                 )
                 cursor.use {
                     val idIdx   = it.getColumnIndexOrThrow("word_id")
+                    val sentIdx = it.getColumnIndexOrThrow("sentence_id")
                     val textIdx = it.getColumnIndexOrThrow("text_en")
                     while (it.moveToNext()) {
                         val text = it.getString(textIdx)
                         if (!text.isNullOrBlank()) {
-                            result.add(TtsWordItem(it.getString(idIdx), text))
+                            result.add(TtsWordItem(it.getString(idIdx), it.getString(sentIdx), text))
                         }
                     }
                 }
@@ -200,7 +206,7 @@ object TtsReadingContentReader {
             openReadOnly(context, dbName).use { db ->
                 val cursor = db.rawQuery(
                     """
-                    SELECT p.phrase_id AS phrase_id, p.text_en AS text_en
+                    SELECT p.phrase_id AS phrase_id, p.sentence_id AS sentence_id, p.text_en AS text_en
                     FROM sentence_phrases p
                     INNER JOIN reading_sentences s ON s.sentence_id = p.sentence_id
                     WHERE s.reading_id = ?
@@ -209,11 +215,12 @@ object TtsReadingContentReader {
                 )
                 cursor.use {
                     val idIdx   = it.getColumnIndexOrThrow("phrase_id")
+                    val sentIdx = it.getColumnIndexOrThrow("sentence_id")
                     val textIdx = it.getColumnIndexOrThrow("text_en")
                     while (it.moveToNext()) {
                         val text = it.getString(textIdx)
                         if (!text.isNullOrBlank()) {
-                            result.add(TtsPhraseItem(it.getString(idIdx), text))
+                            result.add(TtsPhraseItem(it.getString(idIdx), it.getString(sentIdx), text))
                         }
                     }
                 }

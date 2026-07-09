@@ -102,6 +102,8 @@ object TtsPlaybackRouter {
     private fun playCachedFile(file: File, fallbackText: String) {
         stopCachedPlayback()
 
+        Log.d(TAG, "playCachedFile: phát file cache path=${file.absolutePath}")
+
         try {
             val player = MediaPlayer()
             cachedPlayer = player

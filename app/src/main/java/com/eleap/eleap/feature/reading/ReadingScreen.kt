@@ -154,6 +154,19 @@ fun ReadingScreen(
     // thành vị trí trong danh sách UI. remember{} (không key) chỉ tính 1 lần
     // đúng lúc Composable này được tạo, đúng ý muốn "khôi phục lúc vào lại
     // màn", không cần tính lại mỗi lần recompose.
+    // ⚠️ MỚI: đảm bảo TtsVoiceSnapshot đã init (gán prefs) TRƯỚC khi
+    // currentVoiceIndex() đọc sid đã lưu — TtsVoiceSnapshot.prefs là
+    // lateinit, chỉ được gán sau khi init() chạy. Trước đây chỉ có
+    // TtsPregenWorker gọi init() này (chạy NGẦM, không đảm bảo đã chạy
+    // trước khi ReadingScreen được mở lần đầu sau khi mở app) — nếu
+    // currentVoiceIndex() chạy trước đó sẽ crash (UninitializedPropertyAccessException)
+    // hoặc (nếu MainActivity có gọi init() riêng) vẫn thừa mà vô hại. Gọi ở
+    // đây 1 lần, TRƯỚC dòng khởi tạo voiceIndex bên dưới, để chắc chắn label
+    // "V" luôn hiện đúng giọng đã chọn lần cuối, kể cả sau khi tắt hẳn app.
+    // remember{} không key — chỉ chạy 1 lần lúc Composable được tạo, giống
+    // cách voiceIndex đang tự tính 1 lần bên dưới.
+    remember { TtsVoiceSnapshot.init(context) }
+
     var voiceIndex by remember { mutableStateOf(currentVoiceIndex()) }
     var isVoiceMenuExpanded by remember { mutableStateOf(false) }
 

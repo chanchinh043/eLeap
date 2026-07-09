@@ -168,9 +168,19 @@ class TtsPregenWorker(
         return order
     }
 
-    // ── Xử lý TRỌN VẸN 1 bài — theo đúng thứ tự TỪ → CÂU → CỤM TỪ. Mỗi
-    // item đều đi qua checkNotInterrupted() TRƯỚC KHI generate — đây chính
-    // là điểm "kiểm tra trước mỗi item" theo mục 6d. ─────────────────────
+    // ── Xử lý TRỌN VẸN 1 bài — theo đúng thứ tự TỪNG CÂU: các TỪ của câu →
+    // chính CÂU đó → các CỤM TỪ của câu, rồi mới sang câu kế tiếp (lặp lại
+    // cho tới hết câu cuối). ⚠️ ĐỔI so với bản cũ (trước đây là "hết TỪ của
+    // cả bài → hết CÂU của cả bài → hết CỤM TỪ của cả bài") — lý do đổi: ưu
+    // tiên để người đọc câu đầu tiên có đủ audio (từ/câu/cụm) sớm nhất, thay
+    // vì phải chờ generate hết từ của TOÀN BỘ bài trước khi có được 1 câu
+    // hoàn chỉnh nào.
+    //
+    // Lấy words/phrases 1 LẦN cho cả bài (như cũ, đỡ query lặp lại theo từng
+    // câu) rồi group theo sentenceId bằng groupBy — words/phrases của 1 câu
+    // được lấy qua map tra cứu O(1), độ phức tạp không đổi so với bản cũ.
+    // Mỗi item vẫn đi qua checkNotInterrupted() TRƯỚC KHI generate — đúng
+    // điểm "kiểm tra trước mỗi item" theo mục 6d, không đổi.
     private suspend fun processReading(
         context: Context,
         ref: TtsReadingRef,
@@ -178,21 +188,26 @@ class TtsPregenWorker(
         snapshotForegroundId: String?,
         snapshotSelectedAt: Long,
     ) {
-        val words = TtsReadingContentReader.getWordsForReading(context, ref)
-        for (word in words) {
-            checkNotInterrupted(snapshotForegroundId, snapshotSelectedAt)
-            processItem(
-                context = context,
-                readingId = ref.readingId,
-                sid = sid,
-                type = TtsCacheItemType.WORD,
-                itemId = word.wordId,
-                text = word.textEn,
-            )
-        }
-
         val sentences = TtsReadingContentReader.getSentencesForReading(context, ref)
+        val wordsBySentence = TtsReadingContentReader.getWordsForReading(context, ref)
+            .groupBy { it.sentenceId }
+        val phrasesBySentence = TtsReadingContentReader.getPhrasesForReading(context, ref)
+            .groupBy { it.sentenceId }
+
         for (sentence in sentences) {
+            val words = wordsBySentence[sentence.sentenceId].orEmpty()
+            for (word in words) {
+                checkNotInterrupted(snapshotForegroundId, snapshotSelectedAt)
+                processItem(
+                    context = context,
+                    readingId = ref.readingId,
+                    sid = sid,
+                    type = TtsCacheItemType.WORD,
+                    itemId = word.wordId,
+                    text = word.textEn,
+                )
+            }
+
             checkNotInterrupted(snapshotForegroundId, snapshotSelectedAt)
             processItem(
                 context = context,
@@ -202,19 +217,19 @@ class TtsPregenWorker(
                 itemId = sentence.sentenceId,
                 text = sentence.textEn,
             )
-        }
 
-        val phrases = TtsReadingContentReader.getPhrasesForReading(context, ref)
-        for (phrase in phrases) {
-            checkNotInterrupted(snapshotForegroundId, snapshotSelectedAt)
-            processItem(
-                context = context,
-                readingId = ref.readingId,
-                sid = sid,
-                type = TtsCacheItemType.PHRASE,
-                itemId = phrase.phraseId,
-                text = phrase.textEn,
-            )
+            val phrases = phrasesBySentence[sentence.sentenceId].orEmpty()
+            for (phrase in phrases) {
+                checkNotInterrupted(snapshotForegroundId, snapshotSelectedAt)
+                processItem(
+                    context = context,
+                    readingId = ref.readingId,
+                    sid = sid,
+                    type = TtsCacheItemType.PHRASE,
+                    itemId = phrase.phraseId,
+                    text = phrase.textEn,
+                )
+            }
         }
     }
 

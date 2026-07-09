@@ -39,6 +39,13 @@ object TtsVoiceSnapshot {
     private const val PREFS_NAME     = "tts_pregen_voice"
     private const val KEY_SID        = "kokoro_sid"
     private const val KEY_SELECTED_AT = "selected_at"
+    // ⚠️ MỚI: lưu luôn ENGINE đang chọn (KOKORO hay ANDROID) — trước đây chỉ
+    // lưu sid Kokoro, nên nếu lần cuối người dùng chọn "Android", thông tin
+    // đó KHÔNG sống sót qua việc tắt app (TtsManager.activeEngineType chỉ
+    // tồn tại trong RAM). Lưu bằng String (tên enum) để dễ đọc khi debug
+    // trực tiếp file prefs, và để valueOf() tự validate, tránh phải tự map
+    // số nguyên ↔ enum.
+    private const val KEY_ENGINE_TYPE = "engine_type"
 
     private lateinit var prefs: SharedPreferences
 
@@ -90,6 +97,30 @@ object TtsVoiceSnapshot {
         // mở app kế tiếp — đây chính là lỗ hổng đã phát hiện và vá ở bước
         // tích hợp này (điểm gọi (c) trong thiết kế TtsPregenScheduler).
         appContext?.let { ctx -> TtsPregenScheduler.enqueueWork(ctx) }
+    }
+
+    // ── MỚI: Gọi mỗi khi người dùng chuyển engine (switchEngine() trong
+    // TtsManager) — ghi nhớ lựa chọn để lần mở app kế tiếp tự khôi phục
+    // đúng engine này (xem reconcileActiveEngine() ở TtsManager.kt), giống
+    // hệt cách recordSelectedSid() đang lưu sid Kokoro. Không cần
+    // enqueueWork() ở đây như recordSelectedSid() — đổi ENGINE (không phải
+    // đổi SID) không ảnh hưởng gì tới việc pre-cache (TtsPregenWorker chỉ
+    // quan tâm sid Kokoro mục tiêu, không quan tâm engine hiện tại đang
+    // active là gì khi generate cache — xem TtsPregenWorker.kt).
+    fun recordSelectedEngine(type: TtsManager.EngineType) {
+        prefs.edit().putString(KEY_ENGINE_TYPE, type.name).apply()
+    }
+
+    // ── Engine đã chọn lần cuối — mặc định KOKORO nếu chưa từng lưu (lần
+    // đầu cài app) hoặc nếu giá trị lưu bị hỏng/không hợp lệ (an toàn qua
+    // try/catch thay vì để valueOf() ném exception làm crash app). ────────
+    fun savedEngineType(): TtsManager.EngineType {
+        val name = prefs.getString(KEY_ENGINE_TYPE, null) ?: return TtsManager.EngineType.KOKORO
+        return try {
+            TtsManager.EngineType.valueOf(name)
+        } catch (e: IllegalArgumentException) {
+            TtsManager.EngineType.KOKORO
+        }
     }
 
     // ── sid đã lưu gần nhất (không quan tâm engine hiện tại là gì) ───────

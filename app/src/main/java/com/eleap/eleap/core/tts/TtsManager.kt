@@ -76,17 +76,24 @@ object TtsManager {
             .getSharedPreferences(PREFS_NAME, Context.MODE_PRIVATE)
         currentRate = prefs.getFloat(KEY_RATE, DEFAULT_RATE)
 
+        // ⚠️ MỚI: init TtsVoiceSnapshot NGAY TỪ ĐÂY (idempotent, an toàn gọi
+        // lại) — reconcileActiveEngine() bên dưới cần đọc
+        // TtsVoiceSnapshot.savedEngineType() ngay khi 2 engine bắt đầu báo
+        // ready, nên phải đảm bảo prefs của nó đã sẵn sàng TRƯỚC khi bất kỳ
+        // callback init() nào của kokoro/android có thể fire (dù chúng chạy
+        // async, callback vẫn có thể fire rất sớm nếu engine ready gần như
+        // ngay lập tức, vd Android TextToSpeech).
+        TtsVoiceSnapshot.init(context)
+
         val kokoro = KokoroTtsEngine()
         kokoroEngine = kokoro
         kokoro.init(context) { kokoroReady ->
             if (kokoroReady) {
                 Log.d(TAG, "init: Kokoro sẵn sàng")
-                if (activeEngine == null) {
-                    activateEngine(kokoro, EngineType.KOKORO)
-                }
             } else {
                 Log.w(TAG, "init: Kokoro init thất bại")
             }
+            reconcileActiveEngine()
         }
 
         // Luôn init cả Android TTS song song — dù Kokoro có sẵn sàng hay
@@ -96,15 +103,60 @@ object TtsManager {
         android.init(context) { androidReady ->
             if (androidReady) {
                 Log.d(TAG, "init: Android TTS sẵn sàng")
-                if (activeEngine == null) {
-                    // Chỉ dùng làm fallback active nếu tới giờ Kokoro vẫn
-                    // chưa sẵn sàng (giữ đúng hành vi fallback cũ).
-                    activateEngine(android, EngineType.ANDROID)
-                }
             } else {
                 Log.e(TAG, "init: Android TTS init thất bại")
             }
+            reconcileActiveEngine()
             isInitializing = false
+        }
+    }
+
+    // ── MỚI: chọn engine ACTIVE dựa trên lựa chọn đã lưu lần cuối
+    // (TtsVoiceSnapshot.savedEngineType()) — thay cho logic cũ "engine nào
+    // init xong TRƯỚC (activeEngine == null) thì active engine đó", vốn phụ
+    // thuộc vào THỨ TỰ 2 engine sẵn sàng lúc runtime (không đảm bảo), nên
+    // KHÔNG khôi phục đúng lựa chọn của người dùng sau khi tắt hẳn app —
+    // đúng lỗ hổng cần vá theo yêu cầu "giống cài đặt cỡ chữ": phải khôi
+    // phục được NGAY CẢ SAU KHI FORCE-CLOSE, không phụ thuộc timing.
+    //
+    // Gọi lại hàm này ở CẢ HAI callback init() (kokoro lẫn android) mỗi khi
+    // 1 trong 2 chuyển trạng thái ready/thất bại — vì tại thời điểm gọi
+    // init(), chưa biết engine nào sẽ ready trước, nên phải re-evaluate mỗi
+    // khi có thêm thông tin mới.
+    //
+    // Ưu tiên: nếu engine TRÙNG savedType đã ready → active nó NGAY, kể cả
+    // đang active tạm 1 engine KHÁC trước đó (chủ động CHUYỂN LẠI cho đúng
+    // lựa chọn đã lưu — vd Android ready trước, active tạm, rồi Kokoro ready
+    // sau nhưng savedType=KOKORO → tự chuyển sang Kokoro ngay). Nếu engine
+    // trùng savedType CHƯA ready → tạm active engine còn lại (nếu nó đã
+    // ready) làm fallback, để không im lặng hoàn toàn trong lúc chờ; khi
+    // engine đúng ready, lần gọi kế tiếp sẽ tự chuyển lại đúng lựa chọn.
+    private fun reconcileActiveEngine() {
+        val savedType = TtsVoiceSnapshot.savedEngineType()
+        val kokoro = kokoroEngine
+        val android = androidEngine
+        val kokoroReady = kokoro != null && kokoro.isReady()
+        val androidReady = android != null && android.isReady()
+
+        val target: TtsEngine
+        val targetType: EngineType
+        when (savedType) {
+            EngineType.KOKORO -> when {
+                kokoroReady -> { target = kokoro!!; targetType = EngineType.KOKORO }
+                androidReady -> { target = android!!; targetType = EngineType.ANDROID }
+                else -> return // chưa có gì sẵn sàng, chờ callback kế tiếp
+            }
+            EngineType.ANDROID -> when {
+                androidReady -> { target = android!!; targetType = EngineType.ANDROID }
+                kokoroReady -> { target = kokoro!!; targetType = EngineType.KOKORO }
+                else -> return
+            }
+        }
+
+        if (activeEngine !== target) {
+            activeEngine?.stop()
+            activateEngine(target, targetType)
+            Log.d(TAG, "reconcileActiveEngine: active=$targetType (đã lưu=$savedType)")
         }
     }
 
@@ -133,6 +185,7 @@ object TtsManager {
         }
         activeEngine?.stop()
         activateEngine(target, type)
+        TtsVoiceSnapshot.recordSelectedEngine(type)
         Log.d(TAG, "switchEngine: đã chuyển sang $type")
         return true
     }
