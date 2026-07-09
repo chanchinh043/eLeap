@@ -18,6 +18,10 @@ import androidx.compose.ui.platform.LocalContext
 import androidx.compose.ui.unit.dp
 import androidx.lifecycle.viewmodel.compose.viewModel
 import com.eleap.eleap.core.tts.TtsManager
+import com.eleap.eleap.core.tts.pregen.TtsForegroundReading
+import com.eleap.eleap.core.tts.pregen.TtsPregenScheduler
+import com.eleap.eleap.core.tts.pregen.TtsReadingHistory
+import com.eleap.eleap.core.tts.pregen.TtsVoiceSnapshot
 import com.eleap.eleap.feature.reading.ui.PhrasePopup
 import com.eleap.eleap.feature.reading.ui.PopupAnchorInfo
 import com.eleap.eleap.feature.reading.ui.SentencePopup
@@ -77,6 +81,26 @@ private val voiceOptions = listOf(
     },
 )
 
+// ── MỚI: suy ra ĐÚNG index trong voiceOptions đang thực sự active — dùng để
+// khởi tạo voiceIndex khi ReadingScreen được compose lại (vd quay ra rồi
+// quay lại màn đọc), thay vì luôn hard-code về 0 (#0 af_alloy) như trước,
+// khiến label ở nút "V" hiển thị sai lệch với giọng THẬT đang phát.
+//
+// voiceOptions được xây TUẦN TỰ 0..27 đúng bằng sid Kokoro tương ứng (xem
+// kokoroOption() ở trên: index i trong danh sách == sid i), nên chỉ cần lấy
+// đúng sid đã lưu là ra đúng index, không cần dò tìm gì thêm.
+//
+// TtsVoiceSnapshot.currentTargetSid() đã tự trả về null nếu engine đang
+// active KHÔNG phải Kokoro (đang là Android) — đúng lúc đó fallback về
+// voiceOptions.lastIndex (phần tử "Android" luôn là phần tử CUỐI trong danh
+// sách). Nếu sid lưu được (hiếm khi xảy ra, chỉ nếu dữ liệu cũ/hỏng) nằm
+// ngoài phạm vi hợp lệ, cũng fallback an toàn về "Android" thay vì crash do
+// index âm hoặc vượt danh sách.
+private fun currentVoiceIndex(): Int {
+    val sid = TtsVoiceSnapshot.currentTargetSid()
+    return if (sid != null && sid in voiceOptions.indices) sid else voiceOptions.lastIndex
+}
+
 @OptIn(ExperimentalMaterial3Api::class)
 @Composable
 fun ReadingScreen(
@@ -118,10 +142,19 @@ fun ReadingScreen(
     var phraseFormat by remember { mutableStateOf(prefs.getString("phrase_format", "underline") ?: "underline") }
 
     // ── DEBUG TẠM THỜI: index đang chọn trong voiceOptions (để hiện label
-    // trên nút "V"), và trạng thái đóng/mở dropdown chọn giọng. Không lưu
-    // SharedPreferences — chỉ để thử nghiệm trong phiên hiện tại, mất khi
-    // thoát app là bình thường. ───────────────────────────────────────────
-    var voiceIndex by remember { mutableStateOf(0) }
+    // trên nút "V"), và trạng thái đóng/mở dropdown chọn giọng.
+    //
+    // ⚠️ MỚI: khởi tạo từ currentVoiceIndex() (đọc trạng thái THẬT đang lưu
+    // ở TtsVoiceSnapshot/TtsManager) thay vì hard-code 0 — để khi rời màn
+    // đọc rồi quay lại (Composable bị huỷ và tạo mới), label ở nút "V" hiện
+    // ĐÚNG giọng lần cuối đã chọn, không bị nhảy về về "#0 af_alloy". Không
+    // lưu SharedPreferences RIÊNG cho voiceIndex — không cần, vì bản thân
+    // TtsManager (engine active)/TtsVoiceSnapshot (sid Kokoro) đã là nguồn
+    // sự thật duy nhất, currentVoiceIndex() chỉ đơn thuần ánh xạ ngược lại
+    // thành vị trí trong danh sách UI. remember{} (không key) chỉ tính 1 lần
+    // đúng lúc Composable này được tạo, đúng ý muốn "khôi phục lúc vào lại
+    // màn", không cần tính lại mỗi lần recompose.
+    var voiceIndex by remember { mutableStateOf(currentVoiceIndex()) }
     var isVoiceMenuExpanded by remember { mutableStateOf(false) }
 
     var anchorInfo   by remember { mutableStateOf<PopupAnchorInfo?>(null) }
@@ -129,6 +162,35 @@ fun ReadingScreen(
 
     LaunchedEffect(readingId) {
         vm.loadReading(readingId)
+    }
+
+    // ── MỚI (điểm chạm B — core/tts/pregen/): báo cho TtsPregenWorker biết
+    // "đang mở bài nào NGAY LÚC NÀY" (RAM only, qua TtsForegroundReading) và
+    // ghi nhận vào lịch sử đã mở (SharedPreferences, qua TtsReadingHistory) —
+    // đúng 2 việc đã chốt ở điểm chạm B trong thiết kế tổng thể.
+    //
+    // key = readingId: nếu người dùng điều hướng sang readingId KHÁC MÀ
+    // KHÔNG rời khỏi ReadingScreen (Composable này được tái sử dụng, hiếm
+    // khi xảy ra với cách điều hướng hiện tại nhưng vẫn đúng về mặt logic),
+    // onDispose của effect CŨ chạy trước (clear() giọng cũ) rồi effect MỚI
+    // chạy lại đúng cho readingId mới — không để sót "đang mở" trỏ nhầm bài.
+    //
+    // enqueueWork(context) gọi ở đây tương ứng điểm gọi (b) đã chốt ở thiết
+    // kế TtsPregenScheduler — an toàn gọi lại nhiều lần nhờ
+    // ExistingWorkPolicy.KEEP, đảm bảo có 1 lượt Worker "sống" biết ngay bài
+    // vừa mở, kể cả khi lượt chạy trước đó (vd từ lúc mở app) đã tự hết việc
+    // và dừng hẳn.
+    //
+    // onDispose gọi clear() khi rời màn đọc (back, hoặc Composable bị huỷ) —
+    // để Worker biết "không còn ưu tiên tuyệt đối bài nào nữa", tự rơi
+    // xuống xử lý lịch sử như bình thường (xem TtsForegroundReading.kt).
+    DisposableEffect(readingId) {
+        TtsForegroundReading.set(readingId)
+        TtsReadingHistory.markOpened(readingId)
+        TtsPregenScheduler.enqueueWork(context)
+        onDispose {
+            TtsForegroundReading.clear()
+        }
     }
 
     // ── WordPopup ─────────────────────────────────────────────────────────────
@@ -140,6 +202,7 @@ fun ReadingScreen(
             isDictExpanded       = isDictExpanded,
             anchorInfo           = anchorInfo,
             viewportRect         = viewportRect,
+            readingId            = readingId,
             onToggleDictExpanded = { vm.toggleDictExpanded() },
             onSaveStateChanged   = { vm.refreshSavedWordIds() },
             onDismiss            = {
@@ -158,6 +221,7 @@ fun ReadingScreen(
                 phrase       = phrase,
                 anchorInfo   = anchorInfo,
                 viewportRect = viewportRect,
+                readingId    = readingId,
                 onDismiss    = {
                     vm.dismissPhrasePopup()
                     anchorInfo = null
@@ -172,6 +236,7 @@ fun ReadingScreen(
             sentence     = sentence,
             anchorInfo   = anchorInfo,
             viewportRect = viewportRect,
+            readingId    = readingId,
             onDismiss    = {
                 vm.dismissSentencePopup()
                 anchorInfo = null

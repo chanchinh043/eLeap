@@ -11,31 +11,49 @@ import androidx.compose.ui.Alignment
 import androidx.compose.ui.Modifier
 import androidx.compose.ui.geometry.Rect
 import androidx.compose.ui.platform.LocalDensity
+import androidx.compose.ui.platform.LocalContext
 import androidx.compose.ui.unit.dp
 import androidx.compose.ui.window.Popup
 import androidx.compose.ui.window.PopupProperties
-import com.eleap.eleap.core.tts.TtsManager
+import com.eleap.eleap.core.tts.TtsPlaybackRouter
+import com.eleap.eleap.core.tts.pregen.TtsCacheItemType
 import com.eleap.eleap.feature.reading.data.SentencePhrase
 
 /**
  * Popup dịch cụm từ độc lập — hiện khi ở chế độ "P" và người dùng kéo bôi đen
  * ≥2 từ nằm trong 1 phrase. Bố cục giống hệt SentencePopup, chỉ khác nguồn dữ liệu.
+ *
+ * ⚠️ MỚI (điểm chạm A — core/tts/pregen/): thêm tham số readingId — xem giải
+ * thích chi tiết ở WordPopup.kt (cùng lý do, cùng cách dùng).
  */
 @Composable
 fun PhrasePopup(
     phrase: SentencePhrase,
     anchorInfo: PopupAnchorInfo?,
     viewportRect: Rect?,
+    readingId: String,
     onDismiss: () -> Unit,
 ) {
     val density = LocalDensity.current
     val spacingPx = with(density) { 8.dp.toPx() }
+    val context = LocalContext.current
 
     // ── Tự động đọc cụm từ 1 lần khi popup hiện lên cho đúng phrase này ──────
     // key = phrase.phraseId → chỉ nói lại khi người dùng chọn sang cụm từ
     // KHÁC, không lặp lại nếu Composable chỉ recompose vì lý do khác.
+    //
+    // ⚠️ MỚI: gọi qua TtsPlaybackRouter.speak() thay vì TtsManager.speak()
+    // trực tiếp — xem giải thích ở WordPopup.kt.
     LaunchedEffect(phrase.phraseId) {
-        phrase.textEn?.let { TtsManager.speak(it) }
+        phrase.textEn?.let {
+            TtsPlaybackRouter.speak(
+                context   = context,
+                text      = it,
+                readingId = readingId,
+                itemType  = TtsCacheItemType.PHRASE,
+                itemId    = phrase.phraseId,
+            )
+        }
     }
 
     // ── Vị trí popup: ưu tiên TRÊN cụm từ được chọn; không đủ chỗ thì lật XUỐNG,

@@ -11,15 +11,21 @@ import androidx.compose.ui.Alignment
 import androidx.compose.ui.Modifier
 import androidx.compose.ui.geometry.Rect
 import androidx.compose.ui.platform.LocalDensity
+import androidx.compose.ui.platform.LocalContext
 import androidx.compose.ui.text.font.FontStyle
 import androidx.compose.ui.unit.dp
 import androidx.compose.ui.window.Popup
 import androidx.compose.ui.window.PopupProperties
-import com.eleap.eleap.core.tts.TtsManager
+import com.eleap.eleap.core.tts.TtsPlaybackRouter
+import com.eleap.eleap.core.tts.pregen.TtsCacheItemType
 import com.eleap.eleap.feature.reading.data.DictEntry
 import com.eleap.eleap.feature.reading.data.SentencePhrase
 import com.eleap.eleap.feature.reading.data.SentenceWord
 
+// ⚠️ MỚI (điểm chạm A — core/tts/pregen/): thêm tham số readingId — cần để
+// TtsPlaybackRouter.speak() tra đúng cache theo (readingId, sid, loại,
+// itemId). Giá trị này ReadingScreen đã có sẵn (là tham số của chính
+// ReadingScreen), truyền thẳng xuống đây, KHÔNG cần truy vấn gì thêm.
 @Composable
 fun WordPopup(
     word: SentenceWord,
@@ -28,19 +34,33 @@ fun WordPopup(
     isDictExpanded: Boolean,
     anchorInfo: PopupAnchorInfo?,
     viewportRect: Rect?,
+    readingId: String,
     onToggleDictExpanded: () -> Unit,
     onSaveStateChanged: () -> Unit,   // ← mới: gọi sau khi lưu hoặc bỏ lưu từ
     onDismiss: () -> Unit,
 ) {
     val density = LocalDensity.current
     val spacingPx = with(density) { 8.dp.toPx() }
+    val context = LocalContext.current
 
     // ── Tự động đọc từ 1 lần khi popup hiện lên cho đúng word này ───────────
     // key = word.wordId → chỉ nói lại khi người dùng chuyển sang từ KHÁC
     // (bấm từ khác trong khi popup đang mở), không nói lặp lại nếu Composable
     // này chỉ recompose vì lý do khác (vd toggle "Xem thêm" ở phần từ điển).
+    //
+    // ⚠️ MỚI: gọi qua TtsPlaybackRouter.speak() thay vì TtsManager.speak()
+    // trực tiếp — Router tự quyết định phát từ file cache (nếu đã pre-gen
+    // xong) hay generate on-the-fly như hành vi cũ (xem TtsPlaybackRouter.kt).
     LaunchedEffect(word.wordId) {
-        word.textEn?.let { TtsManager.speak(it) }
+        word.textEn?.let {
+            TtsPlaybackRouter.speak(
+                context   = context,
+                text      = it,
+                readingId = readingId,
+                itemType  = TtsCacheItemType.WORD,
+                itemId    = word.wordId,
+            )
+        }
     }
 
     val positionProvider = remember(anchorInfo, viewportRect) {

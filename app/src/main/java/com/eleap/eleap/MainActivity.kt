@@ -4,6 +4,9 @@ import com.eleap.eleap.core.sync.SyncEngine
 import com.eleap.eleap.core.sync.SyncRealtime
 import com.eleap.eleap.core.sync.SyncScheduler
 import com.eleap.eleap.core.tts.TtsManager
+import com.eleap.eleap.core.tts.pregen.TtsPregenScheduler
+import com.eleap.eleap.core.tts.pregen.TtsReadingHistory
+import com.eleap.eleap.core.tts.pregen.TtsVoiceSnapshot
 import com.eleap.eleap.feature.myreading.data.MyReadingRepository
 import com.eleap.eleap.feature.myreading.sync.MyReadingSyncCursor
 import com.eleap.eleap.feature.myreading.sync.MyReadingSyncEngine
@@ -77,6 +80,27 @@ class MainActivity : ComponentActivity() {
         MyReadingSyncEngine.init(this)
         MyReadingSyncRealtime.init(this)
         TtsManager.init(this)
+
+        // ── MỚI (core/tts/pregen/): khởi tạo 2 singleton còn lại của tính
+        // năng pre-cache TTS — TtsForegroundReading KHÔNG cần init() ở đây
+        // vì chỉ giữ trạng thái trong RAM (xem TtsForegroundReading.kt), tự
+        // bắt đầu là null/rỗng ngay khi process mới, không có gì để đọc lại
+        // từ đĩa. Thứ tự giữa 2 dòng init() dưới đây và dòng TtsManager.init()
+        // ở trên không bắt buộc chặt chẽ (mỗi hàm chỉ tự gán lại
+        // SharedPreferences/Context riêng của nó, không gọi chéo nhau ngay
+        // lúc init) — đặt SAU TtsManager.init() cho mạch đọc tự nhiên: "có
+        // TTS engine trước, rồi tới các thành phần phụ trợ pre-cache".
+        TtsReadingHistory.init(this)
+        TtsVoiceSnapshot.init(this)
+
+        // Khởi động (hoặc "resume") TtsPregenWorker ngay khi app mở — đúng
+        // điểm gọi (a) đã chốt trong thiết kế TtsPregenScheduler: đảm bảo
+        // Worker tự tiếp tục generate dở dang từ phiên trước (nếu có), kể cả
+        // khi người dùng CHƯA mở bài đọc nào ở phiên này (lúc đó Worker sẽ tự
+        // rơi xuống xử lý lịch sử TtsReadingHistory thay vì bài đang mở — xem
+        // TtsPregenWorker.kt). An toàn gọi lại nhiều lần nhờ
+        // ExistingWorkPolicy.KEEP bên trong TtsPregenScheduler.enqueueWork().
+        TtsPregenScheduler.enqueueWork(this)
 
         // Đăng ký 2 lịch chạy nền (push mỗi 3h, pull mỗi 5h) — dùng
         // enqueueUniquePeriodicWork với policy KEEP bên trong nên gọi lại

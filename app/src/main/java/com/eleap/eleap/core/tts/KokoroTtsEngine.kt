@@ -43,6 +43,15 @@
 // ⚠️ currentSid (speaker id) — có thể đổi qua setSpeaker(sid), dùng tạm
 // thời để thử nghiệm/so sánh các giọng khác nhau trong model. Mặc định vẫn
 // là 0 để không đổi hành vi cũ nếu không ai gọi setSpeaker().
+//
+// ⚠️ MỚI (core/tts/pregen/): generateAudio(text, sid) — sinh audio thô cho
+// TtsPregenWorker lưu cache, KHÔNG phát ra loa. Dùng CHUNG generateMutex với
+// speak() — bắt buộc, vì OfflineTts không thread-safe (đã ghi chú ở
+// generateMutex bên dưới): nếu để 2 lời gọi generate() (1 từ speak() lúc
+// người dùng đang nghe, 1 từ generateAudio() lúc Worker đang pre-cache ngầm)
+// chạy đồng thời trên cùng 1 instance OfflineTts, dễ treo hoặc crash native
+// vĩnh viễn. Nhờ dùng chung mutex, 2 luồng (phát trực tiếp + pre-cache ngầm)
+// tự động xếp hàng chờ nhau, không cần thêm cơ chế đồng bộ nào khác.
 package com.eleap.eleap.core.tts
 
 import android.content.Context
@@ -61,6 +70,7 @@ import kotlinx.coroutines.SupervisorJob
 import kotlinx.coroutines.launch
 import kotlinx.coroutines.sync.Mutex
 import kotlinx.coroutines.sync.withLock
+import kotlinx.coroutines.withContext
 
 class KokoroTtsEngine : TtsEngine {
 
@@ -93,6 +103,9 @@ class KokoroTtsEngine : TtsEngine {
     // đợi generate() cũ chạy xong (dù kết quả sẽ bị bỏ qua ngay sau đó) rồi
     // mới bắt đầu generate() mới — tuyệt đối không gọi song song, dễ treo
     // hoặc crash native vĩnh viễn vì OfflineTts không đảm bảo thread-safe.
+    //
+    // ⚠️ Cũng CHÍNH mutex này bảo vệ generateAudio() (pre-cache, dùng bởi
+    // TtsPregenWorker) — xem ghi chú ở đầu file.
     private val generateMutex = Mutex()
 
     // Đếm số lần gọi speak() — dùng để lời gọi generate() cũ (đang đợi tới
@@ -218,6 +231,61 @@ class KokoroTtsEngine : TtsEngine {
                     playAudio(audio.samples, audio.sampleRate)
                 } catch (e: Exception) {
                     Log.e(TAG, "speak: lỗi khi sinh/phát audio cho \"$text\"", e)
+                }
+            }
+        }
+    }
+
+    // ── MỚI (core/tts/pregen/): sinh audio thô, KHÔNG phát ra loa ───────────
+    // Dùng bởi TtsPregenWorker để lưu cache — xem TtsAudioCache.kt. Khác
+    // speak() ở 3 điểm:
+    //   1. suspend fun thật sự trả về kết quả (speak() fire-and-forget, tự
+    //      launch coroutine riêng rồi trả về ngay, không có gì để await).
+    //   2. Nhận sid làm THAM SỐ tường minh, KHÔNG dùng currentSid (biến này
+    //      chỉ có ý nghĩa cho phát trực tiếp qua speak()/setSpeaker() — pre-
+    //      cache luôn generate theo đúng sid mà TtsPregenWorker truyền vào,
+    //      độc lập với giọng đang active cho phát trực tiếp).
+    //   3. KHÔNG gọi playAudio()/stopPlayback() — không đụng gì tới
+    //      AudioTrack đang có thể đang phát dở cho người dùng.
+    //   4. Luôn generate ở speed=1.0 (tốc độ chuẩn) — pre-cache KHÔNG theo
+    //      currentSpeed (tốc độ đọc người dùng đang chọn), vì tốc độ có thể
+    //      đổi bất kỳ lúc nào và ta không muốn nhân bản cache theo từng mức
+    //      tốc độ. TtsPlaybackRouter (bước 8) sẽ tự quyết định cách áp dụng
+    //      tốc độ khi phát lại file cache (nếu cần, ở phạm vi ngoài bước này).
+    //
+    // Vẫn qua generateMutex — xếp hàng chung với speak(), tuyệt đối không gọi
+    // generate() JNI song song trên 2 luồng khác nhau (xem ghi chú ở
+    // generateMutex phía trên).
+    override suspend fun generateAudio(text: String, sid: Int): TtsAudioResult? {
+        if (text.isBlank() || !isReadyFlag) {
+            Log.d(TAG, "generateAudio: engine chưa sẵn sàng hoặc text rỗng, bỏ qua \"$text\"")
+            return null
+        }
+
+        return withContext(Dispatchers.Default) {
+            generateMutex.withLock {
+                try {
+                    val engine = tts ?: return@withLock null
+                    Log.d(TAG, "generateAudio: bắt đầu generate() cho \"$text\" (sid=$sid, pre-cache)")
+                    val startTime = System.currentTimeMillis()
+                    val audio = engine.generate(text = text, sid = sid, speed = 1.0f)
+                    val elapsed = System.currentTimeMillis() - startTime
+
+                    Log.d(
+                        TAG,
+                        "generateAudio: generate() xong trong ${elapsed}ms (sid=$sid), " +
+                                "samples=${audio.samples.size}, sampleRate=${audio.sampleRate}"
+                    )
+
+                    if (audio.samples.isEmpty()) {
+                        Log.w(TAG, "generateAudio: generate() trả về 0 sample cho \"$text\" (sid=$sid)")
+                        null
+                    } else {
+                        TtsAudioResult(samples = audio.samples, sampleRate = audio.sampleRate)
+                    }
+                } catch (e: Exception) {
+                    Log.e(TAG, "generateAudio: lỗi khi sinh audio cho \"$text\" (sid=$sid)", e)
+                    null
                 }
             }
         }
