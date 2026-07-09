@@ -19,15 +19,26 @@
 // phân ARM→x86 (ndk_translation) — đây là giới hạn môi trường emulator,
 // KHÔNG phải bug logic. Chạy bình thường trên thiết bị Android thật (arm64).
 //
-// ⚠️ ĐÃ ĐỔI MODEL: chuyển từ kokoro-multi-lang-v1_0 (Anh+Trung, 53 giọng,
-// fp32, model.onnx ~310MB, có lexicon riêng) sang kokoro-int8-en-v0_19
-// (chỉ tiếng Anh, 11 giọng, int8, model.int8.onnx ~86-103MB, KHÔNG cần
-// lexicon). Do đó:
-//   - Tên file model đổi thành "model.int8.onnx".
-//   - Bỏ tham số "lexicon" khỏi OfflineTtsKokoroModelConfig — bản en-v0_19
-//     không có file lexicon-us-en.txt/lexicon-gb-en.txt đi kèm.
-//   - numSpeakers giờ là 11 (sid 0-10) thay vì 53 — nếu có UI/code khác
-//     hardcode range speaker id cũ, cần rà lại riêng.
+// ⚠️ ĐÃ ĐỔI MODEL (lần 2): quay lại kokoro-int8-multi-lang-v1_0 (Anh+Trung
+// +các ngôn ngữ khác, 53 giọng, int8, model.int8.onnx) — thay cho bản
+// kokoro-int8-en-v0_19 (chỉ tiếng Anh, 11 giọng) đã dùng trước đó, vì bản
+// en-v0_19 chỉ có 11 giọng, không đủ lựa chọn. Do đó:
+//   - Tên file model VẪN là "model.int8.onnx" (tên trùng nhưng nội dung
+//     khác hẳn — nhớ xoá cache cũ ở filesDir/kokoro khi đổi model, xem
+//     AssetCopier.kt, nếu không app sẽ dùng nhầm file .copied cũ).
+//   - THÊM LẠI tham số "lexicon" trong OfflineTtsKokoroModelConfig — bản
+//     multi-lang BẮT BUỘC cần 3 file lexicon-us-en.txt/lexicon-gb-en.txt/
+//     lexicon-zh.txt đi kèm, thiếu là generate() lỗi hoặc phát âm sai.
+//   - numSpeakers giờ là 53 (sid 0-52), trong đó CHỈ sid 0-27 là tiếng Anh:
+//       0-10  = af_alloy, af_aoede, af_bella, af_heart, af_jessica, af_kore,
+//               af_nicole, af_nova, af_river, af_sarah, af_sky   (nữ, Mỹ)
+//       11-19 = am_adam, am_echo, am_eric, am_fenrir, am_liam, am_michael,
+//               am_onyx, am_puck, am_santa                        (nam, Mỹ)
+//       20-23 = bf_alice, bf_emma, bf_isabella, bf_lily          (nữ, Anh-Anh)
+//       24-27 = bm_daniel, bm_fable, bm_george, bm_lewis         (nam, Anh-Anh)
+//     sid 28 trở đi là ngôn ngữ khác (Tây Ban Nha/Pháp/Hindi/Ý/Nhật/Bồ/Trung)
+//     — KHÔNG dùng cho app này (chỉ đọc tiếng Anh), UI (ReadingScreen.kt)
+//     chỉ nên cho chọn trong khoảng 0-27.
 //
 // ⚠️ currentSid (speaker id) — có thể đổi qua setSpeaker(sid), dùng tạm
 // thời để thử nghiệm/so sánh các giọng khác nhau trong model. Mặc định vẫn
@@ -102,14 +113,17 @@ class KokoroTtsEngine : TtsEngine {
                 // các lần sau tự bỏ qua nhờ marker file — xem AssetCopier.kt).
                 val modelDir = AssetCopier.copyAssetDirIfNeeded(context, "kokoro")
 
-                // ⚠️ ĐÃ ĐỔI: model.int8.onnx (kokoro-int8-en-v0_19), không
-                // còn tham số "lexicon" — bản chỉ tiếng Anh này không cần
-                // file lexicon-us-en.txt/lexicon-gb-en.txt riêng.
+                // ⚠️ ĐÃ ĐỔI: model.int8.onnx (kokoro-int8-multi-lang-v1_0) —
+                // BẮT BUỘC truyền "lexicon" trỏ tới 3 file lexicon-us-en.txt/
+                // lexicon-gb-en.txt/lexicon-zh.txt, khác với bản en-v0_19
+                // trước đó (không cần lexicon). Thiếu tham số này, generate()
+                // vẫn có thể chạy nhưng phát âm sai/lỗi với nhiều từ.
                 val kokoroConfig = OfflineTtsKokoroModelConfig(
                     model   = "$modelDir/model.int8.onnx",
                     voices  = "$modelDir/voices.bin",
                     tokens  = "$modelDir/tokens.txt",
                     dataDir = "$modelDir/espeak-ng-data",
+                    lexicon = "$modelDir/lexicon-us-en.txt,$modelDir/lexicon-gb-en.txt,$modelDir/lexicon-zh.txt",
                 )
 
                 val modelConfig = OfflineTtsModelConfig(
@@ -188,7 +202,9 @@ class KokoroTtsEngine : TtsEngine {
     }
 
     // ── Đổi giọng đọc theo speaker id ────────────────────────────────────
-    // Model kokoro-int8-en-v0_19 có 11 giọng: sid hợp lệ 0-10.
+    // Model kokoro-int8-multi-lang-v1_0 có 53 giọng: sid hợp lệ 0-52.
+    // Chỉ sid 0-27 là tiếng Anh (Mỹ + Anh-Anh) — xem bảng chi tiết ở comment
+    // đầu file. sid 28-52 là ngôn ngữ khác, không nên dùng cho app này.
     override fun setSpeaker(sid: Int) {
         currentSid = sid
         Log.d(TAG, "setSpeaker: đổi sang sid=$sid")

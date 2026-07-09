@@ -25,31 +25,53 @@ import com.eleap.eleap.feature.reading.ui.WordClickableRow
 import com.eleap.eleap.feature.reading.ui.WordPopup
 
 // ── DEBUG TẠM THỜI: danh sách các lựa chọn giọng đọc để thử nghiệm/so sánh.
-// Xoay vòng qua nút "V" ở TopAppBar. Xoá khối này (và đoạn nút "V" tương
-// ứng bên dưới) khi đã chọn được giọng cuối cùng dùng chính thức. ──────────
+// Bấm nút "V" ở TopAppBar để mở dropdown, chọn thẳng giọng cần nghe (nhanh
+// hơn xoay vòng từng cái). Xoá khối này (và đoạn nút "V" tương ứng bên
+// dưới) khi đã chọn được giọng cuối cùng dùng chính thức. ──────────────────
+//
+// Model kokoro-int8-multi-lang-v1_0 (53 giọng, sid 0-52) — CHỈ liệt kê sid
+// 0-27 (tiếng Anh), KHÔNG dùng sid 28+ (các ngôn ngữ khác) vì app chỉ đọc
+// tiếng Anh.
 private data class VoiceOption(val label: String, val apply: () -> Unit)
 
+private fun kokoroOption(sid: Int, name: String) = VoiceOption("#$sid $name") {
+    TtsManager.switchEngine(TtsManager.EngineType.KOKORO)
+    TtsManager.setKokoroSpeaker(sid)
+}
+
 private val voiceOptions = listOf(
-    VoiceOption("Kokoro#0") {
-        TtsManager.switchEngine(TtsManager.EngineType.KOKORO)
-        TtsManager.setKokoroSpeaker(0)
-    },
-    VoiceOption("Kokoro#1") {
-        TtsManager.switchEngine(TtsManager.EngineType.KOKORO)
-        TtsManager.setKokoroSpeaker(1)
-    },
-    VoiceOption("Kokoro#2") {
-        TtsManager.switchEngine(TtsManager.EngineType.KOKORO)
-        TtsManager.setKokoroSpeaker(2)
-    },
-    VoiceOption("Kokoro#10") {
-        TtsManager.switchEngine(TtsManager.EngineType.KOKORO)
-        TtsManager.setKokoroSpeaker(10)
-    },
-    VoiceOption("Kokoro#20") {
-        TtsManager.switchEngine(TtsManager.EngineType.KOKORO)
-        TtsManager.setKokoroSpeaker(20)
-    },
+    // af_* — nữ, Mỹ (sid 0-10)
+    kokoroOption(0, "af_alloy"),
+    kokoroOption(1, "af_aoede"),
+    kokoroOption(2, "af_bella"),
+    kokoroOption(3, "af_heart"),
+    kokoroOption(4, "af_jessica"),
+    kokoroOption(5, "af_kore"),
+    kokoroOption(6, "af_nicole"),
+    kokoroOption(7, "af_nova"),
+    kokoroOption(8, "af_river"),
+    kokoroOption(9, "af_sarah"),
+    kokoroOption(10, "af_sky"),
+    // am_* — nam, Mỹ (sid 11-19)
+    kokoroOption(11, "am_adam"),
+    kokoroOption(12, "am_echo"),
+    kokoroOption(13, "am_eric"),
+    kokoroOption(14, "am_fenrir"),
+    kokoroOption(15, "am_liam"),
+    kokoroOption(16, "am_michael"),
+    kokoroOption(17, "am_onyx"),
+    kokoroOption(18, "am_puck"),
+    kokoroOption(19, "am_santa"),
+    // bf_* — nữ, Anh-Anh (sid 20-23)
+    kokoroOption(20, "bf_alice"),
+    kokoroOption(21, "bf_emma"),
+    kokoroOption(22, "bf_isabella"),
+    kokoroOption(23, "bf_lily"),
+    // bm_* — nam, Anh-Anh (sid 24-27)
+    kokoroOption(24, "bm_daniel"),
+    kokoroOption(25, "bm_fable"),
+    kokoroOption(26, "bm_george"),
+    kokoroOption(27, "bm_lewis"),
     VoiceOption("Android") {
         TtsManager.switchEngine(TtsManager.EngineType.ANDROID)
     },
@@ -95,10 +117,12 @@ fun ReadingScreen(
     //    "line"      = mỗi phrase xuống 1 dòng riêng
     var phraseFormat by remember { mutableStateOf(prefs.getString("phrase_format", "underline") ?: "underline") }
 
-    // ── DEBUG TẠM THỜI: index đang chọn trong voiceOptions, xoay vòng mỗi
-    // lần bấm nút "V". Không lưu SharedPreferences — chỉ để thử nghiệm
-    // trong phiên hiện tại, mất khi thoát app là bình thường. ───────────────
+    // ── DEBUG TẠM THỜI: index đang chọn trong voiceOptions (để hiện label
+    // trên nút "V"), và trạng thái đóng/mở dropdown chọn giọng. Không lưu
+    // SharedPreferences — chỉ để thử nghiệm trong phiên hiện tại, mất khi
+    // thoát app là bình thường. ───────────────────────────────────────────
     var voiceIndex by remember { mutableStateOf(0) }
+    var isVoiceMenuExpanded by remember { mutableStateOf(false) }
 
     var anchorInfo   by remember { mutableStateOf<PopupAnchorInfo?>(null) }
     var viewportRect by remember { mutableStateOf<Rect?>(null) }
@@ -200,20 +224,39 @@ fun ReadingScreen(
                                 style = MaterialTheme.typography.titleMedium
                             )
                         }
-                        // ── DEBUG TẠM THỜI: nút "V" — bấm để xoay vòng qua các
-                        // giọng đọc trong voiceOptions (Kokoro nhiều sid khác
-                        // nhau + Android TTS). Xoá nút này khi đã chốt giọng
-                        // dùng chính thức. ─────────────────────────────────────
-                        TextButton(
-                            onClick = {
-                                voiceIndex = (voiceIndex + 1) % voiceOptions.size
-                                voiceOptions[voiceIndex].apply()
+                        // ── DEBUG TẠM THỜI: nút "V" — bấm để mở dropdown chọn
+                        // thẳng giọng đọc (Kokoro nhiều sid khác nhau + Android
+                        // TTS), thay vì phải xoay vòng từng cái. Dropdown giới
+                        // hạn chiều cao ~10 mục, quá số đó thì cuộn để xem tiếp.
+                        // Xoá nút này khi đã chốt giọng dùng chính thức. ───────
+                        Box {
+                            TextButton(
+                                onClick = { isVoiceMenuExpanded = true }
+                            ) {
+                                Text(
+                                    text = "V:${voiceOptions[voiceIndex].label}",
+                                    style = MaterialTheme.typography.labelMedium
+                                )
                             }
-                        ) {
-                            Text(
-                                text = "V:${voiceOptions[voiceIndex].label}",
-                                style = MaterialTheme.typography.labelMedium
-                            )
+                            DropdownMenu(
+                                expanded = isVoiceMenuExpanded,
+                                onDismissRequest = { isVoiceMenuExpanded = false },
+                                // ~10 dòng thì cuộn — mỗi DropdownMenuItem mặc định
+                                // cao khoảng 48dp, 10*48=480dp là ngưỡng vừa đủ hiện
+                                // ~10 giọng rồi kéo lên xem tiếp các giọng còn lại.
+                                modifier = Modifier.heightIn(max = 480.dp)
+                            ) {
+                                voiceOptions.forEachIndexed { index, option ->
+                                    DropdownMenuItem(
+                                        text = { Text(option.label) },
+                                        onClick = {
+                                            voiceIndex = index
+                                            option.apply()
+                                            isVoiceMenuExpanded = false
+                                        }
+                                    )
+                                }
+                            }
                         }
                         // ── Toggle chuyển đổi cụm điều khiển bên cạnh: cỡ chữ ↔ tốc độ đọc.
                         //    Bấm lại lần nữa quay về cỡ chữ — chỉ đổi hiển thị, không
