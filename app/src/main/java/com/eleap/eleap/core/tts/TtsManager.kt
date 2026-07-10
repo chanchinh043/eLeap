@@ -311,13 +311,17 @@ object TtsManager {
     // KokoroTtsEngine.kt). Trả về null nếu kokoroEngine chưa tồn tại (chưa
     // init) — Worker nên gọi ensureKokoroReady() TRƯỚC khi gọi hàm này để
     // tránh rơi vào trường hợp null này một cách không cần thiết.
-    suspend fun generateKokoroAudioForCache(text: String, sid: Int): TtsAudioResult? {
+    //
+    // ⚠️ MỚI: thêm readingId (CHỈ để log — xem KokoroTtsEngine.generateAudio())
+    // — TtsPregenWorker.processItem() đã có sẵn readingId trong tay nên chỉ
+    // cần truyền xuyên qua, không cần tự tra cứu gì thêm ở đây.
+    suspend fun generateKokoroAudioForCache(text: String, sid: Int, readingId: String): TtsAudioResult? {
         val kokoro = kokoroEngine
         if (kokoro == null) {
-            Log.w(TAG, "generateKokoroAudioForCache: kokoroEngine chưa init, trả về null")
+            Log.w(TAG, "generateKokoroAudioForCache: kokoroEngine chưa init, trả về null (reading=$readingId)")
             return null
         }
-        return kokoro.generateAudio(text, sid)
+        return kokoro.generateAudio(text, sid, readingId)
     }
 
     // Gọi ở MainActivity.onDestroy() — giải phóng cả 2 engine, tránh rò rỉ.

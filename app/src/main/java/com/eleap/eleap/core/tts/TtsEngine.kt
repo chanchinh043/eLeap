@@ -70,7 +70,14 @@ interface TtsEngine {
     // kết quả, khác hẳn speak() (fire-and-forget, tự launch coroutine riêng
     // bên trong rồi trả về ngay). Default null: engine không hỗ trợ
     // pre-generate (đúng cho AndroidTtsEngine — không cần override).
-    suspend fun generateAudio(text: String, sid: Int): TtsAudioResult? = null
+    //
+    // ⚠️ MỚI: thêm readingId (CHỈ để log rõ đang generate cho bài nào — KHÔNG
+    // dùng cho logic/cache key gì cả, cache key vẫn tính từ contentHash(text)
+    // như cũ ở TtsAudioCache). Trước đây log chỉ có text + sid, không biết
+    // đang xử lý bài nào khi đọc logcat lúc TtsPregenWorker chạy ngầm qua
+    // nhiều bài liên tiếp. Default rỗng "" để không phá vỡ nơi gọi cũ (dù
+    // hiện tại chỉ có đúng 1 nơi gọi là TtsManager.generateKokoroAudioForCache()).
+    suspend fun generateAudio(text: String, sid: Int, readingId: String = ""): TtsAudioResult? = null
 
     // Engine đã init xong và sẵn sàng nhận speak() chưa.
     fun isReady(): Boolean

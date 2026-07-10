@@ -480,7 +480,7 @@ class TtsPregenWorker(
                             "lần $attempt/${TtsCacheAuditor.MAX_ATTEMPTS_PER_VOICE} cho id=${item.itemId}..."
                 )
 
-                val audio = TtsManager.generateKokoroAudioForCache(item.text, trySid)
+                val audio = TtsManager.generateKokoroAudioForCache(item.text, trySid, readingId)
                 if (audio == null) {
                     Log.w(
                         TAG,
@@ -653,7 +653,7 @@ class TtsPregenWorker(
             return
         }
 
-        val audio = TtsManager.generateKokoroAudioForCache(text, sid)
+        val audio = TtsManager.generateKokoroAudioForCache(text, sid, readingId)
         if (audio == null) {
             Log.w(
                 TAG,

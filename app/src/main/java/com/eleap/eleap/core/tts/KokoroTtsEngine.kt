@@ -118,14 +118,14 @@ class KokoroTtsEngine : TtsEngine {
     // thanh giọng nói bình thường luôn có đỉnh cao hơn nhiều so với mức
     // này, kể cả đoạn nói khẽ nhất; dưới ngưỡng này gần như chắc chắn là im
     // lặng/câm chứ không phải giọng nhỏ.
-    private fun logAmplitudeCheck(tag: String, text: String, samples: FloatArray) {
+    private fun logAmplitudeCheck(tag: String, text: String, samples: FloatArray, contextSuffix: String = "") {
         val maxAmplitude = samples.maxOfOrNull { kotlin.math.abs(it) } ?: 0f
-        Log.d(TAG, "$tag: biên độ tối đa=$maxAmplitude cho \"$text\"")
+        Log.d(TAG, "$tag: biên độ tối đa=$maxAmplitude cho \"$text\"$contextSuffix")
         if (maxAmplitude < 0.01f) {
             Log.w(
                 TAG,
                 "$tag: audio CÂM THẬT SỰ (biên độ tối đa=$maxAmplitude, gần như toàn số 0) " +
-                        "cho \"$text\" — đây là lỗi ở generate()/model, KHÔNG PHẢI lỗi playback. " +
+                        "cho \"$text\"$contextSuffix — đây là lỗi ở generate()/model, KHÔNG PHẢI lỗi playback. " +
                         "Nếu thấy log này, vấn đề nằm ở input text hoặc model, không phải ở " +
                         "TtsPlaybackRouter/TtsAudioCache/MediaPlayer."
             )
@@ -136,6 +136,29 @@ class KokoroTtsEngine : TtsEngine {
     // lượt hoặc vừa generate xong sau khi bị "vượt mặt") tự biết mình đã lỗi
     // thời, không phát audio nữa dù generate() đã hoàn tất.
     private var latestRequestId = 0L
+
+    // ── MỚI: giảm hiện tượng model sinh thêm 1 âm "rác" không xác định ở
+    // cuối audio khi input QUÁ NGẮN — đã xác nhận qua thực tế, chủ yếu xảy
+    // ra với các từ đơn 1 âm tiết (vd "in", "at", "its"). Model Kokoro
+    // (StyleTTS2-based) không được train tối ưu cho input cực ngắn, thiếu
+    // tín hiệu rõ ràng để biết khi nào nên "kết thúc câu" mượt — thêm dấu
+    // chấm cuối cho model 1 ranh giới câu tường minh, giảm khả năng sinh
+    // phoneme thừa sau từ thật.
+    //
+    // CHỈ thêm khi text CHƯA có sẵn dấu kết câu — câu/cụm dài lấy từ DB
+    // thường đã có dấu chấm/hỏi/than/phẩy sẵn rồi, thêm nữa gây double
+    // punctuation không cần thiết, có thể ảnh hưởng ngắt nghỉ.
+    //
+    // ⚠️ QUAN TRỌNG: hàm này CHỈ dùng để build chuỗi đưa vào
+    // engine.generate() — KHÔNG được dùng kết quả này để tính contentHash()
+    // ở TtsAudioCache (cache key vẫn phải theo đúng text GỐC, nếu không sẽ
+    // vô hiệu hoá toàn bộ cache đã build từ trước).
+    private fun normalizeForSynthesis(text: String): String {
+        val trimmed = text.trim()
+        if (trimmed.isEmpty()) return trimmed
+        val hasEndingPunctuation = trimmed.last() in charArrayOf('.', '!', '?', ',', ';', ':')
+        return if (hasEndingPunctuation) trimmed else "$trimmed."
+    }
 
     // ── Tự động tính numThreads theo số core thiết bị, thay vì hardcode cố
     // định — công thức bậc thang, KHÔNG dùng hết toàn bộ core:
@@ -242,7 +265,10 @@ class KokoroTtsEngine : TtsEngine {
                     val sidToUse = currentSid
                     Log.d(TAG, "speak: bắt đầu generate() cho \"$text\" (requestId=$myRequestId, sid=$sidToUse)")
                     val startTime = System.currentTimeMillis()
-                    val audio = engine.generate(text = text, sid = sidToUse, speed = currentSpeed)
+                    // ⚠️ Đưa text đã chuẩn hoá (thêm dấu chấm nếu thiếu) vào
+                    // model — xem normalizeForSynthesis(). Log/cache vẫn dùng
+                    // `text` gốc, KHÔNG đổi.
+                    val audio = engine.generate(text = normalizeForSynthesis(text), sid = sidToUse, speed = currentSpeed)
                     val elapsed = System.currentTimeMillis() - startTime
 
                     Log.d(
@@ -289,9 +315,9 @@ class KokoroTtsEngine : TtsEngine {
     // Vẫn qua generateMutex — xếp hàng chung với speak(), tuyệt đối không gọi
     // generate() JNI song song trên 2 luồng khác nhau (xem ghi chú ở
     // generateMutex phía trên).
-    override suspend fun generateAudio(text: String, sid: Int): TtsAudioResult? {
+    override suspend fun generateAudio(text: String, sid: Int, readingId: String): TtsAudioResult? {
         if (text.isBlank() || !isReadyFlag) {
-            Log.d(TAG, "generateAudio: engine chưa sẵn sàng hoặc text rỗng, bỏ qua \"$text\"")
+            Log.d(TAG, "generateAudio: engine chưa sẵn sàng hoặc text rỗng, bỏ qua \"$text\" (reading=$readingId)")
             return null
         }
 
@@ -299,26 +325,30 @@ class KokoroTtsEngine : TtsEngine {
             generateMutex.withLock {
                 try {
                     val engine = tts ?: return@withLock null
-                    Log.d(TAG, "generateAudio: bắt đầu generate() cho \"$text\" (sid=$sid, pre-cache)")
+                    Log.d(TAG, "generateAudio: bắt đầu generate() cho \"$text\" (reading=$readingId, sid=$sid, pre-cache)")
                     val startTime = System.currentTimeMillis()
-                    val audio = engine.generate(text = text, sid = sid, speed = 1.0f)
+                    // ⚠️ Đưa text đã chuẩn hoá (thêm dấu chấm nếu thiếu) vào
+                    // model — xem normalizeForSynthesis(). Cache key
+                    // (contentHash ở TtsAudioCache, do TtsPregenWorker tính
+                    // TRƯỚC khi gọi hàm này) vẫn dùng `text` gốc, KHÔNG đổi.
+                    val audio = engine.generate(text = normalizeForSynthesis(text), sid = sid, speed = 1.0f)
                     val elapsed = System.currentTimeMillis() - startTime
 
                     Log.d(
                         TAG,
-                        "generateAudio: generate() xong trong ${elapsed}ms (sid=$sid), " +
+                        "generateAudio: generate() xong trong ${elapsed}ms (reading=$readingId, sid=$sid), " +
                                 "samples=${audio.samples.size}, sampleRate=${audio.sampleRate}"
                     )
-                    logAmplitudeCheck("generateAudio", text, audio.samples)
+                    logAmplitudeCheck("generateAudio", text, audio.samples, contextSuffix = " (reading=$readingId, sid=$sid)")
 
                     if (audio.samples.isEmpty()) {
-                        Log.w(TAG, "generateAudio: generate() trả về 0 sample cho \"$text\" (sid=$sid)")
+                        Log.w(TAG, "generateAudio: generate() trả về 0 sample cho \"$text\" (reading=$readingId, sid=$sid)")
                         null
                     } else {
                         TtsAudioResult(samples = audio.samples, sampleRate = audio.sampleRate)
                     }
                 } catch (e: Exception) {
-                    Log.e(TAG, "generateAudio: lỗi khi sinh audio cho \"$text\" (sid=$sid)", e)
+                    Log.e(TAG, "generateAudio: lỗi khi sinh audio cho \"$text\" (reading=$readingId, sid=$sid)", e)
                     null
                 }
             }
