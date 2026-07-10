@@ -30,6 +30,8 @@ package com.eleap.eleap.core.tts.remote
 
 import android.content.Context
 import android.util.Log
+import kotlinx.coroutines.Dispatchers
+import kotlinx.coroutines.withContext
 import org.json.JSONObject
 import java.io.File
 import java.io.FileOutputStream
@@ -54,11 +56,26 @@ class TtsGoogleDriveSource(
     // bằng "{readingId}_" — trả về null nếu không có file khớp, nếu thiếu
     // access_token, hoặc nếu gọi mạng thất bại — đúng hợp đồng đã định nghĩa
     // ở TtsRemoteSource.kt: KHÔNG throw. ────────────────────────────────
-    override suspend fun fetchManifest(readingId: String): TtsRemoteManifest? {
+    //
+    // ⚠️ SỬA: bọc TOÀN BỘ thân hàm trong withContext(Dispatchers.IO) — cả
+    // TtsServiceAccountAuth.getAccessToken() (có thể tự gọi mạng đồng bộ để
+    // làm mới token khi hết hạn) LẪN httpGet() bên dưới đều dùng
+    // HttpURLConnection (blocking I/O thuần), KHÔNG tự nhảy sang background
+    // thread. suspend fun KHÔNG tự động chạy ngoài Main thread — nó chạy
+    // trên đúng thread của coroutine gọi nó. Trước đây khi gọi từ
+    // CoroutineWorker (TtsPregenWorker/TtsRemotePackWorker) tình cờ không
+    // lộ lỗi vì WorkManager tự đặt dispatcher nền sẵn — nhưng khi gọi trực
+    // tiếp từ UI (vd nút debug forceCheckCurrentReadingNow() trong
+    // ReadingScreen, chạy trên Dispatchers.Main.immediate của
+    // rememberCoroutineScope()) sẽ ném NetworkOnMainThreadException ngay
+    // lập tức (xem log thực tế đã xác nhận). Bọc ở ĐÂY (nguồn gốc gây lỗi)
+    // thay vì sửa từng nơi gọi — để MỌI caller trong tương lai đều tự động
+    // an toàn, không cần nhớ tự withContext(Dispatchers.IO) mỗi lần gọi.
+    override suspend fun fetchManifest(readingId: String): TtsRemoteManifest? = withContext(Dispatchers.IO) {
         val accessToken = TtsServiceAccountAuth.getAccessToken(context)
         if (accessToken == null) {
             Log.d(TAG, "fetchManifest: không lấy được access_token, coi như chưa cấu hình")
-            return null
+            return@withContext null
         }
 
         val query = buildString {
@@ -75,14 +92,14 @@ class TtsGoogleDriveSource(
             httpGet(url, accessToken)
         } catch (e: Exception) {
             Log.w(TAG, "fetchManifest: lỗi gọi Drive API cho readingId=$readingId, coi như không có gì", e)
-            return null
+            return@withContext null
         }
 
         if (responseBody == null) {
-            return null
+            return@withContext null
         }
 
-        return try {
+        try {
             val packs = parseFilesResponse(responseBody, readingId)
             if (packs.isEmpty()) {
                 Log.d(TAG, "fetchManifest: Drive không có file nào cho readingId=$readingId")
@@ -98,14 +115,16 @@ class TtsGoogleDriveSource(
 
     // ── Tải nội dung 1 file (đã biết fileId qua downloadUrl) về đúng
     // destZip. Trả về false nếu bất kỳ bước nào thất bại — KHÔNG throw. ────
-    override suspend fun downloadPackFile(pack: TtsRemotePackRef, destZip: File): Boolean {
+    // ⚠️ SỬA: bọc withContext(Dispatchers.IO) — cùng lý do như fetchManifest()
+    // ở trên (getAccessToken() + HttpURLConnection đều là blocking I/O).
+    override suspend fun downloadPackFile(pack: TtsRemotePackRef, destZip: File): Boolean = withContext(Dispatchers.IO) {
         val accessToken = TtsServiceAccountAuth.getAccessToken(context)
         if (accessToken == null) {
             Log.w(TAG, "downloadPackFile: không lấy được access_token, huỷ tải reading=${pack.readingId} sid=${pack.sid}")
-            return false
+            return@withContext false
         }
 
-        return try {
+        try {
             val connection = openConnection(pack.downloadUrl, accessToken)
             connection.connect()
 
@@ -116,7 +135,7 @@ class TtsGoogleDriveSource(
                             "sid=${pack.sid}, url=${pack.downloadUrl}"
                 )
                 connection.disconnect()
-                return false
+                return@withContext false
             }
 
             connection.inputStream.use { input ->
