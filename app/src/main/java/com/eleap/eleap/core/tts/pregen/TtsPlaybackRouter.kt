@@ -10,11 +10,20 @@
 //
 // Logic: nếu engine đang active là Kokoro (qua TtsVoiceSnapshot.currentTargetSid()
 // — trả về null nếu KHÔNG phải Kokoro, đúng ý nghĩa đã chốt ở
-// TtsVoiceSnapshot.kt) VÀ đã có file cache đúng hash cho đúng (readingId,
-// sid, loại, itemId) → phát THẲNG file đó, không generate lại. Ngược lại
-// (chưa có cache, hoặc đang là Android TTS) → fallback y hệt hành vi CŨ:
-// gọi TtsManager.speak(text) như trước khi có tính năng pre-cache, KHÔNG
-// đổi gì ở nhánh này.
+// TtsVoiceSnapshot.kt) → tra cache ĐÚNG 1 sid hiện tại, phát THẲNG file cache
+// tìm được (đúng hash) cho đúng (readingId, itemType, itemId). Ngược lại
+// (chưa có cache, hoặc đang là Android TTS) → fallback y hệt hành vi CŨ: gọi
+// TtsManager.speak(text) như trước khi có tính năng pre-cache, KHÔNG đổi gì
+// ở nhánh này.
+//
+// ⚠️ SỬA (quay lại logic đơn giản — KHÔNG còn dò theo chuỗi giọng): trước
+// đây khi cache giọng hiện tại chưa có, Router thử tra thêm các giọng cùng
+// nhóm (TtsVoicePairing.fallbackChainOf()), vì TtsPregenWorker từng lưu
+// audio "cứu" được vào cache RIÊNG của giọng thay thế. Giờ
+// TtsPregenWorker.repairSilentItem() đã đổi cách lưu — audio cứu được luôn
+// ghi ĐÈ thẳng vào cache của SID GỐC (xem TtsPregenWorker.kt) — nên cache
+// của sid hiện tại luôn tự chứa đủ audio, Router không cần dò thêm giọng
+// nào khác nữa.
 //
 // ⚠️ KHÔNG tái dùng cơ chế AudioTrack thô bên trong KokoroTtsEngine (vốn
 // được viết riêng cho việc phát trực tiếp samples vừa generate xong, gắn
@@ -76,8 +85,8 @@ object TtsPlaybackRouter {
             }
         }
 
-        // Không có cache (chưa kịp pre-cache, hoặc đang là Android TTS) —
-        // hành vi CŨ, giữ nguyên không đổi.
+        // Không có cache cho sid hiện tại (chưa kịp pre-cache/repair, hoặc
+        // đang là Android TTS) — hành vi CŨ, giữ nguyên không đổi.
         stopCachedPlayback()
         TtsManager.speak(text)
     }
