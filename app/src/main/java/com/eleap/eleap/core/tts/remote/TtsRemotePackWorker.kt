@@ -43,14 +43,17 @@ class TtsRemotePackWorker(
             return Result.success()
         }
 
-        val source = TtsRemoteSourceRegistry.current()
-        if (source == null) {
-            Log.d(TAG, "doWork: chưa cấu hình TtsRemoteSource nào, bỏ qua (pregen/ sẽ tự lo)")
-            return Result.success()
-        }
-
-        val ok = TtsRemotePackDownloader.downloadAndExtract(applicationContext, source, readingId, sid)
-        Log.d(TAG, "doWork: reading=$readingId sid=$sid kết quả tải=$ok")
+        // ⚠️ SỬA: trước đây gọi THẲNG downloadAndExtract(), bỏ qua hoàn
+        // toàn gate 24h (isPackUpToDate/isPackSynced) — dẫn tới tải lại
+        // nguyên gói .zip từ Drive MỖI LẦN người dùng mở lại 1 bài đã có
+        // cache local từ trước, dù nội dung trên Drive không hề đổi (xác
+        // nhận qua log thực tế 2026-07-10). Giờ gọi qua syncIfNeeded() —
+        // đúng gate DÙNG CHUNG với TtsPregenWorker.ensureRemotePackSynced()
+        // (xem TtsRemotePackDownloader.syncIfNeeded()), tự bỏ qua nếu gói
+        // đã đồng bộ và chưa tới hạn check lại, chỉ gọi Drive khi thật sự
+        // cần thiết.
+        val ok = TtsRemotePackDownloader.syncIfNeeded(applicationContext, readingId, sid)
+        Log.d(TAG, "doWork: reading=$readingId sid=$sid kết quả đồng bộ=$ok")
         return Result.success()
     }
 }

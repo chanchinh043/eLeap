@@ -581,17 +581,25 @@ class TtsPregenWorker(
     // thấy file đã tồn tại và tự bỏ qua generate, không cần sửa gì thêm ở
     // đó.
     //
-    // 3 nhánh, theo đúng thứ tự kiểm tra rẻ nhất → tốn kém nhất:
-    //   1. isPackSynced() — chỉ đọc 1 file trên đĩa (rất rẻ, không mạng) —
-    //      đã tải xong từ trước (kể cả ở phiên app trước đó) thì bỏ qua
-    //      NGAY, tránh gọi Drive lại vô ích (đúng yêu cầu "tránh tải 2 lần").
+    // ⚠️ MỚI (hỗ trợ voice nâng cấp — up đè file trên Drive): 4 nhánh, theo
+    // đúng thứ tự kiểm tra rẻ nhất → tốn kém nhất:
+    //   1. isPackUpToDate() — chỉ đọc 2 file nhỏ trên đĩa (rất rẻ, KHÔNG gọi
+    //      mạng) — đã sync từ trước VÀ chưa tới hạn check lại (trong vòng
+    //      CHECK_INTERVAL_MS, mặc định 24h) → bỏ qua NGAY, đây là nhánh
+    //      chạy ở TUYỆT ĐẠI ĐA SỐ lượt gọi, giữ nguyên tốc độ như trước.
     //   2. Chưa cấu hình nguồn remote (TtsRemoteSourceRegistry rỗng) — bỏ
     //      qua, rơi thẳng xuống generate on-device như hành vi gốc (offline-
     //      first vẫn đúng tinh thần ban đầu).
-    //   3. Có nguồn, chưa từng đồng bộ — gọi downloadAndExtract() THẬT (có
-    //      thể mất vài giây, có gọi mạng) — dù thành công hay thất bại đều
-    //      KHÔNG throw, để vòng xử lý tiếp tục bình thường (thất bại thì
-    //      processItem() bên dưới tự generate on-device như lưới an toàn).
+    //   3. Đã sync từ trước nhưng ĐÃ QUÁ HẠN check (vd sau 24h) —
+    //      checkForUpdate(): CHỈ 1 lệnh gọi Drive metadata (files.list, KHÔNG
+    //      tải nội dung .zip) để so sánh sha256 — chỉ tải lại .zip THẬT nếu
+    //      bạn đã up đè bản mới trên Drive (sha256 đổi). Đây là chi phí THẤP
+    //      nhất có thể để vẫn phát hiện được voice nâng cấp mà không tải lại
+    //      mỗi lần mở app.
+    //   4. Chưa từng đồng bộ — gọi downloadAndExtract() THẬT (có thể mất vài
+    //      giây, có gọi mạng) — dù thành công hay thất bại đều KHÔNG throw,
+    //      để vòng xử lý tiếp tục bình thường (thất bại thì processItem()
+    //      bên dưới tự generate on-device như lưới an toàn).
     //
     // checkNotInterrupted() gọi cả TRƯỚC và SAU bước tải mạng (có thể mất
     // vài giây) — nếu người dùng đổi bài/giọng NGAY trong lúc đang tải, cần
@@ -603,20 +611,16 @@ class TtsPregenWorker(
         snapshotForegroundId: String?,
         snapshotSelectedAt: Long,
     ) {
-        if (TtsRemotePackDownloader.isPackSynced(context, readingId, sid)) {
-            Log.d(TAG, "ensureRemotePackSynced: reading=$readingId sid=$sid đã đồng bộ từ trước, bỏ qua kiểm tra Drive")
-            return
-        }
-
-        val source = TtsRemoteSourceRegistry.current()
-        if (source == null) {
-            Log.d(TAG, "ensureRemotePackSynced: chưa cấu hình nguồn remote, generate on-device như bình thường")
-            return
-        }
-
-        Log.d(TAG, "ensureRemotePackSynced: kiểm tra Drive TRƯỚC khi generate on-device cho reading=$readingId sid=$sid")
-        val ok = TtsRemotePackDownloader.downloadAndExtract(context, source, readingId, sid)
-        Log.d(TAG, "ensureRemotePackSynced: kết quả tải=$ok cho reading=$readingId sid=$sid")
+        // ⚠️ SỬA: logic gate 24h (isPackUpToDate → isPackSynced →
+        // checkForUpdate/downloadAndExtract) đã CHUYỂN sang
+        // TtsRemotePackDownloader.syncIfNeeded() — dùng CHUNG với
+        // TtsRemotePackWorker (trước đây worker đó gọi thẳng
+        // downloadAndExtract(), bỏ qua gate này, gây tải lại .zip không
+        // cần thiết mỗi lần mở bài — xem log thực tế 2026-07-10). Giữ hàm
+        // ensureRemotePackSynced() này lại (không xoá) chỉ để giữ nguyên
+        // điểm gọi checkNotInterrupted() ngay sau, đúng luồng cũ của
+        // processReading().
+        TtsRemotePackDownloader.syncIfNeeded(context, readingId, sid)
 
         checkNotInterrupted(snapshotForegroundId, snapshotSelectedAt)
     }
@@ -678,3 +682,47 @@ class TtsPregenWorker(
         }
     }
 }
+
+// ═══════════════════════════════════════════════════════════════════════
+// ===== DEBUG_BLOCK_START — CHỈ dùng để test, KHÔNG phải luồng chính
+// thức. Muốn gỡ: xoá TOÀN BỘ khối từ dòng "DEBUG_BLOCK_START" tới
+// "DEBUG_BLOCK_END" bên dưới + đoạn nút bấm ở ReadingScreen đang gọi
+// TtsPregenDebugTools.forceCheckCurrentReadingNow(). Không có state/file gì
+// khác trên đĩa gắn riêng với khối debug này — chỉ gọi lại đúng
+// TtsRemotePackDownloader.checkForUpdate() vốn có sẵn cho luồng chính
+// thức, không thêm cơ chế lưu trữ mới. ═══════════════════════════════════
+object TtsPregenDebugTools {
+
+    private const val DEBUG_TAG = "TtsPregenDebugTools"
+
+    // ── Ép kiểm tra Drive NGAY cho ĐÚNG bài đang mở + giọng đang chọn hiện
+    // tại — bỏ qua hoàn toàn TtsRemotePackDownloader.isPackUpToDate() (cổng
+    // 24h của luồng tự động ở ensureRemotePackSynced()). Gọi thẳng
+    // checkForUpdate() có sẵn — không viết thêm logic so sánh sha256/tải
+    // lại nào mới ở đây.
+    suspend fun forceCheckCurrentReadingNow(context: Context): Boolean {
+        val readingId = TtsForegroundReading.currentReadingId.value
+        if (readingId == null) {
+            Log.d(DEBUG_TAG, "forceCheckCurrentReadingNow: không có bài nào đang mở, bỏ qua")
+            return false
+        }
+
+        val sid = TtsVoiceSnapshot.currentTargetSid()
+        if (sid == null) {
+            Log.d(DEBUG_TAG, "forceCheckCurrentReadingNow: engine hiện tại không phải Kokoro, không có sid để check")
+            return false
+        }
+
+        val source = com.eleap.eleap.core.tts.remote.TtsRemoteSourceRegistry.current()
+        if (source == null) {
+            Log.d(DEBUG_TAG, "forceCheckCurrentReadingNow: chưa cấu hình nguồn remote")
+            return false
+        }
+
+        Log.d(DEBUG_TAG, "forceCheckCurrentReadingNow: ép check Drive NGAY cho reading=$readingId sid=$sid (bỏ qua giới hạn 24h)")
+        val ok = com.eleap.eleap.core.tts.remote.TtsRemotePackDownloader.checkForUpdate(context, source, readingId, sid)
+        Log.d(DEBUG_TAG, "forceCheckCurrentReadingNow: kết quả=$ok cho reading=$readingId sid=$sid")
+        return ok
+    }
+}
+// ===== DEBUG_BLOCK_END =====

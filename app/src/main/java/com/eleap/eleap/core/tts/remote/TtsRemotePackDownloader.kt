@@ -45,12 +45,27 @@ private const val TAG = "TtsRemotePackDownloader"
 // TtsPregenWorker gọi lại downloadAndExtract() mỗi lần processReading() lặp
 // lại cho cùng (readingId, sid) đã tải xong từ trước.
 //
-// ⚠️ Giới hạn đã biết: nếu sau này server build lại gói mới (sha256 đổi),
-// marker này KHÔNG tự phát hiện — app sẽ tiếp tục dùng bản cache cũ. Chấp
-// nhận được ở giai đoạn này (chưa có cơ chế versioning phía app); nếu cần
-// version-check sau này, đổi sang lưu sha256 vào nội dung marker và so
-// sánh với manifest thay vì chỉ kiểm tra tồn tại file.
+// ⚠️ MỚI: đã VÁ giới hạn ghi chú ở trên — marker này giờ lưu ĐÚNG sha256 của
+// pack tại thời điểm tải (không đổi so với trước), và có thêm marker
+// REMOTE_CHECKED_AT_MARKER (bên dưới) để so sánh phát hiện bản mới trên
+// Drive theo chu kỳ, xem checkForUpdate() và isPackUpToDate().
 private const val REMOTE_SYNCED_MARKER = ".remote_synced"
+
+// ── MỚI: Tên file đánh dấu "lần cuối cùng đã hỏi Drive xem có bản mới
+// không" — TÁCH RIÊNG khỏi REMOTE_SYNCED_MARKER (giữ đúng tinh thần "1
+// marker = 1 mục đích" của các file khác trong dự án, vd AssetCopier.kt).
+// Chỉ TtsRemotePackDownloader tự đọc/ghi, không nơi nào khác cần biết.
+private const val REMOTE_CHECKED_AT_MARKER = ".remote_checked_at"
+
+// ── MỚI: khoảng thời gian tối thiểu giữa 2 lần hỏi Drive xem có bản mới
+// hay không, cho ĐÚNG 1 (readingId, sid) — đây là đòn bẩy CHÍNH để vừa bắt
+// được bản voice nâng cấp (up đè trên Drive) vừa không tốn quota Drive
+// API/tốn thời gian mỗi lần mở app. 24 giờ là lựa chọn hợp lý cho use-case
+// "thỉnh thoảng nâng cấp 1 vài giọng" — không cần realtime, và vẫn đủ
+// nhanh để người dùng thấy bản mới trong vòng 1 ngày mà không cần chờ
+// build lại app hay xoá cache thủ công. Tăng lên (vd 7 ngày) nếu muốn tiết
+// kiệm quota Drive hơn nữa, hoặc giảm xuống nếu cần cập nhật gấp hơn.
+private const val CHECK_INTERVAL_MS = 24 * 60 * 60 * 1000L
 
 object TtsRemotePackDownloader {
 
@@ -65,6 +80,166 @@ object TtsRemotePackDownloader {
         return markerFile.exists()
     }
 
+    // ── MỚI: Kiểm tra NHANH (KHÔNG gọi mạng) — gói đã sync VÀ lần hỏi Drive
+    // gần nhất còn nằm trong CHECK_INTERVAL_MS, tức "chưa tới hạn cần hỏi
+    // lại Drive xem có bản mới không". Đây là cổng ĐẦU TIÊN mà
+    // TtsPregenWorker.ensureRemotePackSynced() nên gọi — trả về true ở
+    // TUYỆT ĐẠI ĐA SỐ lượt chạy (chỉ đọc 2 file nhỏ trên đĩa), giữ nguyên
+    // tốc độ/chi phí như isPackSynced() cũ. Chỉ khi trả về false (chưa
+    // từng sync HOẶC đã quá hạn check) caller mới cần cân nhắc gọi tiếp
+    // checkForUpdate()/downloadAndExtract(). ───────────────────────────────
+    fun isPackUpToDate(context: Context, readingId: String, sid: Int, nowMillis: Long = System.currentTimeMillis()): Boolean {
+        if (!isPackSynced(context, readingId, sid)) return false
+        val checkedAt = readCheckedAtMillis(context, readingId, sid) ?: return false
+        return nowMillis - checkedAt < CHECK_INTERVAL_MS
+    }
+
+    private fun readCheckedAtMillis(context: Context, readingId: String, sid: Int): Long? {
+        val file = File(TtsAudioCache.voiceDir(context, readingId, sid), REMOTE_CHECKED_AT_MARKER)
+        if (!file.exists()) return null
+        return try {
+            file.readText().trim().toLongOrNull()
+        } catch (e: Exception) {
+            null
+        }
+    }
+
+    private fun writeCheckedAtMillis(context: Context, readingId: String, sid: Int, nowMillis: Long) {
+        try {
+            val destDir = TtsAudioCache.voiceDir(context, readingId, sid)
+            File(destDir, REMOTE_CHECKED_AT_MARKER).writeText(nowMillis.toString())
+        } catch (e: Exception) {
+            Log.w(TAG, "writeCheckedAtMillis: ghi thất bại reading=$readingId sid=$sid (không ảnh hưởng audio đã có)", e)
+        }
+    }
+
+    private fun readSyncedSha256(context: Context, readingId: String, sid: Int): String? {
+        val file = File(TtsAudioCache.voiceDir(context, readingId, sid), REMOTE_SYNCED_MARKER)
+        if (!file.exists()) return null
+        return try {
+            file.readText().trim().ifBlank { null }
+        } catch (e: Exception) {
+            null
+        }
+    }
+
+    // ── MỚI: Điểm gọi khi ĐÃ có cache (isPackSynced()=true) nhưng ĐÃ QUÁ
+    // HẠN check (isPackUpToDate()=false) — CHỈ gọi tới đây, KHÔNG gọi
+    // downloadAndExtract() thẳng, để tránh tải lại file .zip khi nội dung
+    // trên Drive KHÔNG hề đổi (trường hợp phổ biến nhất: bạn chưa kịp up
+    // bản mới, chỉ là tới chu kỳ 24h phải hỏi lại).
+    //
+    // Chi phí: ĐÚNG 1 lệnh gọi Drive files.list (source.fetchManifest()) —
+    // CHỈ trả về metadata (tên file, sha256Checksum, modifiedTime), KHÔNG
+    // tải nội dung .zip — rất nhẹ so với tải cả gói. Chỉ khi sha256 server
+    // trả về KHÁC với sha256 đã lưu local (bạn vừa up đè bản mới lên Drive)
+    // mới thực sự gọi downloadAndExtract() để tải + giải nén bản mới.
+    //
+    // Trả về true nếu sau lượt gọi này, cache local coi như "đã cập nhật"
+    // (dù là do không có gì mới, hay do vừa tải bản mới thành công) — false
+    // nếu gọi Drive thất bại (mất mạng...) hoặc tải bản mới thất bại; ở cả
+    // 2 trường hợp false, cache CŨ vẫn còn nguyên và vẫn dùng được bình
+    // thường (an toàn, không xoá gì trước khi có bản thay thế chắc chắn
+    // tải xong — xem downloadAndExtract()/extractZip() tự ghi đè đúng tên
+    // file, không xoá trước).
+    suspend fun checkForUpdate(
+        context: Context,
+        source: TtsRemoteSource,
+        readingId: String,
+        sid: Int,
+    ): Boolean {
+        val now = System.currentTimeMillis()
+        val manifest = source.fetchManifest(readingId)
+        if (manifest == null) {
+            Log.d(TAG, "checkForUpdate: không gọi được Drive (mất mạng?), giữ nguyên cache cũ reading=$readingId sid=$sid")
+            // KHÔNG touch checkedAt ở đây — để lần doWork() KẾ TIẾP thử
+            // hỏi lại ngay (không phải chờ thêm 24h nữa), vì lần này thất
+            // bại là do lỗi tạm thời (mất mạng), không phải "đã hỏi rồi
+            // không có gì mới".
+            return false
+        }
+
+        val pack = manifest.findPack(readingId, sid)
+        if (pack == null) {
+            // Drive không còn gói cho (readingId, sid) này (hiếm — vd bạn
+            // lỡ xoá file trên Drive) — giữ nguyên cache local, chỉ cập
+            // nhật checkedAt để không hỏi lại liên tục trong 24h tới.
+            Log.d(TAG, "checkForUpdate: Drive không còn gói cho reading=$readingId sid=$sid, giữ cache cũ")
+            writeCheckedAtMillis(context, readingId, sid, now)
+            return true
+        }
+
+        val localSha256 = readSyncedSha256(context, readingId, sid)
+        if (pack.sha256.equals(localSha256, ignoreCase = true)) {
+            // Không có gì mới — chỉ cần "chạm" lại mốc thời gian check,
+            // KHÔNG tải lại zip. Đây là nhánh chạy ở tuyệt đại đa số lượt
+            // check (bạn không nâng cấp voice mỗi ngày).
+            Log.d(TAG, "checkForUpdate: reading=$readingId sid=$sid vẫn là bản mới nhất (sha256 không đổi)")
+            writeCheckedAtMillis(context, readingId, sid, now)
+            return true
+        }
+
+        // sha256 khác local → bạn đã up đè bản mới lên Drive (cùng tên
+        // file, Drive tự tính lại sha256Checksum mới) — tải lại đúng gói
+        // này. downloadAndExtract() tự giải nén ĐÈ lên file cũ (cùng tên)
+        // và tự ghi lại REMOTE_SYNCED_MARKER với sha256 mới.
+        Log.d(
+            TAG,
+            "checkForUpdate: PHÁT HIỆN bản MỚI trên Drive cho reading=$readingId sid=$sid " +
+                    "(sha256 cũ=$localSha256, mới=${pack.sha256}), tải lại"
+        )
+        val ok = downloadAndExtract(context, source, readingId, sid)
+        if (ok) {
+            writeCheckedAtMillis(context, readingId, sid, now)
+        }
+        // Nếu tải thất bại, KHÔNG touch checkedAt — để lần doWork() kế
+        // tiếp thử tải lại sớm, không phải chờ đủ 24h.
+        return ok
+    }
+
+    // ── MỚI: Điểm gọi GATED DUY NHẤT — dùng chung cho MỌI caller muốn đảm
+    // bảo cache local đã đồng bộ với Drive mà KHÔNG tốn băng thông/quota
+    // nếu chưa tới hạn. Trước đây logic này (isPackUpToDate → isPackSynced
+    // → checkForUpdate/downloadAndExtract) nằm RIÊNG bên trong
+    // TtsPregenWorker.ensureRemotePackSynced() — TtsRemotePackWorker (chạy
+    // khi người dùng mở 1 bài cụ thể) lại gọi thẳng downloadAndExtract(),
+    // bỏ qua hoàn toàn gate 24h → tải lại nguyên gói .zip mỗi lần mở bài dù
+    // chưa hề có gì đổi trên Drive (đã xác nhận qua log thực tế
+    // 2026-07-10: TtsRemotePackWorker tải lại đúng lúc TtsPregenWorker nói
+    // "đã đồng bộ, bỏ qua" cho CÙNG 1 (readingId, sid)).
+    //
+    // Chuyển logic gate vào ĐÂY để mọi caller hiện tại (TtsPregenWorker,
+    // TtsRemotePackWorker) và tương lai (vd nút "làm mới" trong Settings)
+    // tự động được bảo vệ, không cần tự nhớ implement lại gate ở từng nơi.
+    //
+    // Trả về true nếu sau lượt gọi này cache coi như đã đồng bộ (không cần
+    // làm gì vì chưa tới hạn, hoặc check thấy không có gì mới, hoặc vừa tải
+    // bản mới thành công) — false nếu chưa cấu hình nguồn remote, hoặc
+    // check/tải thất bại (cache cũ — nếu có — vẫn dùng bình thường ở mọi
+    // nhánh false, không có gì bị xoá).
+    suspend fun syncIfNeeded(context: Context, readingId: String, sid: Int): Boolean {
+        if (isPackUpToDate(context, readingId, sid)) {
+            Log.d(TAG, "syncIfNeeded: reading=$readingId sid=$sid đã đồng bộ và chưa tới hạn check lại, bỏ qua")
+            return true
+        }
+
+        val source = TtsRemoteSourceRegistry.current()
+        if (source == null) {
+            Log.d(TAG, "syncIfNeeded: chưa cấu hình nguồn remote, coi như không có gì để đồng bộ")
+            return false
+        }
+
+        return if (isPackSynced(context, readingId, sid)) {
+            Log.d(TAG, "syncIfNeeded: đã quá hạn check, hỏi Drive xem có bản mới cho reading=$readingId sid=$sid")
+            checkForUpdate(context, source, readingId, sid)
+        } else {
+            Log.d(TAG, "syncIfNeeded: kiểm tra Drive TRƯỚC khi generate on-device cho reading=$readingId sid=$sid")
+            val ok = downloadAndExtract(context, source, readingId, sid)
+            Log.d(TAG, "syncIfNeeded: kết quả tải=$ok cho reading=$readingId sid=$sid")
+            ok
+        }
+    }
+
     // ── Điểm gọi CHÍNH — tải + xác thực + giải nén gói giọng `sid` của bài
     // `readingId` từ `source`. Trả về true nếu cuối cùng cache đã có audio
     // sẵn sàng dùng (giải nén thành công), false ở MỌI trường hợp khác
@@ -72,11 +247,12 @@ object TtsRemotePackDownloader {
     // TtsRemotePackWorker) không cần phân biệt lý do thất bại cụ thể, chỉ
     // cần biết "có nên fallback sang chờ pregen tự sinh hay không".
     //
-    // ⚠️ Hàm này KHÔNG tự kiểm tra isPackSynced() ở đầu — caller phải tự
-    // gọi isPackSynced() trước nếu muốn tránh gọi mạng không cần thiết (xem
-    // TtsPregenWorker.ensureRemotePackSynced()). Giữ tách biệt 2 hàm để
+    // ⚠️ Hàm này KHÔNG tự kiểm tra isPackSynced()/isPackUpToDate() ở đầu —
+    // caller phải tự gọi trước nếu muốn tránh gọi mạng không cần thiết (xem
+    // TtsPregenWorker.ensureRemotePackSynced()). Giữ tách biệt để
     // downloadAndExtract() vẫn dùng lại được cho trường hợp CỐ TÌNH muốn ép
-    // tải lại (vd tương lai có nút "làm mới cache" thủ công).
+    // tải lại (vd nút "làm mới cache" thủ công, hoặc gọi từ checkForUpdate()
+    // ở trên khi đã xác nhận sha256 đổi).
     suspend fun downloadAndExtract(
         context: Context,
         source: TtsRemoteSource,
@@ -127,6 +303,12 @@ object TtsRemotePackDownloader {
             } catch (e: Exception) {
                 Log.w(TAG, "downloadAndExtract: ghi marker thất bại reading=$readingId sid=$sid (không ảnh hưởng audio đã tải)", e)
             }
+            // ── MỚI: ghi luôn mốc "vừa check Drive xong" — để isPackUpToDate()
+            // trả về true NGAY sau lần tải này, không rơi vào vòng lặp gọi
+            // checkForUpdate() lại ở lượt processReading() kế tiếp trong
+            // CÙNG phiên chạy Worker (vd bài dài, nhiều sentence, mỗi
+            // sentence gọi lại ensureRemotePackSynced() 1 lần).
+            writeCheckedAtMillis(context, readingId, sid, System.currentTimeMillis())
 
             Log.d(TAG, "downloadAndExtract: xong reading=$readingId sid=$sid version=${pack.version}")
             return true

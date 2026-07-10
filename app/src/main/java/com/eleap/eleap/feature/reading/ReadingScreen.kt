@@ -27,6 +27,12 @@ import com.eleap.eleap.feature.reading.ui.PopupAnchorInfo
 import com.eleap.eleap.feature.reading.ui.SentencePopup
 import com.eleap.eleap.feature.reading.ui.WordClickableRow
 import com.eleap.eleap.feature.reading.ui.WordPopup
+// ── DEBUG TẠM THỜI (nút "C"): import riêng cho debug tool ép check Drive —
+// xoá 3 dòng import này CÙNG LÚC với khối nút "C" bên dưới (tìm
+// DEBUG_BUTTON_START/DEBUG_BUTTON_END) khi không cần nữa.
+import android.widget.Toast
+import com.eleap.eleap.core.tts.pregen.TtsPregenDebugTools
+import kotlinx.coroutines.launch
 
 // ── DEBUG TẠM THỜI: danh sách các lựa chọn giọng đọc để thử nghiệm/so sánh.
 // Bấm nút "V" ở TopAppBar để mở dropdown, chọn thẳng giọng cần nghe (nhanh
@@ -352,6 +358,33 @@ fun ReadingScreen(
                                 }
                             }
                         }
+                        // ===== DEBUG_BUTTON_START — nút "C" (Check): ép kiểm
+                        // tra Drive NGAY cho bài đang mở + giọng đang chọn, bỏ
+                        // qua giới hạn 24h của luồng tự động (xem
+                        // TtsPregenDebugTools.forceCheckCurrentReadingNow()) —
+                        // dùng khi vừa up đè 1 bản voice mới lên Drive và muốn
+                        // xác nhận ngay lúc test, không cần đợi/mở lại app
+                        // nhiều lần. Xoá: khối này + 3 dòng import ở đầu file
+                        // (Toast/TtsPregenDebugTools/launch) + object
+                        // TtsPregenDebugTools ở cuối TtsPregenWorker.kt. ─────
+                        run {
+                            val debugScope = rememberCoroutineScope()
+                            TextButton(
+                                onClick = {
+                                    debugScope.launch {
+                                        val updated = TtsPregenDebugTools.forceCheckCurrentReadingNow(context)
+                                        Toast.makeText(
+                                            context,
+                                            if (updated) "Đã check Drive xong (xem logcat)" else "Không check được (xem logcat)",
+                                            Toast.LENGTH_SHORT
+                                        ).show()
+                                    }
+                                }
+                            ) {
+                                Text(text = "C", style = MaterialTheme.typography.titleMedium)
+                            }
+                        }
+                        // ===== DEBUG_BUTTON_END =====
                         // ── Toggle chuyển đổi cụm điều khiển bên cạnh: cỡ chữ ↔ tốc độ đọc.
                         //    Bấm lại lần nữa quay về cỡ chữ — chỉ đổi hiển thị, không
                         //    lưu trạng thái này (luôn mặc định về cỡ chữ khi mở lại màn).
