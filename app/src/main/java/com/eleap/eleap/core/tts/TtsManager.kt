@@ -33,6 +33,8 @@ import android.content.SharedPreferences
 import android.util.Log
 import com.eleap.eleap.core.tts.pregen.TtsVoiceSnapshot
 import kotlinx.coroutines.delay
+import kotlinx.coroutines.flow.MutableStateFlow
+import kotlinx.coroutines.flow.StateFlow
 
 object TtsManager {
 
@@ -53,6 +55,21 @@ object TtsManager {
 
     private var activeEngine: TtsEngine? = null
     private var activeEngineType: EngineType = EngineType.KOKORO
+
+    // ⚠️ MỚI: bản StateFlow của activeEngineType — để UI (vd ReadingScreen)
+    // có thể QUAN SÁT ĐỘNG lúc engine active thật sự đổi, thay vì chỉ đọc 1
+    // lần lúc mở màn qua getCurrentEngineType(). Cần thiết vì
+    // reconcileActiveEngine() có thể tự chuyển engine NHIỀU LẦN không đồng
+    // bộ với UI — vd Android TTS ready sớm (~1s) trong khi Kokoro còn đang
+    // load model (~5-13s), TtsManager tạm active Android làm fallback, rồi
+    // vài giây sau tự chuyển LẠI đúng Kokoro khi nó ready. Nếu UI chỉ đọc
+    // getCurrentEngineType() 1 LẦN đúng lúc đang tạm fallback Android, label
+    // sẽ hiển thị sai và KHÔNG BAO GIỜ tự cập nhật lại cho tới khi UI đó bị
+    // tạo lại (vd rời màn đọc rồi vào lại) — đây chính là lỗi đã phát hiện.
+    // Backing field activeEngineType (var thường) vẫn giữ lại để nội bộ
+    // TtsManager đọc/ghi đồng bộ, không đổi cách dùng ở các hàm cũ.
+    private val _activeEngineTypeFlow = MutableStateFlow(activeEngineType)
+    val activeEngineTypeFlow: StateFlow<EngineType> = _activeEngineTypeFlow
 
     private var isInitializing = false
 
@@ -164,6 +181,10 @@ object TtsManager {
         engine.setSpeechRate(currentRate)
         activeEngine = engine
         activeEngineType = type
+        // ⚠️ MỚI: đồng bộ StateFlow ngay khi engine active thật sự đổi — đây
+        // là điểm DUY NHẤT activeEngineType được gán, nên chỉ cần cập nhật ở
+        // đây là đủ cho MỌI nơi gọi (reconcileActiveEngine() lẫn switchEngine()).
+        _activeEngineTypeFlow.value = type
 
         pendingText?.let { text ->
             pendingText = null

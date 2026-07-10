@@ -17,7 +17,7 @@ import androidx.compose.ui.unit.dp
 import androidx.compose.ui.window.Popup
 import androidx.compose.ui.window.PopupProperties
 import com.eleap.eleap.core.tts.TtsPlaybackRouter
-import com.eleap.eleap.core.tts.pregen.TtsCacheItemType
+import com.eleap.eleap.core.tts.cache.TtsCacheItemType
 import com.eleap.eleap.feature.reading.data.DictEntry
 import com.eleap.eleap.feature.reading.data.SentencePhrase
 import com.eleap.eleap.feature.reading.data.SentenceWord

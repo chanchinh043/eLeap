@@ -1,5 +1,12 @@
 // TtsCacheAuditor.kt
-// Đặt tại: com/eleap/eleap/core/tts/pregen/TtsCacheAuditor.kt
+// Đặt tại: com/eleap/eleap/core/tts/cache/TtsCacheAuditor.kt
+//
+// ⚠️ CHUYỂN VỊ TRÍ: trước đây nằm ở core/tts/pregen/ — giờ chuyển sang
+// core/tts/cache/ cùng với TtsAudioCache.kt, vì việc audit file .wav trên
+// đĩa (đọc lại, kiểm tra câm) là thao tác trên CHÍNH cache, không gắn riêng
+// với việc tự sinh audio. TtsPregenWorker (ở pregen/) vẫn là nơi DUY NHẤT
+// gọi audit() để quyết định có cần regenerate hay không — file này chỉ đổi
+// package, không đổi logic hay người gọi.
 //
 // ── VÌ SAO CẦN FILE NÀY (khác với check biên độ đã có trong KokoroTtsEngine) ─
 // KokoroTtsEngine.logAmplitudeCheck() chỉ bắt được lỗi NGAY TẠI THỜI ĐIỂM
@@ -18,6 +25,14 @@
 // KHÔNG có trạng thái "bỏ cuộc vĩnh viễn" nào cả — mọi file câm đều được đọc
 // lại và thử regenerate ở MỌI lượt audit (sau mỗi câu xử lý xong, VÀ mỗi lần
 // mở lại bài đọc đó), bất kể đã thất bại bao nhiêu lần ở các lượt trước.
+//
+// ⚠️ MỚI (hỗ trợ cache đa định dạng, xem TtsAudioCache.kt): audit() CHỈ áp
+// dụng cho file .wav tự sinh on-device qua pregen/ — file .ogg tải sẵn từ
+// Drive qua remote/ (TtsRemotePackDownloader.kt) KHÔNG được audit lại ở
+// đây, vì coi như đã kiểm câm sẵn ở pipeline Python lúc build gói (cùng
+// ngưỡng SILENCE_AMPLITUDE_THRESHOLD, xem step1_generate_kokoro_audio.py),
+// và vì readMaxAmplitude() bên dưới đọc PCM16 thô ở offset cố định — chỉ
+// đúng với WAV, không áp dụng được cho dữ liệu nén Opus.
 //
 // ⚠️ SỬA (mở rộng từ "cặp 2 giọng" → "nhóm 3 giọng", xem TtsVoicePairing.kt):
 // trước đây quy trình retry có 2 tầng KHÔNG đối xứng (5 lần giọng gốc, rồi
@@ -47,9 +62,9 @@
 // tìm thấy bất kỳ file câm nào, hoàn toàn khác với việc "bỏ cuộc" với 1
 // item cụ thể đã biết là lỗi.
 //
-// Singleton thủ công, KHÔNG dùng Hilt/DI — cùng phong cách với các file
-// khác trong package pregen/.
-package com.eleap.eleap.core.tts.pregen
+// Singleton thủ công, KHÔNG dùng Hilt/DI — cùng phong cách với TtsAudioCache
+// (cùng package cache/) và các singleton khác trong core/tts/pregen/.
+package com.eleap.eleap.core.tts.cache
 
 import android.content.Context
 import android.util.Log
@@ -125,11 +140,27 @@ object TtsCacheAuditor {
 
         for (item in items) {
             val hash = TtsAudioCache.contentHash(item.text)
-            val file = TtsAudioCache.buildFilePath(context, readingId, sid, item.type, item.itemId, hash)
+            // ⚠️ MỚI: truyền TƯỜNG MINH extension="wav" — TtsCacheAuditor CHỈ
+            // audit file tự sinh on-device (.wav qua pregen/), KHÔNG audit
+            // file tải sẵn từ Drive (.ogg qua remote/, xem
+            // TtsRemotePackDownloader.kt/TtsGoogleDriveSource.kt). Lý do:
+            // (1) audio .ogg đã được kiểm câm SẴN ở pipeline Python lúc build
+            // gói (xem step1_generate_kokoro_audio.py — generate_with_fallback()
+            // dùng cùng ngưỡng SILENCE_AMPLITUDE_THRESHOLD), coi như đã qua
+            // audit trước khi đóng gói; (2) readMaxAmplitude() bên dưới đọc
+            // thẳng byte PCM16 ở offset cố định 44 — CHỈ đúng với WAV, sẽ đọc
+            // sai hoàn toàn (hoặc lỗi) nếu áp dụng cho dữ liệu nén Opus.
+            // Nếu item chỉ có cache dạng .ogg (chưa từng tự sinh .wav) —
+            // buildFilePath() trả về đường dẫn .wav CHƯA TỒN TẠI, nhánh
+            // "!file.exists()" bên dưới tự bỏ qua đúng như mong muốn.
+            val file = TtsAudioCache.buildFilePath(context, readingId, sid, item.type, item.itemId, hash, extension = "wav")
 
             if (!file.exists()) {
-                // Chưa từng generate — không có gì để audit, vòng xử lý
-                // bình thường của Worker sẽ tự generate item này.
+                // Chưa từng generate on-device (.wav), HOẶC đã có sẵn dạng
+                // .ogg tải từ remote (được coi là đã kiểm câm từ trước, xem
+                // ghi chú ở trên) — cả 2 trường hợp đều không có gì để audit
+                // ở đây, vòng xử lý bình thường của Worker sẽ tự lo (generate
+                // nếu thiếu, hoặc dùng thẳng .ogg nếu đã có).
                 continue
             }
 

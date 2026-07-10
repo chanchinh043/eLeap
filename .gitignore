@@ -19,3 +19,7 @@ app/src/main/jniLibs/
 
 # Ignore kokoro folder
 app/src/main/assets/kokoro/
+
+app/src/main/assets/tts_service_account.jsonapp/src/main/assets/tts_service_account.json
+app/src/main/assets/tts_service_account.json
+app/src/main/assets/tts_service_account.json

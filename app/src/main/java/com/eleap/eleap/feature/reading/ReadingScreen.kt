@@ -168,6 +168,22 @@ fun ReadingScreen(
     remember { TtsVoiceSnapshot.init(context) }
 
     var voiceIndex by remember { mutableStateOf(currentVoiceIndex()) }
+
+    // ⚠️ MỚI: quan sát TtsManager.activeEngineTypeFlow — engine active có
+    // thể tự đổi SAU KHI Composable này đã tạo xong (vd Android TTS ready
+    // sớm hơn Kokoro ~5-13s lúc mới mở app, TtsManager tạm active Android
+    // làm fallback rồi vài giây sau tự chuyển LẠI đúng Kokoro khi nó ready —
+    // xem TtsManager.reconcileActiveEngine()). Trước đây voiceIndex chỉ tính
+    // 1 LẦN lúc mở màn (remember không key), nên nếu người dùng vào bài đọc
+    // đúng lúc đang tạm fallback Android, label "V:Android" bị "đóng băng"
+    // sai mãi cho tới khi rời màn rồi vào lại. Giờ mỗi khi flow này phát ra
+    // giá trị mới, tính lại currentVoiceIndex() ngay để label luôn khớp
+    // đúng giọng THẬT đang active — kể cả lần chuyển "tự động" không do
+    // người dùng bấm dropdown.
+    val activeEngineType by TtsManager.activeEngineTypeFlow.collectAsState()
+    LaunchedEffect(activeEngineType) {
+        voiceIndex = currentVoiceIndex()
+    }
     var isVoiceMenuExpanded by remember { mutableStateOf(false) }
 
     var anchorInfo   by remember { mutableStateOf<PopupAnchorInfo?>(null) }

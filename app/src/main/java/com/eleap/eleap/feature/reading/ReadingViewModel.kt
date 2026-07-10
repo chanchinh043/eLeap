@@ -7,6 +7,10 @@ import androidx.lifecycle.ViewModelProvider
 import androidx.lifecycle.viewModelScope
 import com.eleap.eleap.core.auth.CurrentUser
 import com.eleap.eleap.core.sync.SyncEngine
+// ⚠️ MỚI (core/tts/remote/): cần biết sid Kokoro mục tiêu (nếu có) để enqueue
+// tải gói giọng đọc cho ĐÚNG bài vừa mở — xem loadReading() bên dưới.
+import com.eleap.eleap.core.tts.pregen.TtsVoiceSnapshot
+import com.eleap.eleap.core.tts.remote.TtsRemotePackScheduler
 import com.eleap.eleap.feature.myreading.data.MyReadingRepository
 import com.eleap.eleap.feature.myreading.data.processUnhandledMyReadings
 import com.eleap.eleap.feature.myreading.sync.MyReadingSyncEngine
@@ -192,6 +196,18 @@ class ReadingViewModel(
             Log.d("ReadingVM", "readingId=$readingId đã cache, bỏ qua loadReading()")
             return
         }
+
+        // ── MỚI (core/tts/remote/): enqueue tải gói giọng đọc từ xa cho
+        // ĐÚNG (readingId, sid) vừa mở — chỉ khi đang dùng Kokoro (sid !=
+        // null, xem TtsVoiceSnapshot.currentTargetSid()). Đặt TRƯỚC phần
+        // load nội dung bài bên dưới, không CHỜ nó — đây là việc chạy nền
+        // qua WorkManager (TtsRemotePackWorker), không block UI. Nếu chưa
+        // cấu hình nguồn tải (TtsRemoteSourceRegistry rỗng) hoặc mất mạng,
+        // Worker tự bỏ qua an toàn — pregen/ vẫn tự sinh audio như cũ.
+        TtsVoiceSnapshot.currentTargetSid()?.let { sid ->
+            TtsRemotePackScheduler.enqueueDownload(appContext, readingId, sid)
+        }
+
         viewModelScope.launch {
             _isLoadingReading.value = true
 

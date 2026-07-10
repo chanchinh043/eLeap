@@ -39,8 +39,11 @@ package com.eleap.eleap.core.tts
 import android.content.Context
 import android.media.MediaPlayer
 import android.util.Log
-import com.eleap.eleap.core.tts.pregen.TtsAudioCache
-import com.eleap.eleap.core.tts.pregen.TtsCacheItemType
+// ⚠️ MỚI: TtsAudioCache/TtsCacheItemType đã chuyển từ pregen/ sang package
+// cache/ riêng (xem TtsAudioCache.kt) — TtsVoiceSnapshot vẫn ở pregen/ như cũ,
+// không đổi.
+import com.eleap.eleap.core.tts.cache.TtsAudioCache
+import com.eleap.eleap.core.tts.cache.TtsCacheItemType
 import com.eleap.eleap.core.tts.pregen.TtsVoiceSnapshot
 import java.io.File
 

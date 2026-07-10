@@ -7,6 +7,9 @@ import com.eleap.eleap.core.tts.TtsManager
 import com.eleap.eleap.core.tts.pregen.TtsPregenScheduler
 import com.eleap.eleap.core.tts.pregen.TtsReadingHistory
 import com.eleap.eleap.core.tts.pregen.TtsVoiceSnapshot
+// ⚠️ MỚI (core/tts/remote/): đăng ký nguồn tải gói giọng từ xa (Google
+// Drive) lúc khởi tạo app — xem TtsRemoteConfig.kt.
+import com.eleap.eleap.core.tts.remote.TtsRemoteConfig
 import com.eleap.eleap.feature.myreading.data.MyReadingRepository
 import com.eleap.eleap.feature.myreading.sync.MyReadingSyncCursor
 import com.eleap.eleap.feature.myreading.sync.MyReadingSyncEngine
@@ -92,6 +95,16 @@ class MainActivity : ComponentActivity() {
         // TTS engine trước, rồi tới các thành phần phụ trợ pre-cache".
         TtsReadingHistory.init(this)
         TtsVoiceSnapshot.init(this)
+
+        // ── MỚI (core/tts/remote/): đăng ký nguồn tải gói giọng từ xa (nếu
+        // đã cấu hình TTS_DRIVE_API_KEY/TTS_DRIVE_ROOT_FOLDER_ID trong
+        // local.properties) — tự bỏ qua an toàn nếu chưa cấu hình, không
+        // ảnh hưởng gì tới pregen/ nếu tính năng này chưa bật. Đặt SAU
+        // TtsVoiceSnapshot.init() vì TtsRemotePackWorker (chạy sau, khi có
+        // người mở bài) sẽ cần đọc TtsVoiceSnapshot.currentTargetSid() —
+        // dù thứ tự init() ở đây không bắt buộc chặt chẽ (mỗi hàm chỉ tự
+        // gán lại tham chiếu riêng, không gọi chéo nhau ngay lúc init).
+        TtsRemoteConfig.registerIfConfigured(this)
 
         // Khởi động (hoặc "resume") TtsPregenWorker ngay khi app mở — đúng
         // điểm gọi (a) đã chốt trong thiết kế TtsPregenScheduler: đảm bảo

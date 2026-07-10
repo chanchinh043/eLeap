@@ -139,7 +139,15 @@ class KokoroTtsEngine : TtsEngine {
 
     // ── Tự động tính numThreads theo số core thiết bị, thay vì hardcode cố
     // định — công thức bậc thang, KHÔNG dùng hết toàn bộ core:
-    //   - ≤4 core:  dùng hết (máy yếu, không có core dư để chừa)
+    //   - ≤4 core:  chừa lại 1 core (tối thiểu vẫn dùng 1) — máy yếu, nếu
+    //               dùng HẾT toàn bộ core thì lúc TtsPregenWorker đang
+    //               generate() ngầm (13-18s/lần, chiếm dụng mọi core suốt
+    //               thời gian đó), luồng phát audio (MediaPlayer decode/
+    //               render khi phát file cache, hoặc AudioTrack.write() khi
+    //               generate on-the-fly) bị đói CPU → giật, mất đoạn nội
+    //               dung, phải nghe lại nhiều lần mới đủ câu. Chừa 1 core
+    //               đảm bảo luôn có tài nguyên tối thiểu cho audio/UI thread
+    //               chạy song song, dù generate() vẫn đang chạy dở.
     //   - 5-8 core: giới hạn 4 (tránh dính core LITTLE yếu trong kiến trúc
     //               big.LITTLE khi ONNX Runtime chia việc đều ra mọi core —
     //               core chậm nhất sẽ kéo chậm cả batch)
@@ -151,7 +159,7 @@ class KokoroTtsEngine : TtsEngine {
     private fun calculateOptimalThreads(): Int {
         val coreCount = Runtime.getRuntime().availableProcessors()
         val numThreads = when {
-            coreCount <= 4 -> coreCount
+            coreCount <= 4 -> (coreCount - 1).coerceAtLeast(1)
             coreCount <= 8 -> 4
             else           -> 6
         }

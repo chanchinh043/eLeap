@@ -36,6 +36,17 @@ android {
             "\"${localProperties.getProperty("OPENAI_API_KEY", "")}\""
         )
 
+        // rootFolderId của thư mục Drive chứa các gói giọng đọc (.zip) —
+        // KHÔNG phải bí mật (chỉ là ID định danh thư mục, tự nó không cấp
+        // quyền truy cập gì), nhưng vẫn đọc qua local.properties cho đồng
+        // bộ cách làm với OPENAI_API_KEY, dễ đổi giữa các máy dev khác nhau
+        // mà không phải sửa code. Xem TtsRemoteConfig.kt để biết cách dùng.
+        buildConfigField(
+            "String",
+            "TTS_DRIVE_ROOT_FOLDER_ID",
+            "\"${localProperties.getProperty("TTS_DRIVE_ROOT_FOLDER_ID", "")}\""
+        )
+
         // Chỉ đóng gói .so cho arm64-v8a — quyết định đã chốt khi thêm
         // sherpa-onnx (Kokoro TTS on-device): không hỗ trợ máy 32-bit đời cũ
         // hay emulator x86, đổi lại giảm đáng kể size APK/AAB vì

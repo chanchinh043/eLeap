@@ -1,5 +1,12 @@
 // TtsAudioCache.kt
-// Đặt tại: com/eleap/eleap/core/tts/pregen/TtsAudioCache.kt
+// Đặt tại: com/eleap/eleap/core/tts/cache/TtsAudioCache.kt
+//
+// ⚠️ CHUYỂN VỊ TRÍ: trước đây nằm ở core/tts/pregen/ — giờ chuyển sang
+// core/tts/cache/ vì đây là quy ước LƯU TRỮ CHUNG (path + tên file + định
+// dạng WAV), không gắn riêng với việc TỰ SINH audio (pregen/). Có 2 nguồn
+// cùng ghi vào đúng cache này: pregen/ (tự sinh bằng Kokoro) và remote/
+// (tải sẵn từ xa) — cả 2 đều không cần biết nguồn còn lại tồn tại, chỉ cần
+// tuân theo đúng quy ước path/tên file định nghĩa trong file này.
 //
 // Lớp tiện ích THAO TÁC FILE THUẦN TUÝ — KHÔNG dùng database để index cache.
 // Sự tồn tại của đúng file (đúng tên, đúng hash nội dung) TỰ NÓ là "index":
@@ -30,9 +37,26 @@
 // tương thích rộng rãi hơn (nhiều trình phát/thư viện không đọc được WAV
 // float 32-bit đúng cách).
 //
+// ⚠️ MỚI: TRA CỨU (hasCached/getCachedFile) giờ chấp nhận CẢ 2 định dạng
+// đuôi file — ".wav" (tự sinh on-device qua pregen/, luôn do chính
+// saveGenerated() ở file này ghi ra) VÀ ".ogg" (tải sẵn từ Drive qua
+// remote/, xem TtsRemotePackDownloader.kt/TtsGoogleDriveSource.kt — zip
+// giải nén thẳng vào voiceDir() với tên file ĐÃ đúng quy ước
+// "{type}_{itemId}_{hash}.ogg" sẵn từ lúc đóng gói, không đi qua
+// saveGenerated()). 2 nguồn này KHÔNG BAO GIỜ cùng tồn tại cho ĐÚNG 1
+// (readingId, sid, type, itemId, hash) tại 1 thời điểm trong thực tế (hash
+// đã bao gồm nội dung text, nếu remote có sẵn đúng hash thì pregen/ sẽ tự
+// thấy hasCached()=true và bỏ qua generate, không tạo ra file .wav trùng
+// lặp) — nhưng hàm tra cứu vẫn thử CẢ HAI đuôi để không phụ thuộc thứ tự
+// tải về hay tự sinh trước, đảm bảo luôn tìm thấy cache nếu có ở BẤT KỲ
+// định dạng nào. saveGenerated() (nhánh GHI, chỉ dùng bởi pregen/) vẫn LUÔN
+// ghi ra ".wav" — không đổi, vì đây là audio tự sinh trực tiếp từ
+// FloatArray, ghi WAV là rẻ nhất, không cần encoder nào thêm.
+//
 // Singleton thủ công, KHÔNG dùng Hilt/DI — cùng phong cách với
-// TtsReadingHistory, TtsForegroundReading, TtsVoiceSnapshot.
-package com.eleap.eleap.core.tts.pregen
+// TtsReadingHistory, TtsForegroundReading, TtsVoiceSnapshot (các file này
+// vẫn ở core/tts/pregen/, không bị ảnh hưởng bởi việc chuyển file này).
+package com.eleap.eleap.core.tts.cache
 
 import android.content.Context
 import android.util.Log
@@ -53,12 +77,35 @@ object TtsAudioCache {
     private const val TAG = "TtsAudioCache"
     private const val ROOT_DIR_NAME = "tts_cache"
 
+    // ── Đuôi file cache được CHẤP NHẬN khi TRA CỨU (hasCached/getCachedFile)
+    // — THỨ TỰ ưu tiên "ogg" TRƯỚC "wav" (đã đổi, cố ý): về nguyên tắc 2
+    // nguồn không cùng tồn tại cho đúng 1 hash (remote/ chỉ tải hash CHƯA có
+    // cache — xem TtsPregenWorker.ensureRemotePackSynced() gọi TRƯỚC khi
+    // generate on-device), nhưng trên thực tế vẫn có thể xảy ra "lẫn lộn"
+    // tạm thời (vd .wav đã generate on-device TRƯỚC KHI gói .ogg cùng hash
+    // được tải về sau đó — TtsRemotePackDownloader.extractZip() giờ tự dọn
+    // .wav cũ khi giải nén .ogg mới, xem file đó, nhưng vẫn giữ thứ tự ưu
+    // tiên này ở đây làm lớp phòng thủ thứ 2). Ưu tiên "ogg" vì đây là audio
+    // ĐÃ ĐƯỢC KIỂM CÂM SẴN ở pipeline build gói (xem TtsCacheAuditor.kt —
+    // audit() chỉ kiểm .wav, coi .ogg là đã qua kiểm từ trước), đáng tin hơn
+    // 1 file .wav tự sinh on-device có thể chưa qua audit lần nào.
+    // saveGenerated() (nhánh GHI) KHÔNG dùng danh sách này — luôn ghi cứng
+    // ".wav" (xem WAV_EXTENSION bên dưới).
+    private val CACHE_EXTENSIONS = listOf("ogg", "wav")
+    private const val WAV_EXTENSION = "wav"
+
     // ── Thư mục gốc: filesDir/tts_cache ──────────────────────────────────────
     private fun rootDir(context: Context): File =
         File(context.applicationContext.filesDir, ROOT_DIR_NAME)
 
     // ── Thư mục của 1 (bài, giọng) cụ thể: filesDir/tts_cache/{readingId}/{sid} ─
-    private fun voiceDir(context: Context, readingId: String, sid: Int): File =
+    // ⚠️ MỚI: bỏ `private` — package remote/ (tải gói giọng từ xa) cần biết
+    // CHÍNH XÁC thư mục đích để giải nén file .wav vào đúng chỗ, đúng cấu
+    // trúc mà getCachedFile()/hasCached() bên dưới sẽ tìm tới. Không cho
+    // remote/ tự build lại đường dẫn này (vd tự nối chuỗi "tts_cache/$readingId/$sid")
+    // để tránh 2 nơi định nghĩa path rồi lệch nhau nếu sau này đổi cấu trúc
+    // thư mục — đây vẫn là hàm DUY NHẤT build đúng path này.
+    fun voiceDir(context: Context, readingId: String, sid: Int): File =
         File(File(rootDir(context), readingId), sid.toString())
 
     // ── contentHash: 8 ký tự đầu SHA-256 của text — dùng để phát hiện nội
@@ -72,13 +119,20 @@ object TtsAudioCache {
         return digest.joinToString("") { "%02x".format(it) }.take(8)
     }
 
-    // ── Tên file: {loại}_{itemId}_{contentHash}.wav ─────────────────────────
-    private fun fileName(type: TtsCacheItemType, itemId: String, contentHash: String): String =
-        "${type.prefix}_${itemId}_$contentHash.wav"
+    // ── Tên file: {loại}_{itemId}_{contentHash}.{extension} ─────────────────
+    // extension mặc định "wav" — GIỮ NGUYÊN hành vi cũ cho mọi nơi gọi chưa
+    // truyền tham số này (buildFilePath() dùng bởi saveGenerated()).
+    private fun fileName(
+        type: TtsCacheItemType,
+        itemId: String,
+        contentHash: String,
+        extension: String = WAV_EXTENSION,
+    ): String = "${type.prefix}_${itemId}_$contentHash.$extension"
 
     // ── Đường dẫn file ĐẦY ĐỦ theo đúng cấu trúc đã chốt — hàm DUY NHẤT build
     // path, mọi hàm khác trong object này đều gọi qua đây để tránh 2 nơi build
-    // path khác nhau rồi lệch nhau. ─────────────────────────────────────────
+    // path khác nhau rồi lệch nhau. extension mặc định "wav" — chữ ký cũ vẫn
+    // hoạt động y hệt trước đây (dùng cho saveGenerated(), luôn ghi .wav). ──
     fun buildFilePath(
         context: Context,
         readingId: String,
@@ -86,25 +140,14 @@ object TtsAudioCache {
         type: TtsCacheItemType,
         itemId: String,
         contentHash: String,
-    ): File = File(voiceDir(context, readingId, sid), fileName(type, itemId, contentHash))
+        extension: String = WAV_EXTENSION,
+    ): File = File(voiceDir(context, readingId, sid), fileName(type, itemId, contentHash, extension))
 
-    // ── Kiểm tra ĐÃ có cache ĐÚNG hash chưa — false nếu: chưa từng generate,
-    // HOẶC đã generate nhưng với nội dung CŨ (hash khác, tức đã lỗi thời do
-    // nội dung bài vừa bị AI xử lý lại/sửa lại). TtsPregenWorker dùng hàm này
-    // TRƯỚC MỖI ITEM để quyết định có cần generate hay bỏ qua. ──────────────
-    fun hasCached(
-        context: Context,
-        readingId: String,
-        sid: Int,
-        type: TtsCacheItemType,
-        itemId: String,
-        contentHash: String,
-    ): Boolean = buildFilePath(context, readingId, sid, type, itemId, contentHash).exists()
-
-    // ── Lấy file cache nếu có ĐÚNG hash — dùng cho TtsPlaybackRouter khi cần
-    // phát. Trả về null nếu chưa có/đã lỗi thời — caller (TtsPlaybackRouter)
-    // tự quyết định fallback sang generate on-the-fly qua TtsManager. ───────
-    fun getCachedFile(
+    // ── Tìm file cache ĐÃ TỒN TẠI, thử LẦN LƯỢT từng đuôi trong
+    // CACHE_EXTENSIONS — dùng chung cho cả hasCached()/getCachedFile() để
+    // không viết lặp lại vòng lặp này 2 nơi. Trả về file ĐẦU TIÊN tồn tại
+    // (thứ tự CACHE_EXTENSIONS), hoặc null nếu không đuôi nào có. ───────────
+    private fun findExistingCacheFile(
         context: Context,
         readingId: String,
         sid: Int,
@@ -112,9 +155,42 @@ object TtsAudioCache {
         itemId: String,
         contentHash: String,
     ): File? {
-        val file = buildFilePath(context, readingId, sid, type, itemId, contentHash)
-        return if (file.exists()) file else null
+        for (extension in CACHE_EXTENSIONS) {
+            val file = buildFilePath(context, readingId, sid, type, itemId, contentHash, extension)
+            if (file.exists()) return file
+        }
+        return null
     }
+
+    // ── Kiểm tra ĐÃ có cache ĐÚNG hash chưa (BẤT KỂ định dạng .wav hay .ogg)
+    // — false nếu: chưa từng generate/tải về, HOẶC đã có nhưng với nội dung
+    // CŨ (hash khác, tức đã lỗi thời do nội dung bài vừa bị AI xử lý lại/sửa
+    // lại). TtsPregenWorker dùng hàm này TRƯỚC MỖI ITEM để quyết định có cần
+    // generate hay bỏ qua — nhờ tra cứu cả 2 đuôi, nếu remote/ đã tải sẵn
+    // đúng hash này (.ogg) thì pregen/ sẽ tự bỏ qua, KHÔNG generate trùng
+    // lặp bằng .wav nữa. ─────────────────────────────────────────────────
+    fun hasCached(
+        context: Context,
+        readingId: String,
+        sid: Int,
+        type: TtsCacheItemType,
+        itemId: String,
+        contentHash: String,
+    ): Boolean = findExistingCacheFile(context, readingId, sid, type, itemId, contentHash) != null
+
+    // ── Lấy file cache nếu có ĐÚNG hash (BẤT KỂ định dạng) — dùng cho
+    // TtsPlaybackRouter khi cần phát. Trả về null nếu chưa có/đã lỗi thời —
+    // caller (TtsPlaybackRouter) tự quyết định fallback sang generate
+    // on-the-fly qua TtsManager. MediaPlayer phát được cả .wav lẫn .ogg mà
+    // không cần biết trước đuôi file là gì (setDataSource() tự nhận diện). ──
+    fun getCachedFile(
+        context: Context,
+        readingId: String,
+        sid: Int,
+        type: TtsCacheItemType,
+        itemId: String,
+        contentHash: String,
+    ): File? = findExistingCacheFile(context, readingId, sid, type, itemId, contentHash)
 
     // ── Lưu audio vừa generate xong vào cache — TỰ ĐỘNG:
     //   1. Tính contentHash NGAY TRONG hàm này từ `text` — caller chỉ cần
@@ -171,14 +247,23 @@ object TtsAudioCache {
     // — đây là bản ghi ứng với nội dung TRƯỚC khi bị sửa. So khớp theo tiền
     // tố "{loại}_{itemId}_" rồi loại trừ đúng tên file MỚI sắp ghi, để không
     // tự xoá nhầm file vừa định tạo (dù trên thực tế 2 tên trùng nhau thì
-    // cùng hash cũng chẳng có gì để xoá, nhưng viết rõ ràng cho chắc). ──────
+    // cùng hash cũng chẳng có gì để xoá, nhưng viết rõ ràng cho chắc).
+    //
+    // ⚠️ MỚI: kiểm tra đuôi file theo CACHE_EXTENSIONS (wav VÀ ogg) thay vì
+    // chỉ ".wav" như trước — dù hàm này hiện chỉ được gọi từ saveGenerated()
+    // (luôn ghi .wav mới), việc dọn dẹp vẫn nên xoá được cả file .ogg cũ nếu
+    // có (vd trường hợp hiếm: remote/ từng tải về .ogg cho hash cũ, sau đó
+    // nội dung bài đổi khiến pregen/ phải tự generate lại bằng .wav cho hash
+    // mới — file .ogg hash cũ khi đó là rác, nên dọn theo cùng logic này
+    // luôn cho nhất quán, không để sót theo định dạng). ─────────────────────
     private fun deleteStaleFiles(dir: File, type: TtsCacheItemType, itemId: String, newContentHash: String) {
         val newFileName = fileName(type, itemId, newContentHash)
         val prefix = "${type.prefix}_${itemId}_"
         dir.listFiles()?.forEach { existing ->
+            val hasKnownExtension = CACHE_EXTENSIONS.any { ext -> existing.name.endsWith(".$ext") }
             if (existing.name != newFileName &&
                 existing.name.startsWith(prefix) &&
-                existing.name.endsWith(".wav")
+                hasKnownExtension
             ) {
                 val deleted = existing.delete()
                 Log.d(

@@ -77,6 +77,24 @@ import android.util.Log
 import androidx.work.CoroutineWorker
 import androidx.work.WorkerParameters
 import com.eleap.eleap.core.tts.TtsManager
+// ⚠️ MỚI: TtsAudioCache/TtsCacheAuditor và các data class liên quan
+// (TtsCacheItemType, TtsAuditItem, TtsSilentItem) đã chuyển từ cùng package
+// pregen/ sang package cache/ riêng (xem TtsAudioCache.kt/TtsCacheAuditor.kt)
+// — giờ cần import tường minh vì không còn cùng package nữa.
+import com.eleap.eleap.core.tts.cache.TtsAudioCache
+import com.eleap.eleap.core.tts.cache.TtsAuditItem
+import com.eleap.eleap.core.tts.cache.TtsCacheAuditor
+import com.eleap.eleap.core.tts.cache.TtsCacheItemType
+import com.eleap.eleap.core.tts.cache.TtsSilentItem
+// ⚠️ MỚI: gọi sang package remote/ — NGOẠI LỆ có chủ đích với nguyên tắc
+// "pregen/ và remote/ độc lập nhau" đã chốt ban đầu. Lý do: người dùng cần
+// pregen/ tự kiểm tra Drive TRƯỚC khi generate on-device cho từng
+// (readingId, sid), để tránh việc phải tự generate lại những gì đã có sẵn
+// trên Drive (xem ensureRemotePackSynced() bên dưới). remote/ vẫn hoàn
+// toàn không biết gì về pregen/ — chiều phụ thuộc chỉ 1 chiều (pregen/ →
+// remote/), không có import ngược lại.
+import com.eleap.eleap.core.tts.remote.TtsRemotePackDownloader
+import com.eleap.eleap.core.tts.remote.TtsRemoteSourceRegistry
 
 private const val TAG = "TtsPregenWorker"
 
@@ -222,6 +240,19 @@ class TtsPregenWorker(
             .groupBy { it.sentenceId }
         val phrasesBySentence = TtsReadingContentReader.getPhrasesForReading(context, ref)
             .groupBy { it.sentenceId }
+
+        // ── (0) MỚI: kiểm tra Drive TRƯỚC KHI làm bất kỳ việc gì khác (audit
+        // hay generate on-device) — đây chính là điểm đảm bảo "check Drive
+        // trước, generate on-device sau" cho MỌI (readingId, sid) đi qua
+        // processReading(), bất kể được kích hoạt vì lý do gì (mở bài mới,
+        // đổi giọng, hay Worker tự resume) — vì processReading() LUÔN được
+        // gọi lại mỗi khi PregenRestartSignal xảy ra (đổi bài/đổi giọng) hay
+        // Worker bắt đầu 1 lượt chạy mới. Không cần sửa gì thêm ở
+        // TtsForegroundReading/TtsVoiceSnapshot/ReadingViewModel — mọi
+        // đường kích hoạt pregen (TtsPregenScheduler.enqueueWork()) đều tự
+        // đi qua đúng điểm này. ─────────────────────────────────────────
+        checkNotInterrupted(snapshotForegroundId, snapshotSelectedAt)
+        ensureRemotePackSynced(context, ref.readingId, sid, snapshotForegroundId, snapshotSelectedAt)
 
         // ── (1) Audit toàn bộ cache ĐÃ CÓ của bài này TRƯỚC KHI chạy vòng
         // lặp tuần tự bình thường — bắt các file câm còn sót lại từ trước
@@ -540,6 +571,54 @@ class TtsPregenWorker(
         if (TtsVoiceSnapshot.hasChangedSince(snapshotSelectedAt)) {
             throw PregenRestartSignal()
         }
+    }
+
+    // ── MỚI: kiểm tra + tải gói remote (nếu có) cho ĐÚNG (readingId, sid)
+    // TRƯỚC KHI phần còn lại của processReading() bắt đầu audit/generate
+    // on-device. Đây là điểm hiện thực hoá yêu cầu "check Drive trước,
+    // generate on-device sau" — vòng lặp processItem() phía dưới tự động
+    // hưởng lợi: nếu tải về đủ audio, hasCached() trong processItem() sẽ
+    // thấy file đã tồn tại và tự bỏ qua generate, không cần sửa gì thêm ở
+    // đó.
+    //
+    // 3 nhánh, theo đúng thứ tự kiểm tra rẻ nhất → tốn kém nhất:
+    //   1. isPackSynced() — chỉ đọc 1 file trên đĩa (rất rẻ, không mạng) —
+    //      đã tải xong từ trước (kể cả ở phiên app trước đó) thì bỏ qua
+    //      NGAY, tránh gọi Drive lại vô ích (đúng yêu cầu "tránh tải 2 lần").
+    //   2. Chưa cấu hình nguồn remote (TtsRemoteSourceRegistry rỗng) — bỏ
+    //      qua, rơi thẳng xuống generate on-device như hành vi gốc (offline-
+    //      first vẫn đúng tinh thần ban đầu).
+    //   3. Có nguồn, chưa từng đồng bộ — gọi downloadAndExtract() THẬT (có
+    //      thể mất vài giây, có gọi mạng) — dù thành công hay thất bại đều
+    //      KHÔNG throw, để vòng xử lý tiếp tục bình thường (thất bại thì
+    //      processItem() bên dưới tự generate on-device như lưới an toàn).
+    //
+    // checkNotInterrupted() gọi cả TRƯỚC và SAU bước tải mạng (có thể mất
+    // vài giây) — nếu người dùng đổi bài/giọng NGAY trong lúc đang tải, cần
+    // ngắt kịp thời thay vì tiếp tục xử lý dở dang với dữ liệu đã cũ.
+    private suspend fun ensureRemotePackSynced(
+        context: Context,
+        readingId: String,
+        sid: Int,
+        snapshotForegroundId: String?,
+        snapshotSelectedAt: Long,
+    ) {
+        if (TtsRemotePackDownloader.isPackSynced(context, readingId, sid)) {
+            Log.d(TAG, "ensureRemotePackSynced: reading=$readingId sid=$sid đã đồng bộ từ trước, bỏ qua kiểm tra Drive")
+            return
+        }
+
+        val source = TtsRemoteSourceRegistry.current()
+        if (source == null) {
+            Log.d(TAG, "ensureRemotePackSynced: chưa cấu hình nguồn remote, generate on-device như bình thường")
+            return
+        }
+
+        Log.d(TAG, "ensureRemotePackSynced: kiểm tra Drive TRƯỚC khi generate on-device cho reading=$readingId sid=$sid")
+        val ok = TtsRemotePackDownloader.downloadAndExtract(context, source, readingId, sid)
+        Log.d(TAG, "ensureRemotePackSynced: kết quả tải=$ok cho reading=$readingId sid=$sid")
+
+        checkNotInterrupted(snapshotForegroundId, snapshotSelectedAt)
     }
 
     // ── Xử lý 1 item cụ thể: đã có cache đúng hash thì bỏ qua, chưa có thì
