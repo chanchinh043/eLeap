@@ -6,7 +6,7 @@ import com.eleap.eleap.core.sync.SyncScheduler
 import com.eleap.eleap.core.tts.TtsManager
 import com.eleap.eleap.core.tts.pregen.TtsPregenScheduler
 import com.eleap.eleap.core.tts.pregen.TtsReadingHistory
-import com.eleap.eleap.core.tts.pregen.TtsVoiceSnapshot
+import com.eleap.eleap.core.tts.TtsVoiceSnapshot
 // ⚠️ MỚI (core/tts/remote/): đăng ký nguồn tải gói giọng từ xa (Google
 // Drive) lúc khởi tạo app — xem TtsRemoteConfig.kt.
 import com.eleap.eleap.core.tts.remote.TtsRemoteConfig

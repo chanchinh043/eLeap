@@ -77,6 +77,10 @@ import android.util.Log
 import androidx.work.CoroutineWorker
 import androidx.work.WorkerParameters
 import com.eleap.eleap.core.tts.TtsManager
+// ⚠️ MỚI: TtsVoiceSnapshot đã chuyển từ cùng package pregen/ này sang
+// core/tts/ (root) — xem lý do ở TtsVoiceSnapshot.kt (tránh import vòng
+// tròn với TtsManager). Giờ cần import tường minh vì không còn cùng package.
+import com.eleap.eleap.core.tts.TtsVoiceSnapshot
 // ⚠️ MỚI: TtsAudioCache/TtsCacheAuditor và các data class liên quan
 // (TtsCacheItemType, TtsAuditItem, TtsSilentItem) đã chuyển từ cùng package
 // pregen/ sang package cache/ riêng (xem TtsAudioCache.kt/TtsCacheAuditor.kt)

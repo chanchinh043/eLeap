@@ -40,11 +40,11 @@ import android.content.Context
 import android.media.MediaPlayer
 import android.util.Log
 // ⚠️ MỚI: TtsAudioCache/TtsCacheItemType đã chuyển từ pregen/ sang package
-// cache/ riêng (xem TtsAudioCache.kt) — TtsVoiceSnapshot vẫn ở pregen/ như cũ,
-// không đổi.
+// cache/ riêng (xem TtsAudioCache.kt) — TtsVoiceSnapshot đã chuyển từ
+// pregen/ sang core/tts/ (cùng package với chính file này, xem
+// TtsVoiceSnapshot.kt), nên KHÔNG cần import tường minh nữa.
 import com.eleap.eleap.core.tts.cache.TtsAudioCache
 import com.eleap.eleap.core.tts.cache.TtsCacheItemType
-import com.eleap.eleap.core.tts.pregen.TtsVoiceSnapshot
 import java.io.File
 
 object TtsPlaybackRouter {

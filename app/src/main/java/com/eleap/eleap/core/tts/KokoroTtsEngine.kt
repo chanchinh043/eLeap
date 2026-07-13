@@ -137,29 +137,6 @@ class KokoroTtsEngine : TtsEngine {
     // thời, không phát audio nữa dù generate() đã hoàn tất.
     private var latestRequestId = 0L
 
-    // ── MỚI: giảm hiện tượng model sinh thêm 1 âm "rác" không xác định ở
-    // cuối audio khi input QUÁ NGẮN — đã xác nhận qua thực tế, chủ yếu xảy
-    // ra với các từ đơn 1 âm tiết (vd "in", "at", "its"). Model Kokoro
-    // (StyleTTS2-based) không được train tối ưu cho input cực ngắn, thiếu
-    // tín hiệu rõ ràng để biết khi nào nên "kết thúc câu" mượt — thêm dấu
-    // chấm cuối cho model 1 ranh giới câu tường minh, giảm khả năng sinh
-    // phoneme thừa sau từ thật.
-    //
-    // CHỈ thêm khi text CHƯA có sẵn dấu kết câu — câu/cụm dài lấy từ DB
-    // thường đã có dấu chấm/hỏi/than/phẩy sẵn rồi, thêm nữa gây double
-    // punctuation không cần thiết, có thể ảnh hưởng ngắt nghỉ.
-    //
-    // ⚠️ QUAN TRỌNG: hàm này CHỈ dùng để build chuỗi đưa vào
-    // engine.generate() — KHÔNG được dùng kết quả này để tính contentHash()
-    // ở TtsAudioCache (cache key vẫn phải theo đúng text GỐC, nếu không sẽ
-    // vô hiệu hoá toàn bộ cache đã build từ trước).
-    private fun normalizeForSynthesis(text: String): String {
-        val trimmed = text.trim()
-        if (trimmed.isEmpty()) return trimmed
-        val hasEndingPunctuation = trimmed.last() in charArrayOf('.', '!', '?', ',', ';', ':')
-        return if (hasEndingPunctuation) trimmed else "$trimmed."
-    }
-
     // ── Tự động tính numThreads theo số core thiết bị, thay vì hardcode cố
     // định — công thức bậc thang, KHÔNG dùng hết toàn bộ core:
     //   - ≤4 core:  chừa lại 1 core (tối thiểu vẫn dùng 1) — máy yếu, nếu
@@ -265,10 +242,7 @@ class KokoroTtsEngine : TtsEngine {
                     val sidToUse = currentSid
                     Log.d(TAG, "speak: bắt đầu generate() cho \"$text\" (requestId=$myRequestId, sid=$sidToUse)")
                     val startTime = System.currentTimeMillis()
-                    // ⚠️ Đưa text đã chuẩn hoá (thêm dấu chấm nếu thiếu) vào
-                    // model — xem normalizeForSynthesis(). Log/cache vẫn dùng
-                    // `text` gốc, KHÔNG đổi.
-                    val audio = engine.generate(text = normalizeForSynthesis(text), sid = sidToUse, speed = currentSpeed)
+                    val audio = engine.generate(text = text, sid = sidToUse, speed = currentSpeed)
                     val elapsed = System.currentTimeMillis() - startTime
 
                     Log.d(
@@ -327,11 +301,7 @@ class KokoroTtsEngine : TtsEngine {
                     val engine = tts ?: return@withLock null
                     Log.d(TAG, "generateAudio: bắt đầu generate() cho \"$text\" (reading=$readingId, sid=$sid, pre-cache)")
                     val startTime = System.currentTimeMillis()
-                    // ⚠️ Đưa text đã chuẩn hoá (thêm dấu chấm nếu thiếu) vào
-                    // model — xem normalizeForSynthesis(). Cache key
-                    // (contentHash ở TtsAudioCache, do TtsPregenWorker tính
-                    // TRƯỚC khi gọi hàm này) vẫn dùng `text` gốc, KHÔNG đổi.
-                    val audio = engine.generate(text = normalizeForSynthesis(text), sid = sid, speed = 1.0f)
+                    val audio = engine.generate(text = text, sid = sid, speed = 1.0f)
                     val elapsed = System.currentTimeMillis() - startTime
 
                     Log.d(

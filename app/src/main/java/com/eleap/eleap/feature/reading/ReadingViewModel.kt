@@ -9,7 +9,7 @@ import com.eleap.eleap.core.auth.CurrentUser
 import com.eleap.eleap.core.sync.SyncEngine
 // ⚠️ MỚI (core/tts/remote/): cần biết sid Kokoro mục tiêu (nếu có) để enqueue
 // tải gói giọng đọc cho ĐÚNG bài vừa mở — xem loadReading() bên dưới.
-import com.eleap.eleap.core.tts.pregen.TtsVoiceSnapshot
+import com.eleap.eleap.core.tts.TtsVoiceSnapshot
 import com.eleap.eleap.core.tts.remote.TtsRemotePackScheduler
 import com.eleap.eleap.feature.myreading.data.MyReadingRepository
 import com.eleap.eleap.feature.myreading.data.processUnhandledMyReadings

@@ -21,7 +21,7 @@ import com.eleap.eleap.core.tts.TtsManager
 import com.eleap.eleap.core.tts.pregen.TtsForegroundReading
 import com.eleap.eleap.core.tts.pregen.TtsPregenScheduler
 import com.eleap.eleap.core.tts.pregen.TtsReadingHistory
-import com.eleap.eleap.core.tts.pregen.TtsVoiceSnapshot
+import com.eleap.eleap.core.tts.TtsVoiceSnapshot
 import com.eleap.eleap.feature.reading.ui.PhrasePopup
 import com.eleap.eleap.feature.reading.ui.PopupAnchorInfo
 import com.eleap.eleap.feature.reading.ui.SentencePopup

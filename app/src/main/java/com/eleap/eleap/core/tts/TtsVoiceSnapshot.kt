@@ -1,5 +1,24 @@
 // TtsVoiceSnapshot.kt
-// Đặt tại: com/eleap/eleap/core/tts/pregen/TtsVoiceSnapshot.kt
+// Đặt tại: com/eleap/eleap/core/tts/TtsVoiceSnapshot.kt
+//
+// ⚠️ CHUYỂN VỊ TRÍ: trước đây nằm ở core/tts/pregen/ — giờ chuyển sang
+// core/tts/ (cùng cấp TtsManager/TtsEngine/TtsPlaybackRouter). Lý do: đây
+// KHÔNG phải khái niệm riêng của pregen/ — nó là trạng thái LÕI "giọng/engine
+// đang được chọn", được TtsManager dùng để khôi phục đúng engine active mỗi
+// lần mở app, và TtsPlaybackRouter dùng để biết tra cache theo sid nào lúc
+// phát — pregen/ (TtsPregenWorker) chỉ là MỘT trong nhiều bên tiêu thụ thông
+// tin này, không phải chủ sở hữu duy nhất.
+//
+// Việc để file này ở pregen/ trước đây tạo ra IMPORT VÒNG TRÒN giữa 2 package
+// (TtsManager ở core/tts/ import TtsVoiceSnapshot ở core/tts/pregen/, trong
+// khi TtsVoiceSnapshot lại import ngược lại TtsManager ở core/tts/ để đọc
+// getCurrentEngineType()) — Kotlin/Gradle không báo lỗi vì cùng module, nhưng
+// về kiến trúc là sai hướng phụ thuộc. Chuyển file này ra core/tts/ giải
+// quyết dứt điểm: TtsManager ↔ TtsVoiceSnapshot giờ cùng 1 package (không
+// còn là "phụ thuộc chéo package" nữa), còn chiều gọi duy nhất còn lại
+// (TtsVoiceSnapshot → TtsPregenScheduler.enqueueWork(), ở dưới) vẫn là 1
+// CHIỀU root → pregen/, không tạo vòng mới vì TtsPregenScheduler không phụ
+// thuộc ngược lại bất kỳ thứ gì ở core/tts/ hay TtsVoiceSnapshot cả.
 //
 // Ghi nhớ "giọng Kokoro đang được chọn GẦN NHẤT" — lưu XUỐNG ĐĨA
 // (SharedPreferences), cùng lý do như TtsReadingHistory: phải sống sót qua
@@ -28,11 +47,11 @@
 //
 // Singleton thủ công, KHÔNG dùng Hilt/DI — cùng phong cách với
 // TtsReadingHistory, TtsForegroundReading.
-package com.eleap.eleap.core.tts.pregen
+package com.eleap.eleap.core.tts
 
 import android.content.Context
 import android.content.SharedPreferences
-import com.eleap.eleap.core.tts.TtsManager
+import com.eleap.eleap.core.tts.pregen.TtsPregenScheduler
 
 object TtsVoiceSnapshot {
 
