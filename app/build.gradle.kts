@@ -35,6 +35,12 @@ android {
             "OPENAI_API_KEY",
             "\"${localProperties.getProperty("OPENAI_API_KEY", "")}\""
         )
+
+        buildConfigField(
+            "String",
+            "TTS_DRIVE_ROOT_FOLDER_ID",
+            "\"${localProperties.getProperty("TTS_DRIVE_ROOT_FOLDER_ID", "")}\""
+        )
     }
 
     buildTypes {

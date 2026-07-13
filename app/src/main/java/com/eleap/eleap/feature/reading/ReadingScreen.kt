@@ -16,6 +16,8 @@ import androidx.compose.ui.platform.LocalContext
 import androidx.compose.ui.unit.dp
 import androidx.lifecycle.viewmodel.compose.viewModel
 import com.eleap.eleap.core.tts.TtsManager
+import com.eleap.eleap.core.tts.TtsVoiceSnapshot
+import com.eleap.eleap.core.tts.remote.TtsRemotePackScheduler
 import com.eleap.eleap.feature.reading.ui.PhrasePopup
 import com.eleap.eleap.feature.reading.ui.PopupAnchorInfo
 import com.eleap.eleap.feature.reading.ui.SentencePopup
@@ -27,6 +29,7 @@ import com.eleap.eleap.feature.reading.ui.WordPopup
 fun ReadingScreen(
     readingId: String,
     onBack: () -> Unit,
+    onOpenVoicePicker: () -> Unit,
 ) {
     val context = LocalContext.current
     val vm: ReadingViewModel = viewModel(factory = ReadingViewModel.Factory(context))
@@ -69,9 +72,21 @@ fun ReadingScreen(
         vm.loadReading(readingId)
     }
 
+    // ── Enqueue tải gói audio (.ogg) cho bài đang mở, đúng giọng đang chọn ───
+    // TtsVoiceSnapshot KHÔNG còn tự enqueue khi đổi giọng (xem
+    // TtsVoiceSnapshot.kt) — nơi mở bài đọc PHẢI tự gọi việc này. Gọi lại mỗi
+    // khi readingId HOẶC speechSid đổi (vd người dùng đổi giọng ngay trong
+    // lúc đang đọc bài) — WorkManager tự dedupe qua ExistingWorkPolicy.KEEP
+    // theo (readingId, sid) nên gọi lại nhiều lần với cùng cặp không tốn kém.
+    val speechSid = remember { TtsVoiceSnapshot.currentSid() }
+    LaunchedEffect(readingId, speechSid) {
+        TtsRemotePackScheduler.enqueueDownload(context, readingId, speechSid)
+    }
+
     // ── WordPopup ─────────────────────────────────────────────────────────────
     selectedWord?.let { word ->
         WordPopup(
+            readingId            = readingId,
             word                 = word,
             phrase               = selectedPhrase,
             dictEntry            = selectedDictEntry,
@@ -93,6 +108,7 @@ fun ReadingScreen(
     if (selectedWord == null) {
         selectedPhrase?.let { phrase ->
             PhrasePopup(
+                readingId    = readingId,
                 phrase       = phrase,
                 anchorInfo   = anchorInfo,
                 viewportRect = viewportRect,
@@ -107,6 +123,7 @@ fun ReadingScreen(
     // ── SentencePopup ─────────────────────────────────────────────────────────
     selectedSentence?.let { sentence ->
         SentencePopup(
+            readingId    = readingId,
             sentence     = sentence,
             anchorInfo   = anchorInfo,
             viewportRect = viewportRect,
@@ -150,6 +167,17 @@ fun ReadingScreen(
                     ) {
                         Text(
                             text = "F",
+                            style = MaterialTheme.typography.titleMedium
+                        )
+                    }
+                    // ── Mở màn chọn giọng đọc — truyền readingId hiện tại để
+                    // đổi giọng xong tự enqueue tải gói mới cho đúng bài này
+                    // ngay (xem TtsVoicePickerScreen.kt).
+                    TextButton(
+                        onClick = onOpenVoicePicker
+                    ) {
+                        Text(
+                            text = "V",
                             style = MaterialTheme.typography.titleMedium
                         )
                     }

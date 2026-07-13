@@ -30,6 +30,7 @@ import com.eleap.eleap.feature.vocab.VocabReadingScreen
 import com.eleap.eleap.feature.vocab.VocabViewModel
 import com.eleap.eleap.feature.vocab.VocabPopup
 import com.eleap.eleap.feature.vocab.data.UserVocabularyEntry
+import com.eleap.eleap.core.tts.ui.TtsVoicePickerScreen
 import com.eleap.eleap.ui.FloatingVocabButton
 import kotlinx.coroutines.async
 import kotlinx.coroutines.launch
@@ -47,6 +48,7 @@ private enum class Screen {
     VOCAB_READING_STUDY,
     READING_VOCAB,          // VocabReadingScreen từ luồng reading
     READING_VOCAB_STUDY,    // VocabStudyScreen từ luồng reading
+    TTS_VOICE_PICKER,       // Màn chọn giọng đọc — mở từ nút "V" ở ReadingScreen
 }
 
 // ── Các màn được coi là "điểm vào" của luồng Reading từ trang chủ ───────────
@@ -65,6 +67,7 @@ private fun previousScreenOf(screen: Screen): Screen = when (screen) {
     Screen.VOCAB_READING_STUDY -> Screen.VOCAB_READING
     Screen.READING_VOCAB       -> Screen.READING
     Screen.READING_VOCAB_STUDY -> Screen.READING_VOCAB
+    Screen.TTS_VOICE_PICKER    -> Screen.READING   // luôn mở từ ReadingScreen, back về đúng bài đang đọc
     Screen.MAIN                -> Screen.MAIN
 }
 
@@ -300,6 +303,7 @@ fun MainScreen() {
                 readingStudyTabName = tabName
                 screen = nextScreen
             },
+            onOpenVoicePicker = { screen = Screen.TTS_VOICE_PICKER },
             onBack = { goBack() }
         )
 
@@ -334,6 +338,7 @@ private fun ScreenContent(
     onNavigateTo: (Screen) -> Unit,
     onSelectReading: (String) -> Unit,
     onReadingStudyClick: (tabName: String, nextScreen: Screen) -> Unit,
+    onOpenVoicePicker: () -> Unit,
     onBack: () -> Unit,
 ) {
     when (screen) {
@@ -359,8 +364,9 @@ private fun ScreenContent(
         )
 
         Screen.READING -> ReadingScreen(
-            readingId = selectedReadingId ?: return,
-            onBack    = onBack
+            readingId          = selectedReadingId ?: return,
+            onBack             = onBack,
+            onOpenVoicePicker  = onOpenVoicePicker
         )
 
         Screen.MY_READING -> MyReadingListScreen(
@@ -410,6 +416,15 @@ private fun ScreenContent(
         Screen.READING_VOCAB_STUDY -> VocabStudyScreen(
             pool   = readingStudyPool,
             onBack = onBack
+        )
+
+        // ── Màn chọn giọng đọc — luôn mở từ trong 1 bài đọc cụ thể (nút "V"
+        // ở ReadingScreen), nên truyền readingId hiện tại: đổi giọng xong sẽ
+        // enqueue tải NGAY gói mới cho đúng bài đang đọc (xem
+        // TtsVoicePickerScreen.kt) ────────────────────────────────────────
+        Screen.TTS_VOICE_PICKER -> TtsVoicePickerScreen(
+            onBack    = onBack,
+            readingId = selectedReadingId
         )
     }
 }

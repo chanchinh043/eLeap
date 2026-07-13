@@ -11,17 +11,20 @@ import androidx.compose.ui.Alignment
 import androidx.compose.ui.Modifier
 import androidx.compose.ui.geometry.Rect
 import androidx.compose.ui.platform.LocalDensity
+import androidx.compose.ui.platform.LocalContext
 import androidx.compose.ui.text.font.FontStyle
 import androidx.compose.ui.unit.dp
 import androidx.compose.ui.window.Popup
 import androidx.compose.ui.window.PopupProperties
-import com.eleap.eleap.core.tts.TtsManager
+import com.eleap.eleap.core.tts.TtsPlaybackRouter
+import com.eleap.eleap.core.tts.cache.TtsCacheItemType
 import com.eleap.eleap.feature.reading.data.DictEntry
 import com.eleap.eleap.feature.reading.data.SentencePhrase
 import com.eleap.eleap.feature.reading.data.SentenceWord
 
 @Composable
 fun WordPopup(
+    readingId: String,
     word: SentenceWord,
     phrase: SentencePhrase?,
     dictEntry: DictEntry?,
@@ -34,13 +37,25 @@ fun WordPopup(
 ) {
     val density = LocalDensity.current
     val spacingPx = with(density) { 8.dp.toPx() }
+    val context = LocalContext.current
 
     // ── Tự động đọc từ 1 lần khi popup hiện lên cho đúng word này ───────────
     // key = word.wordId → chỉ nói lại khi người dùng chuyển sang từ KHÁC
     // (bấm từ khác trong khi popup đang mở), không nói lặp lại nếu Composable
     // này chỉ recompose vì lý do khác (vd toggle "Xem thêm" ở phần từ điển).
+    // ⚠️ Gọi qua TtsPlaybackRouter (KHÔNG gọi thẳng TtsManager.speak() nữa)
+    // — Router tự tra cache đã tải sẵn theo (readingId, sid, WORD, wordId),
+    // chỉ fallback Android TTS khi chưa có cache.
     LaunchedEffect(word.wordId) {
-        word.textEn?.let { TtsManager.speak(it) }
+        word.textEn?.let { text ->
+            TtsPlaybackRouter.speak(
+                context   = context,
+                text      = text,
+                readingId = readingId,
+                itemType  = TtsCacheItemType.WORD,
+                itemId    = word.wordId,
+            )
+        }
     }
 
     val positionProvider = remember(anchorInfo, viewportRect) {

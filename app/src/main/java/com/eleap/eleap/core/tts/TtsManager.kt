@@ -4,10 +4,19 @@
 // Singleton thủ công, KHÔNG dùng Hilt/DI — cùng phong cách với CurrentUser,
 // SyncCursor, SupabaseClientProvider.
 //
-// Bước 1 của lộ trình TTS toàn app: chỉ bọc Android TextToSpeech có sẵn
-// (on-device, offline, zero-latency setup). Sau này khi có KokoroTtsEngine,
-// sẽ trừu tượng hoá thành interface TtsEngine + TtsManager chọn/fallback
-// giữa 2 engine — CHƯA làm ở bước này, giữ đơn giản trước.
+// ⚠️ VAI TRÒ TRONG KIẾN TRÚC MỚI (sau khi bỏ Kokoro): app không còn tự sinh
+// audio on-device nữa — audio "xịn" (giọng đã chọn) đều tải sẵn từ Drive về
+// cache (xem core/tts/cache/TtsAudioCache.kt, core/tts/remote/). TtsManager
+// giờ CHỈ còn bọc android.speech.tts.TextToSpeech (on-device, có sẵn từ hệ
+// thống) để làm ENGINE DỰ PHÒNG — dùng khi:
+//   (a) item chưa có cache (chưa tải kịp / mất mạng / server chưa build gói),
+//   (b) người dùng chưa cấu hình nguồn remote (TtsRemoteSourceRegistry rỗng).
+//
+// KHÔNG gọi trực tiếp TtsManager.speak() từ UI nữa — điểm gọi DUY NHẤT từ UI
+// giờ là TtsPlaybackRouter.speak(...), nơi quyết định "phát từ cache hay
+// fallback xuống đây" (xem TtsPlaybackRouter.kt). TtsManager chỉ là 1 chi
+// tiết triển khai bên trong Router, các Popup (WordPopup/SentencePopup/
+// PhrasePopup) không còn import TtsManager trực tiếp.
 package com.eleap.eleap.core.tts
 
 import android.content.Context
@@ -32,7 +41,10 @@ object TtsManager {
     private var isReady: Boolean = false
 
     // Tốc độ đọc hiện tại — đọc từ prefs khi init(), áp lại mỗi lần app mở
-    // lại (không cần người dùng chỉnh lại từ đầu mỗi phiên).
+    // lại (không cần người dùng chỉnh lại từ đầu mỗi phiên). Lưu ý: tốc độ
+    // này CHỈ áp dụng cho nhánh fallback (Android TTS) — file .ogg tải từ
+    // cache phát qua MediaPlayer với tốc độ cố định lúc build gói, xem
+    // TtsPlaybackRouter.kt.
     private var currentRate: Float = DEFAULT_RATE
 
     // Hàng đợi 1 phần tử: nếu speak() được gọi TRƯỚC khi engine init xong
@@ -40,8 +52,7 @@ object TtsManager {
     // cuối cùng để nói ngay khi sẵn sàng — không cần người dùng bấm lại.
     private var pendingText: String? = null
 
-    // Gọi 1 lần duy nhất, ở MainActivity.onCreate() — giống cách
-    // CurrentUser.init(context)/SyncCursor.init(context) đang làm.
+    // Gọi 1 lần duy nhất, ở MainActivity.onCreate().
     fun init(context: Context) {
         if (tts != null) {
             Log.d(TAG, "init: đã init từ trước, bỏ qua")
@@ -78,6 +89,10 @@ object TtsManager {
 
     // Nói 1 câu — luôn NGẮT câu đang đọc dở (QUEUE_FLUSH) để tránh chồng
     // âm thanh khi người dùng bấm/chuyển từ liên tiếp nhanh.
+    //
+    // ⚠️ Không gọi trực tiếp từ UI — TtsPlaybackRouter là điểm gọi DUY NHẤT
+    // (nhánh fallback khi không có cache). Vẫn để `fun speak` public vì
+    // TtsPlaybackRouter cần gọi xuống đây, không đặt internal/private.
     fun speak(text: String) {
         if (text.isBlank()) return
 
