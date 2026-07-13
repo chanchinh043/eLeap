@@ -35,6 +35,22 @@ import kotlin.math.abs
 // Tăng nếu muốn phải kéo xa hơn mới bôi đen.
 private const val HIGHLIGHT_THRESHOLD_DP = 12f
 
+// ── Dấu câu ở CUỐI token cần tách ra khỏi phần chữ khi hiển thị ─────────────
+// Chỉ tách trailing (không đụng ký tự ở đầu/giữa từ, vd "don't" giữ nguyên).
+// Mục đích DUY NHẤT là hiển thị (không tô nền/background lên dấu câu khi
+// highlight) — KHÔNG đổi dữ liệu gốc (word.textEn vẫn nguyên vẹn), không
+// ảnh hưởng hit-test (rect vẫn tính trên toàn bộ Row gồm cả dấu câu).
+private val TRAILING_PUNCT_REGEX = Regex("""[.,!?;:"'”’)\]}…]+$""")
+
+private fun splitTrailingPunctuation(text: String): Pair<String, String> {
+    val match = TRAILING_PUNCT_REGEX.find(text) ?: return text to ""
+    val punct = match.value
+    val core = text.substring(0, text.length - punct.length)
+    // Nếu cả token chỉ toàn dấu câu (hiếm) → không tách, tránh core rỗng
+    // khiến từ biến mất hoàn toàn khỏi vùng highlight/hit-test hiển thị.
+    return if (core.isEmpty()) text to "" else core to punct
+}
+
 // ── WordClickableRow ──────────────────────────────────────────────────────────
 // Vẽ 1 câu (danh sách từ) có thể chạm/kéo để: dịch từ, dịch câu, hoặc dịch
 // cụm từ (mode "P"). Tự quản lý toàn bộ hit-test + gesture bôi đen bên trong,
@@ -101,6 +117,20 @@ fun WordClickableRow(
 
     // Trong khi kéo ưu tiên liveRange; sau khi thả ưu tiên committedRange
     val highlightRange = liveRange ?: committedRange
+
+    // ── Highlight có BAO GỒM dấu câu không? — CHỈ khi đúng, dấu câu (punctPart)
+    // mới được tô nền cùng với chữ. Với highlight cấp TỪ (tap 1 từ), dấu câu
+    // luôn giữ nền trong suốt (xem WordItem bên dưới).
+    // - CÂU: selectedSentence khớp đúng câu này (committed), hoặc đang kéo dở
+    //   (live) ở mode "S" — preview trước khi thả tay cũng coi như cả câu.
+    // - CỤM TỪ: selectedPhrase đang active (committed, selectedWord == null —
+    //   đúng nhánh PhrasePopup độc lập), hoặc đang kéo dở (live) ở mode "P" —
+    //   dấu câu dính liền 1 từ THUỘC cụm (word.phraseId khớp) thì coi như
+    //   thuộc cụm từ đó, cũng được tô nền theo.
+    val isSentenceHighlight = (selectedSentence?.sentenceId == sentence.sentenceId) ||
+            (liveRange != null && translateMode == "S")
+    val isPhraseHighlight = (selectedWord == null && selectedPhrase != null) ||
+            (liveRange != null && translateMode == "P")
 
     // ── Toạ độ WINDOW hiện tại của 1 từ — luôn tính tươi từ LayoutCoordinates
     //    sống, KHÔNG dùng Rect cache. ──────────────────────────────────────
@@ -359,37 +389,51 @@ fun WordClickableRow(
             }
     ) {
         // ── Từ riêng lẻ — dùng chung cho cả 2 chế độ hiển thị ────────────────
+        // ⚠️ MỚI: tách trailing punctuation (dấu chấm/phẩy/... dính liền cuối
+        // từ) ra khỏi phần chữ CHỈ để hiển thị — background highlight và màu
+        // "đã lưu" chỉ áp cho phần chữ (corePart), dấu câu (punctPart) luôn
+        // hiện ngay sau, cùng màu chữ thường, KHÔNG bị tô nền. wordCoords vẫn
+        // gắn ở Row bao ngoài (cả core + punct), nên hit-test/tap/kéo bôi đen
+        // không đổi hành vi — vẫn tính trên toàn bộ token như trước.
         @Composable
         fun WordItem(index: Int) {
             val word = words[index]
+            val (corePart, punctPart) = remember(word.textEn) {
+                splitTrailingPunctuation(word.textEn ?: "")
+            }
             val selected = highlightRange?.contains(index) == true
             val isSaved  = word.wordId in savedWordIds
+            val textColor = when {
+                selected -> MaterialTheme.colorScheme.onPrimary
+                isSaved  -> MaterialTheme.colorScheme.tertiary
+                else     -> MaterialTheme.colorScheme.primary
+            }
+
+            // Dấu câu dính liền cuối từ này có nằm "BÊN TRONG" cụm từ không —
+            // tức còn từ kế tiếp cùng phraseId (dùng chung điều kiện với
+            // extendUnderlineRight, nhưng tính riêng, KHÔNG phụ thuộc
+            // showPhraseUnderline, vì cần đúng bất kể đang bật gạch chân hay
+            // không). Nếu từ này là từ CUỐI của cụm (không còn từ kế tiếp
+            // cùng phraseId) → dấu câu dính sau nó coi như dấu câu TRAILING
+            // đứng sau cụm, KHÔNG được tô nền dù cả cụm đang highlight.
+            val hasNextWordSamePhrase = word.phraseId != null &&
+                    index + 1 < words.size &&
+                    words[index + 1].phraseId == word.phraseId
+
             // Gạch chân nhẹ dưới từ thuộc phrase — chỉ ở mode P + định dạng "underline"
             val showPhraseUnderline = translateMode == "P" &&
                     phraseFormat == "underline" &&
                     word.phraseId != null
             // Từ kế tiếp có cùng phraseId → nối liền gạch chân qua khoảng cách
-            // giữa 2 từ (padding của Text + spacing của FlowRow), để không bị đứt đoạn.
-            val extendUnderlineRight = showPhraseUnderline &&
-                    index + 1 < words.size &&
-                    words[index + 1].phraseId == word.phraseId
+            // giữa 2 từ (padding của Row + spacing của FlowRow), để không bị đứt đoạn.
+            val extendUnderlineRight = showPhraseUnderline && hasNextWordSamePhrase
 
-            Text(
-                text  = word.textEn ?: "",
-                style = MaterialTheme.typography.bodyLarge.copy(fontSize = fontSize.sp),
-                color = when {
-                    selected -> MaterialTheme.colorScheme.onPrimary
-                    isSaved  -> MaterialTheme.colorScheme.tertiary
-                    else     -> MaterialTheme.colorScheme.primary
-                },
+            Row(
+                verticalAlignment = androidx.compose.ui.Alignment.Bottom,
                 modifier = Modifier
                     .onGloballyPositioned { c ->
                         wordCoords[index] = c
                     }
-                    .background(
-                        if (selected) MaterialTheme.colorScheme.primary else Color.Transparent,
-                        RoundedCornerShape(4.dp)
-                    )
                     .padding(horizontal = 2.dp, vertical = 2.dp)
                     .then(
                         if (showPhraseUnderline) {
@@ -414,7 +458,49 @@ fun WordClickableRow(
                             }
                         } else Modifier
                     )
-            )
+            ) {
+                // ── Phần chữ — CÓ background khi được highlight ─────────────
+                Text(
+                    text  = corePart,
+                    style = MaterialTheme.typography.bodyLarge.copy(fontSize = fontSize.sp),
+                    color = textColor,
+                    modifier = Modifier
+                        .background(
+                            if (selected) MaterialTheme.colorScheme.primary else Color.Transparent,
+                            RoundedCornerShape(4.dp)
+                        )
+                )
+
+                // ── Phần dấu câu dính liền cuối từ ────────────────────────────
+                // Mặc định KHÔNG tô nền (để bôi 1 TỪ đơn lẻ không dính dấu câu).
+                // ⚠️ NGOẠI LỆ 1 — CẢ CÂU: dấu câu luôn được tô nền theo, kể cả
+                // dấu câu cuối câu (dấu chấm kết câu vẫn thuộc về câu).
+                // ⚠️ NGOẠI LỆ 2 — CỤM TỪ: CHỈ tô nền nếu dấu câu nằm BÊN TRONG
+                // cụm (hasNextWordSamePhrase = true, tức còn từ kế tiếp cùng
+                // phraseId). Nếu dấu câu đứng ở CUỐI cụm (TRAILING, không còn
+                // từ kế tiếp cùng phraseId) → không tô, vì đó là dấu câu đứng
+                // SAU cụm từ, không thuộc về cụm.
+                if (punctPart.isNotEmpty()) {
+                    val punctHighlighted = selected && (
+                            isSentenceHighlight ||
+                                    (isPhraseHighlight && hasNextWordSamePhrase)
+                            )
+                    Text(
+                        text  = punctPart,
+                        style = MaterialTheme.typography.bodyLarge.copy(fontSize = fontSize.sp),
+                        color = when {
+                            punctHighlighted -> MaterialTheme.colorScheme.onPrimary
+                            isSaved          -> MaterialTheme.colorScheme.tertiary
+                            else             -> MaterialTheme.colorScheme.primary
+                        },
+                        modifier = Modifier
+                            .background(
+                                if (punctHighlighted) MaterialTheme.colorScheme.primary else Color.Transparent,
+                                RoundedCornerShape(4.dp)
+                            )
+                    )
+                }
+            }
         }
 
         if (useLineFormat) {

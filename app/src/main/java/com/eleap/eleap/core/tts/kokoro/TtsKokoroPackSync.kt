@@ -10,11 +10,24 @@
 // khiến phải nhảy qua lại giữa 3 tab khi đọc luồng "enqueue → worker chạy →
 // tra registry → gọi downloader".
 //
-// ⚠️ 3 thành phần trong file này, đọc theo đúng luồng chạy thực tế:
+// ⚠️ THÊM MỚI: TtsKokoroReadingSyncWorker — xử lý "tải TOÀN BỘ giọng của 1
+// bài" trong ĐÚNG 1 lần chạy Worker, gọi
+// TtsKokoroPackDownloader.syncAllVoicesForReading() — hàm đó tự
+// fetchManifest(readingId) CHỈ 1 LẦN rồi tải tuần tự từng giọng có trên
+// Drive (xem TtsKokoroPackDownloader.kt). KHÁC với cách cũ (đã bỏ) là
+// chain nhiều TtsKokoroPackWorker riêng lẻ theo (readingId, sid) — cách đó
+// tuy cũng tải tuần tự nhưng MỖI bước trong chain lại tự fetchManifest()
+// riêng, dù kết quả giống hệt nhau cho cùng 1 readingId → tốn N lần gọi
+// Drive API một cách vô ích cho N giọng của cùng 1 bài.
+//
+// ⚠️ 4 thành phần trong file này, đọc theo đúng luồng chạy thực tế:
 //   1. TtsKokoroPackSourceRegistry — giữ transport (Drive/...) đang active
-//   2. TtsKokoroPackScheduler      — enqueue OneTimeWork cho (readingId, sid)
-//   3. TtsKokoroPackWorker         — WorkManager chạy tới, tra Registry rồi
-//                                     gọi TtsKokoroPackDownloader.syncIfNeeded()
+//   2. TtsKokoroPackScheduler      — enqueue OneTimeWork (theo sid lẻ HOẶC
+//                                     theo cả bài)
+//   3. TtsKokoroPackWorker         — xử lý ĐÚNG 1 (readingId, sid), dùng
+//                                     khi chỉ cần tải/làm mới 1 giọng
+//   4. TtsKokoroReadingSyncWorker  — xử lý TOÀN BỘ giọng của 1 bài trong 1
+//                                     lần chạy, quét Drive đúng 1 lần
 package com.eleap.eleap.core.tts.kokoro
 
 import android.content.Context
@@ -27,6 +40,8 @@ import androidx.work.OneTimeWorkRequestBuilder
 import androidx.work.WorkManager
 import androidx.work.WorkerParameters
 import androidx.work.workDataOf
+import com.eleap.eleap.core.tts.TtsVendor
+import com.eleap.eleap.core.tts.TtsVoiceCatalog
 
 private const val TAG = "TtsKokoroPackSync"
 
@@ -67,25 +82,21 @@ object TtsKokoroPackSourceRegistry {
         source = newSource
     }
 
-    // TtsKokoroPackWorker gọi hàm này mỗi khi cần — trả về null nếu chưa
-    // từng register(), caller tự hiểu là "chưa cấu hình transport nào cho
-    // Kokoro".
+    // TtsKokoroPackWorker/TtsKokoroReadingSyncWorker gọi hàm này mỗi khi
+    // cần — trả về null nếu chưa từng register(), caller tự hiểu là "chưa
+    // cấu hình transport nào cho Kokoro".
     fun current(): TtsKokoroPackSource? = source
 }
 
 // ═══════════════════════════════════════════════════════════════════════════
-// 2. SCHEDULER — nơi DUY NHẤT gọi WorkManager để enqueue TtsKokoroPackWorker
+// 2. SCHEDULER — nơi DUY NHẤT gọi WorkManager để enqueue Worker của Kokoro
 // ═══════════════════════════════════════════════════════════════════════════
-//
-// Mỗi (readingId, sid) có 1 tên unique work RIÊNG (không phải 1 tên duy
-// nhất cho toàn app) — vì đây là việc tải 1 gói CỤ THỂ, nhiều gói khác nhau
-// có thể cần tải song song (vd người dùng mở nhanh 2 bài khác nhau), không
-// nên việc tải bài A chặn mất việc tải bài B.
 //
 // ⚠️ CHỈ DÙNG CHO GIỌNG KOKORO — nếu người dùng chọn giọng của nhà cung cấp
 // khác (vd Google Cloud TTS on-demand, không cần đồng bộ), nơi gọi (vd
-// TtsVoicePickerScreen) sẽ KHÔNG gọi tới scheduler này — mỗi nhà cung cấp
-// tự quyết định có cần enqueue việc gì hay không, không đi qua đây.
+// ReadingScreen/TtsVoicePickerScreen) sẽ KHÔNG gọi tới scheduler này — mỗi
+// nhà cung cấp tự quyết định có cần enqueue việc gì hay không, không đi qua
+// đây.
 //
 // CÓ networkConstraint — vì đây là việc BẮT BUỘC phải có mạng, enqueue mà
 // chưa có mạng thì WorkManager tự giữ lại, tự chạy ngay khi có mạng trở
@@ -98,12 +109,16 @@ object TtsKokoroPackScheduler {
 
     private fun uniqueWorkName(readingId: String, sid: Int) = "$UNIQUE_WORK_PREFIX${readingId}_$sid"
 
-    // ── Enqueue 1 lượt tải cho ĐÚNG (readingId, sid) — gọi ngay khi người
-    // dùng mở 1 bài đọc VÀ đang dùng giọng Kokoro (biết ngay readingId + sid
-    // đang chọn). KEEP — nếu đã có lượt tải đang chạy/đang chờ mạng cho
-    // ĐÚNG cặp này, không tạo bản sao chạy song song; nếu lượt trước đã
-    // XONG (thành công hay thất bại đều là "xong"), KEEP vẫn cho enqueue
-    // lại bình thường.
+    private fun uniqueReadingWorkName(readingId: String) = "${UNIQUE_WORK_PREFIX}reading_$readingId"
+
+    // ── Enqueue 1 lượt tải cho ĐÚNG (readingId, sid) — dùng khi CHỈ cần
+    // đúng 1 giọng cụ thể (vd TtsVoicePickerScreen muốn tải NGAY giọng
+    // người dùng vừa chọn, ưu tiên hơn lô đang chạy nền qua
+    // enqueueDownloadAllVoices() bên dưới, vì đây là unique work TÊN RIÊNG,
+    // chạy song song độc lập). KEEP — nếu đã có lượt tải đang chạy/đang chờ
+    // mạng cho ĐÚNG cặp này, không tạo bản sao chạy song song; nếu lượt
+    // trước đã XONG (thành công hay thất bại đều là "xong"), KEEP vẫn cho
+    // enqueue lại bình thường.
     fun enqueueDownload(context: Context, readingId: String, sid: Int) {
         val constraints = Constraints.Builder()
             .setRequiredNetworkType(NetworkType.CONNECTED)
@@ -125,16 +140,89 @@ object TtsKokoroPackScheduler {
             request,
         )
     }
+
+    // ── Enqueue tải TOÀN BỘ giọng Kokoro (tiếng Anh) của 1 bài trong ĐÚNG 1
+    // lượt Worker — gọi khi người dùng MỞ bài đó — thay cho việc chỉ tải
+    // đúng 1 giọng đang chọn như enqueueDownload() ở trên.
+    //
+    // Thứ tự tải BÊN TRONG Worker (xem TtsKokoroReadingSyncWorker.doWork()
+    // → TtsKokoroPackDownloader.syncAllVoicesForReading()):
+    //   1. Giọng đang chọn (selectedSid) — tải TRƯỚC, để có audio đúng giọng
+    //      người dùng sắp nghe sớm nhất có thể.
+    //   2. Các giọng tiếng Anh còn lại của Kokoro — tải SAU, theo thứ tự bất
+    //      kỳ (thứ tự khai báo trong TtsKokoroVoices), tuần tự từng gói một
+    //      (không song song, tránh nghẽn băng thông đúng lúc cần nghe giọng
+    //      đầu tiên).
+    //
+    // ⚠️ CHỈ 1 LẦN GỌI DRIVE cho toàn bộ N giọng — TOÀN BỘ việc quét
+    // (fetchManifest) VÀ tải tuần tự đều nằm gọn trong 1 lượt doWork() của
+    // TtsKokoroReadingSyncWorker, KHÔNG chain nhiều Worker riêng theo từng
+    // sid (khác thiết kế cũ) — mỗi Worker con trong chain sẽ tự
+    // fetchManifest() lại một cách dư thừa dù kết quả giống hệt nhau cho
+    // cùng 1 readingId.
+    //
+    // ⚠️ CHỈ giọng TIẾNG ANH (TtsVoiceCatalog.englishVoices) — đúng phạm vi
+    // mà TtsVoicePickerScreen cho người dùng chọn (eLeap chỉ dạy tiếng Anh),
+    // KHÔNG tải cả 53 giọng đa ngôn ngữ của Kokoro.
+    //
+    // KEEP — nếu bài này đã có 1 lượt sync đang chạy/đang chờ mạng, không
+    // tạo thêm lượt song song; nếu lượt trước đã xong (dù thành hay bại),
+    // enqueue lại bình thường (vd người dùng rời bài rồi quay lại sau).
+    fun enqueueDownloadAllVoices(context: Context, readingId: String, selectedSid: Int) {
+        val allSids = TtsVoiceCatalog.englishVoices
+            .filter { it.vendor == TtsVendor.KOKORO }
+            .map { it.sid }
+            .distinct()
+
+        if (allSids.isEmpty()) {
+            Log.w(TAG, "enqueueDownloadAllVoices: danh mục giọng Kokoro tiếng Anh rỗng, bỏ qua reading=$readingId")
+            return
+        }
+
+        // Giọng đang chọn lên ĐẦU danh sách, các giọng còn lại giữ nguyên
+        // thứ tự khai báo — dùng distinct() để phòng trường hợp selectedSid
+        // không hề nằm trong allSids (vd prefs cũ trỏ tới 1 sid đã bị xoá
+        // khỏi danh mục), khi đó vẫn tải đủ allSids, chỉ là không có bước
+        // "ưu tiên" nào thực sự xảy ra.
+        val orderedSids = (listOf(selectedSid) + allSids).distinct()
+
+        val constraints = Constraints.Builder()
+            .setRequiredNetworkType(NetworkType.CONNECTED)
+            .build()
+
+        val inputData = workDataOf(
+            TtsKokoroReadingSyncWorker.KEY_READING_ID to readingId,
+            TtsKokoroReadingSyncWorker.KEY_ORDERED_SIDS to orderedSids.toIntArray(),
+        )
+
+        val request = OneTimeWorkRequestBuilder<TtsKokoroReadingSyncWorker>()
+            .setConstraints(constraints)
+            .setInputData(inputData)
+            .build()
+
+        WorkManager.getInstance(context).enqueueUniqueWork(
+            uniqueReadingWorkName(readingId),
+            ExistingWorkPolicy.KEEP,
+            request,
+        )
+
+        Log.d(
+            TAG,
+            "enqueueDownloadAllVoices: đã enqueue 1 Worker cho reading=$readingId, " +
+                    "${orderedSids.size} giọng, thứ tự ưu tiên=$orderedSids"
+        )
+    }
 }
 
 // ═══════════════════════════════════════════════════════════════════════════
-// 3. WORKER — CoroutineWorker chạy nền, xử lý ĐÚNG 1 (readingId, sid) mỗi
-//    lần chạy
+// 3. WORKER (1 giọng) — CoroutineWorker chạy nền, xử lý ĐÚNG 1
+//    (readingId, sid) mỗi lần chạy
 // ═══════════════════════════════════════════════════════════════════════════
 //
-// Chỉ cần tải ĐÚNG bài/giọng người dùng đang mở NGAY LÚC NÀY. Mỗi lần mở 1
-// bài khác/đổi giọng khác, enqueue 1 Worker mới cho đúng cặp đó (xem
-// TtsKokoroPackScheduler ở trên).
+// Dùng khi CHỈ cần tải/làm mới đúng 1 giọng cụ thể (xem
+// TtsKokoroPackScheduler.enqueueDownload()). Muốn tải CẢ BÀI (mọi giọng
+// tiếng Anh), dùng TtsKokoroReadingSyncWorker bên dưới thay vì enqueue
+// nhiều Worker này liên tiếp — tránh fetchManifest() lặp lại vô ích.
 //
 // ⚠️ ĐÂY LÀ NƠI TRA TtsKokoroPackSourceRegistry — TtsKokoroPackDownloader
 // CHỦ ĐỘNG KHÔNG tự tra registry bên trong (để dễ test, tường minh hơn),
@@ -186,6 +274,58 @@ class TtsKokoroPackWorker(
         // dù nội dung trên Drive không hề đổi.
         val ok = TtsKokoroPackDownloader.syncIfNeeded(applicationContext, source, readingId, sid)
         Log.d(TAG, "doWork: reading=$readingId sid=$sid kết quả đồng bộ=$ok")
+        return Result.success()
+    }
+}
+
+// ═══════════════════════════════════════════════════════════════════════════
+// 4. WORKER (cả bài) — CoroutineWorker chạy nền, xử lý TOÀN BỘ giọng của 1
+//    bài trong ĐÚNG 1 lần chạy
+// ═══════════════════════════════════════════════════════════════════════════
+//
+// Nhận vào readingId + danh sách sid theo THỨ TỰ ƯU TIÊN (phần tử đầu =
+// giọng đang chọn) — gọi ĐÚNG 1 hàm
+// TtsKokoroPackDownloader.syncAllVoicesForReading(), hàm đó tự
+// fetchManifest(readingId) CHỈ 1 LẦN rồi tải tuần tự từng giọng có mặt
+// trên Drive theo đúng thứ tự đã truyền vào — xem TtsKokoroPackDownloader.kt.
+//
+// ⚠️ VÌ SAO 1 WORKER DUY NHẤT (không chain nhiều Worker như thiết kế cũ):
+// toàn bộ N giọng của CÙNG 1 bài đều cần đúng 1 thông tin (kết quả
+// fetchManifest(readingId)) — gộp vào 1 lần doWork() cho phép tái dùng
+// đúng 1 lần gọi Drive cho cả N giọng, thay vì mỗi Worker con trong chain
+// tự gọi lại. Việc tải tuần tự (không song song) vẫn được đảm bảo tự nhiên
+// vì cả vòng lặp nằm trong 1 hàm suspend duy nhất — không cần WorkManager
+// chain để ép thứ tự.
+//
+// inputData dùng IntArray cho danh sách sid (workDataOf/Data hỗ trợ sẵn
+// kiểu này, không cần tự serialize JSON).
+class TtsKokoroReadingSyncWorker(
+    appContext: Context,
+    params: WorkerParameters,
+) : CoroutineWorker(appContext, params) {
+
+    companion object {
+        const val KEY_READING_ID = "reading_id"
+        const val KEY_ORDERED_SIDS = "ordered_sids"
+    }
+
+    override suspend fun doWork(): Result {
+        val readingId = inputData.getString(KEY_READING_ID)
+        val orderedSids = inputData.getIntArray(KEY_ORDERED_SIDS)?.toList()
+
+        if (readingId.isNullOrBlank() || orderedSids.isNullOrEmpty()) {
+            Log.w(TAG, "doWork(reading): thiếu readingId/orderedSids hợp lệ, bỏ qua")
+            return Result.success()
+        }
+
+        val source = TtsKokoroPackSourceRegistry.current()
+        if (source == null) {
+            Log.d(TAG, "doWork(reading): chưa cấu hình transport cho Kokoro, bỏ qua reading=$readingId")
+            return Result.success()
+        }
+
+        val ok = TtsKokoroPackDownloader.syncAllVoicesForReading(applicationContext, source, readingId, orderedSids)
+        Log.d(TAG, "doWork(reading): reading=$readingId (${orderedSids.size} giọng) kết quả=$ok")
         return Result.success()
     }
 }

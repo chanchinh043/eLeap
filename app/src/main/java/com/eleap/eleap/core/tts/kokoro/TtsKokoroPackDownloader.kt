@@ -102,8 +102,17 @@ object TtsKokoroPackDownloader {
     // nên gọi — trả về true ở TUYỆT ĐẠI ĐA SỐ lượt chạy (chỉ đọc 2 file nhỏ
     // trên đĩa). Chỉ khi trả về false (chưa từng sync HOẶC đã quá hạn check)
     // caller mới cần cân nhắc gọi tiếp checkForUpdate()/downloadAndExtract().
+    // ⚠️ CỐ Ý KHÔNG còn yêu cầu isPackSynced()=true: 1 sid có thể HỢP LỆ
+    // "chưa từng đồng bộ" mãi mãi vì Drive đơn giản KHÔNG CÓ gói cho sid đó
+    // (giọng chưa được build/không áp dụng cho bài này) — trường hợp này
+    // vẫn PHẢI được coi là "đã kiểm tra xong, chưa tới hạn hỏi lại", nếu
+    // không fast-path ở syncAllVoicesForReading() sẽ không bao giờ đạt được
+    // (luôn có sid không tồn tại → luôn phải quét lại Drive). Việc "có
+    // checkedAt gần đây" tự nó đã đủ nghĩa "đã hỏi Drive rồi, dù kết quả là
+    // có gói hay không có gói" — xem writeCheckedAtMillis() được gọi ở cả 2
+    // nhánh (tìm thấy pack / không tìm thấy pack) trong downloadAndExtract()
+    // và syncAllVoicesForReading().
     fun isPackUpToDate(context: Context, readingId: String, sid: Int, nowMillis: Long = System.currentTimeMillis()): Boolean {
-        if (!isPackSynced(context, readingId, sid)) return false
         val checkedAt = readCheckedAtMillis(context, readingId, sid) ?: return false
         return nowMillis - checkedAt < CHECK_INTERVAL_MS
     }
@@ -121,6 +130,14 @@ object TtsKokoroPackDownloader {
     private fun writeCheckedAtMillis(context: Context, readingId: String, sid: Int, nowMillis: Long) {
         try {
             val destDir = TtsAudioCache.voiceDir(context, readingId, VENDOR, sid)
+            // ⚠️ PHẢI tự mkdirs() ở đây: với sid mà Drive KHÔNG có gói, thư
+            // mục này chưa từng được tạo (bình thường chỉ extractZip() mới
+            // mkdirs() sau khi tải thành công) — nếu không tự tạo, ghi
+            // checkedAt sẽ luôn thất bại với ENOENT cho MỌI sid không tồn
+            // tại trên Drive, khiến sid đó vĩnh viễn không "up to date" và
+            // bug quét lại Drive mỗi lần enqueueDownloadAllVoices() (dù chưa
+            // tới hạn 24h) vẫn còn nguyên dù đã sửa 2 chỗ trước đó.
+            if (!destDir.exists()) destDir.mkdirs()
             File(destDir, PACK_CHECKED_AT_MARKER).writeText(nowMillis.toString())
         } catch (e: Exception) {
             Log.w(TAG, "writeCheckedAtMillis: ghi thất bại reading=$readingId sid=$sid (không ảnh hưởng audio đã có)", e)
@@ -192,14 +209,18 @@ object TtsKokoroPackDownloader {
 
         // sha256 khác local → đã up đè bản mới lên Drive (cùng tên file,
         // Drive tự tính lại sha256Checksum mới) — tải lại đúng gói này.
-        // downloadAndExtract() tự giải nén ĐÈ lên file cũ (cùng tên) và tự
-        // ghi lại PACK_SYNCED_MARKER với sha256 mới.
+        // ⚠️ Gọi thẳng downloadAndExtractPack(pack) — KHÔNG gọi lại
+        // downloadAndExtract(context, source, readingId, sid) như bản cũ,
+        // vì hàm đó sẽ tự fetchManifest() THÊM 1 LẦN NỮA dù `pack` ở đây
+        // đã có sẵn đầy đủ thông tin cần thiết rồi — tránh hỏi Drive dư
+        // thừa. downloadAndExtractPack() tự giải nén ĐÈ lên file cũ (cùng
+        // tên) và tự ghi lại PACK_SYNCED_MARKER với sha256 mới.
         Log.d(
             TAG,
             "checkForUpdate: PHÁT HIỆN bản MỚI trên Drive cho reading=$readingId sid=$sid " +
                     "(sha256 cũ=$localSha256, mới=${pack.sha256}), tải lại"
         )
-        val ok = downloadAndExtract(context, source, readingId, sid)
+        val ok = downloadAndExtractPack(context, source, pack)
         if (ok) {
             writeCheckedAtMillis(context, readingId, sid, now)
         }
@@ -249,18 +270,23 @@ object TtsKokoroPackDownloader {
         }
     }
 
-    // ── Điểm gọi CHÍNH — tải + xác thực + giải nén gói giọng `sid` của bài
-    // `readingId` từ `source`. Trả về true nếu cuối cùng cache đã có audio
-    // sẵn sàng dùng (giải nén thành công), false ở MỌI trường hợp khác
-    // (không có gói, tải lỗi, checksum sai, giải nén lỗi) — caller không cần
-    // phân biệt lý do thất bại cụ thể.
+    // ── Wrapper MỎNG cho caller CHỈ biết readingId/sid (chưa có sẵn pack)
+    // — tự fetchManifest() rồi tìm đúng pack, sau đó giao hết việc tải/xác
+    // thực/giải nén cho downloadAndExtractPack() (private, bên dưới). Trả
+    // về true nếu cuối cùng cache đã có audio sẵn sàng dùng (giải nén thành
+    // công), false ở MỌI trường hợp khác (không có gói, tải lỗi, checksum
+    // sai, giải nén lỗi) — caller không cần phân biệt lý do thất bại cụ thể.
     //
     // ⚠️ Hàm này KHÔNG tự kiểm tra isPackSynced()/isPackUpToDate() ở đầu —
     // caller phải tự gọi trước nếu muốn tránh gọi mạng không cần thiết (xem
-    // syncIfNeeded() ở trên). Giữ tách biệt để downloadAndExtract() vẫn
-    // dùng lại được cho trường hợp CỐ TÌNH muốn ép tải lại (vd nút "làm mới
-    // cache" thủ công, hoặc gọi từ checkForUpdate() khi đã xác nhận sha256
-    // đổi).
+    // syncIfNeeded() ở trên). Giữ tách biệt để vẫn dùng lại được cho trường
+    // hợp CỐ TÌNH muốn ép tải lại (vd nút "làm mới cache" thủ công).
+    //
+    // ⚠️ Nếu ĐÃ có sẵn `pack` trong tay (vd đang lặp qua nhiều sid của cùng
+    // 1 bài, đã fetchManifest() từ trước) — gọi thẳng downloadAndExtractPack()
+    // thay vì hàm này, để KHÔNG fetchManifest() lại thêm 1 lần vô ích cho
+    // đúng 1 thông tin đã có (xem checkForUpdate() và
+    // syncAllVoicesForReading() bên dưới).
     suspend fun downloadAndExtract(
         context: Context,
         source: TtsKokoroPackSource,
@@ -276,26 +302,48 @@ object TtsKokoroPackDownloader {
         val pack = manifest.findPack(readingId, sid)
         if (pack == null) {
             Log.d(TAG, "downloadAndExtract: nguồn không có gói cho reading=$readingId sid=$sid")
+            // Vẫn "chạm" checkedAt dù không có gói — đã hỏi Drive xong, tránh
+            // syncIfNeeded() hỏi lại Drive mỗi lần gọi cho đúng 1 sid không
+            // tồn tại (xem ghi chú ở isPackUpToDate()).
+            writeCheckedAtMillis(context, readingId, sid, System.currentTimeMillis())
             return false
         }
 
+        return downloadAndExtractPack(context, source, pack)
+    }
+
+    // ── LÕI thật sự của việc tải — nhận thẳng `pack` (đã biết trước
+    // downloadUrl/sha256, KHÔNG tự fetchManifest() bên trong) — dùng cho MỌI
+    // caller đã có sẵn `pack` trong tay (checkForUpdate(),
+    // syncAllVoicesForReading() bên dưới), tránh hỏi Drive dư thừa lần nữa
+    // cho cùng 1 readingId chỉ để lấy lại đúng thông tin đã có.
+    // downloadAndExtract(context, source, readingId, sid) ở trên là wrapper
+    // MỎNG gọi xuống đây, dành cho caller CHƯA có sẵn pack (chỉ biết
+    // readingId/sid).
+    private suspend fun downloadAndExtractPack(
+        context: Context,
+        source: TtsKokoroPackSource,
+        pack: TtsKokoroPackRef,
+    ): Boolean {
+        val readingId = pack.readingId
+        val sid = pack.sid
         val tempZip = File(context.cacheDir, "tts_kokoro_pack_${readingId}_${sid}_${System.currentTimeMillis()}.zip")
         try {
             val downloaded = source.downloadPackFile(pack, tempZip)
             if (!downloaded) {
-                Log.w(TAG, "downloadAndExtract: tải thất bại reading=$readingId sid=$sid url=${pack.downloadUrl}")
+                Log.w(TAG, "downloadAndExtractPack: tải thất bại reading=$readingId sid=$sid url=${pack.downloadUrl}")
                 return false
             }
 
             if (!verifyChecksum(tempZip, pack.sha256)) {
-                Log.w(TAG, "downloadAndExtract: checksum KHÔNG khớp reading=$readingId sid=$sid, huỷ giải nén")
+                Log.w(TAG, "downloadAndExtractPack: checksum KHÔNG khớp reading=$readingId sid=$sid, huỷ giải nén")
                 return false
             }
 
             val destDir = TtsAudioCache.voiceDir(context, readingId, VENDOR, sid)
             val extracted = extractZip(tempZip, destDir)
             if (!extracted) {
-                Log.w(TAG, "downloadAndExtract: giải nén lỗi reading=$readingId sid=$sid")
+                Log.w(TAG, "downloadAndExtractPack: giải nén lỗi reading=$readingId sid=$sid")
                 return false
             }
 
@@ -308,22 +356,119 @@ object TtsKokoroPackDownloader {
             try {
                 File(destDir, PACK_SYNCED_MARKER).writeText(pack.sha256)
             } catch (e: Exception) {
-                Log.w(TAG, "downloadAndExtract: ghi marker thất bại reading=$readingId sid=$sid (không ảnh hưởng audio đã tải)", e)
+                Log.w(TAG, "downloadAndExtractPack: ghi marker thất bại reading=$readingId sid=$sid (không ảnh hưởng audio đã tải)", e)
             }
             // Ghi luôn mốc "vừa check Drive xong" — để isPackUpToDate() trả
             // về true NGAY sau lần tải này.
             writeCheckedAtMillis(context, readingId, sid, System.currentTimeMillis())
 
-            Log.d(TAG, "downloadAndExtract: xong reading=$readingId sid=$sid version=${pack.version}")
+            Log.d(TAG, "downloadAndExtractPack: xong reading=$readingId sid=$sid version=${pack.version}")
             return true
         } catch (e: Exception) {
-            Log.e(TAG, "downloadAndExtract: lỗi khi xử lý reading=$readingId sid=$sid", e)
+            Log.e(TAG, "downloadAndExtractPack: lỗi khi xử lý reading=$readingId sid=$sid", e)
             return false
         } finally {
             // Luôn dọn zip tạm, kể cả khi có exception ở bất kỳ bước nào —
             // không để rác tồn đọng trong cacheDir.
             if (tempZip.exists()) tempZip.delete()
         }
+    }
+
+    // ── ĐIỂM GỌI MỚI — quét Drive ĐÚNG 1 LẦN cho toàn bộ `orderedSids` của
+    // 1 bài, rồi tải tuần tự những giọng nào THỰC SỰ có trên Drive (giọng
+    // nào không có thì bỏ qua, không coi là lỗi). Thay cho việc gọi
+    // syncIfNeeded()/checkForUpdate()/downloadAndExtract() RIÊNG cho từng
+    // sid — mỗi lần gọi riêng như vậy đều tự fetchManifest(readingId) lại
+    // từ đầu, dù kết quả trả về GIỐNG HỆT nhau cho mọi sid của cùng 1 bài
+    // (files.list không lọc theo sid, xem TtsGoogleDriveSource.kt) — với 1
+    // bài có N giọng, cách cũ tốn N lần gọi Drive API cho đúng 1 thông tin,
+    // hàm này chỉ tốn ĐÚNG 1 lần.
+    //
+    // orderedSids: thứ tự ưu tiên tải — phần tử ĐẦU tải trước (thường là
+    // giọng người dùng đang chọn), phần tử sau tải theo thứ tự tuần tự
+    // (không song song, xem enqueueDownloadAllVoices() ở TtsKokoroPackSync.kt).
+    //
+    // ⚠️ FAST PATH: nếu MỌI sid trong orderedSids đều isPackUpToDate() (đã
+    // đồng bộ VÀ chưa tới hạn check lại 24h) — trả về true NGAY, KHÔNG gọi
+    // Drive dù chỉ 1 lần. Đây là nhánh chạy ở tuyệt đại đa số lượt mở lại 1
+    // bài đã tải xong từ trước.
+    //
+    // Trả về true nếu đã fetchManifest() thành công (bất kể từng giọng lẻ
+    // tải được hay không — giọng nào lỗi/không có trên Drive chỉ log, không
+    // làm hỏng kết quả chung) — false CHỈ khi không gọi được Drive (mất
+    // mạng...), lúc đó cache cũ (nếu có) vẫn giữ nguyên, dùng bình thường.
+    suspend fun syncAllVoicesForReading(
+        context: Context,
+        source: TtsKokoroPackSource,
+        readingId: String,
+        orderedSids: List<Int>,
+    ): Boolean {
+        if (orderedSids.isEmpty()) return true
+
+        val now = System.currentTimeMillis()
+
+        if (orderedSids.all { isPackUpToDate(context, readingId, it, now) }) {
+            Log.d(
+                TAG,
+                "syncAllVoicesForReading: mọi giọng (${orderedSids.size}) đã đồng bộ, chưa tới hạn check lại, " +
+                        "bỏ qua reading=$readingId — KHÔNG gọi Drive"
+            )
+            return true
+        }
+
+        Log.d(
+            TAG,
+            "syncAllVoicesForReading: quét Drive ĐÚNG 1 LẦN cho reading=$readingId " +
+                    "(${orderedSids.size} giọng cần kiểm tra)"
+        )
+        val manifest = source.fetchManifest(readingId)
+        if (manifest == null) {
+            Log.d(TAG, "syncAllVoicesForReading: không gọi được Drive (mất mạng?), giữ nguyên cache cũ reading=$readingId")
+            return false
+        }
+
+        for (sid in orderedSids) {
+            // Có thể đã lệch so với kiểm tra fast-path ở đầu hàm (vd sid vừa
+            // tới hạn 24h ngay lúc đang chạy vòng lặp) — kiểm tra lại cho
+            // chắc, tránh tải thừa nếu không cần.
+            if (isPackUpToDate(context, readingId, sid, now)) continue
+
+            val pack = manifest.findPack(readingId, sid)
+            if (pack == null) {
+                Log.d(TAG, "syncAllVoicesForReading: Drive KHÔNG có giọng sid=$sid cho reading=$readingId, bỏ qua")
+                // ⚠️ QUAN TRỌNG: vẫn phải ghi checkedAt dù không có gói — nếu
+                // không, sid này VĨNH VIỄN không "up to date" (không bao giờ
+                // có PACK_SYNCED_MARKER vì chưa từng tải được gì), khiến fast
+                // path ở đầu hàm (orderedSids.all { isPackUpToDate(...) })
+                // không bao giờ đạt được khi bài có giọng không tồn tại trên
+                // Drive → mỗi lần enqueueDownloadAllVoices() (vd mỗi lần đổi
+                // giọng) đều quét lại Drive từ đầu dù chưa tới hạn 24h.
+                writeCheckedAtMillis(context, readingId, sid, now)
+                continue
+            }
+
+            val localSha256 = readSyncedSha256(context, readingId, sid)
+            if (pack.sha256.equals(localSha256, ignoreCase = true)) {
+                // Không có gì mới, chỉ "chạm" lại mốc thời gian check.
+                writeCheckedAtMillis(context, readingId, sid, now)
+                continue
+            }
+
+            Log.d(
+                TAG,
+                "syncAllVoicesForReading: tải sid=$sid reading=$readingId " +
+                        "(sha256 cũ=$localSha256, mới=${pack.sha256})"
+            )
+            val ok = downloadAndExtractPack(context, source, pack)
+            if (ok) {
+                writeCheckedAtMillis(context, readingId, sid, now)
+            }
+            // Nếu tải thất bại, KHÔNG touch checkedAt cho sid này — để lượt
+            // sau thử tải lại sớm, không phải chờ đủ 24h; các sid khác
+            // trong orderedSids vẫn tiếp tục xử lý bình thường.
+        }
+
+        return true
     }
 
     // ── So khớp SHA-256 của file zip vừa tải với giá trị server công bố ─────
@@ -348,7 +493,7 @@ object TtsKokoroPackDownloader {
     // thư mục đích — đảm bảo không tồn đọng file lỗi thời của phiên bản
     // trước (vd item đã bị xoá khỏi bài, hoặc đổi hash do nội dung sửa lại)
     // — ⚠️ file marker (.pack_synced/.pack_checked_at) KHÔNG bị xoá vì sẽ
-    // được ghi lại đúng NGAY SAU khi hàm này chạy xong ở downloadAndExtract().
+    // được ghi lại đúng NGAY SAU khi hàm này chạy xong ở downloadAndExtractPack().
     //
     // ⚠️ TÊN FILE giữ NGUYÊN từ entry.name trong zip — server Kokoro tự đóng
     // gói đúng quy ước "{type}_{itemId}_{hash}.ogg" của TtsAudioCache, hàm

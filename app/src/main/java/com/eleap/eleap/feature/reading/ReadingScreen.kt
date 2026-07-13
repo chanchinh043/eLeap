@@ -73,13 +73,15 @@ fun ReadingScreen(
         vm.loadReading(readingId)
     }
 
-    // ── Enqueue tải gói audio cho bài đang mở, đúng giọng đang chọn ─────────
-    // TtsVoiceSnapshot KHÔNG còn tự enqueue khi đổi giọng (xem
-    // TtsVoiceSnapshot.kt) — nơi mở bài đọc PHẢI tự gọi việc này. Gọi lại mỗi
-    // khi readingId HOẶC speechVendor/speechSid đổi (vd người dùng đổi giọng
-    // ngay trong lúc đang đọc bài) — WorkManager tự dedupe qua
-    // ExistingWorkPolicy.KEEP theo (readingId, sid) nên gọi lại nhiều lần với
-    // cùng cặp không tốn kém.
+    // ── Enqueue tải TOÀN BỘ giọng Kokoro (tiếng Anh) cho bài đang mở, ưu
+    // tiên giọng đang chọn tải TRƯỚC — TtsVoiceSnapshot KHÔNG còn tự
+    // enqueue khi đổi giọng (xem TtsVoiceSnapshot.kt) — nơi mở bài đọc PHẢI
+    // tự gọi việc này. Gọi lại mỗi khi readingId HOẶC speechVendor/speechSid
+    // đổi (vd người dùng đổi giọng ngay trong lúc đang đọc bài) —
+    // enqueueDownloadAllVoices() tự dedupe theo TÊN LÔ (readingId) qua
+    // ExistingWorkPolicy.KEEP, nên gọi lại nhiều lần với cùng readingId
+    // không tốn kém; đổi speechSid sẽ tạo 1 lô mới với thứ tự ưu tiên khác
+    // (giọng vừa chọn lên đầu).
     //
     // ⚠️ CHỈ enqueue khi vendor đang chọn là KOKORO — TtsKokoroPackScheduler
     // là cơ chế đồng bộ ĐẶC THÙ của riêng Kokoro (tải gói .zip pregenerated
@@ -90,7 +92,7 @@ fun ReadingScreen(
     val speechSid = remember { TtsVoiceSnapshot.currentSid() }
     LaunchedEffect(readingId, speechVendor, speechSid) {
         if (speechVendor == TtsVendor.KOKORO) {
-            TtsKokoroPackScheduler.enqueueDownload(context, readingId, speechSid)
+            TtsKokoroPackScheduler.enqueueDownloadAllVoices(context, readingId, speechSid)
         }
     }
 
