@@ -5,7 +5,7 @@ import com.eleap.eleap.core.sync.SyncRealtime
 import com.eleap.eleap.core.sync.SyncScheduler
 import com.eleap.eleap.core.tts.TtsManager
 import com.eleap.eleap.core.tts.TtsVoiceSnapshot
-import com.eleap.eleap.core.tts.remote.TtsRemoteConfig
+import com.eleap.eleap.core.tts.kokoro.TtsKokoroConfig
 import com.eleap.eleap.feature.myreading.data.MyReadingRepository
 import com.eleap.eleap.feature.myreading.sync.MyReadingSyncCursor
 import com.eleap.eleap.feature.myreading.sync.MyReadingSyncEngine
@@ -79,17 +79,18 @@ class MainActivity : ComponentActivity() {
         MyReadingSyncEngine.init(this)
         MyReadingSyncRealtime.init(this)
         TtsManager.init(this)
-        // ⚠️ MỚI (bước 8, kiến trúc remote-only): 2 dòng dưới đây trước đây
-        // BỊ THIẾU — hậu quả im lặng (không crash) nhưng nghiêm trọng:
-        //   - Thiếu TtsVoiceSnapshot.init() → currentSid() luôn rơi về
-        //     DEFAULT_SID vì prefs chưa init, sid đã lưu từ phiên trước
-        //     không bao giờ đọc lại được.
-        //   - Thiếu TtsRemoteConfig.registerIfConfigured() →
-        //     TtsRemoteSourceRegistry.current() luôn null, không đăng ký
-        //     nguồn Google Drive nào cả → TtsRemotePackDownloader không bao
-        //     giờ tải được gì, mọi lượt phát fallback thẳng Android TTS.
+        // ⚠️ 2 dòng dưới đây PHẢI có — hậu quả im lặng (không crash) nhưng
+        // nghiêm trọng nếu thiếu:
+        //   - Thiếu TtsVoiceSnapshot.init() → currentVendor()/currentSid()
+        //     luôn rơi về giá trị mặc định vì prefs chưa init, lựa chọn giọng
+        //     đã lưu từ phiên trước không bao giờ đọc lại được.
+        //   - Thiếu TtsKokoroConfig.registerIfConfigured() →
+        //     TtsKokoroPackSourceRegistry.current() luôn null, không đăng ký
+        //     transport Google Drive nào cả → TtsKokoroPackDownloader không
+        //     bao giờ tải được gì, mọi lượt phát dùng giọng Kokoro fallback
+        //     thẳng Android TTS.
         TtsVoiceSnapshot.init(this)
-        TtsRemoteConfig.registerIfConfigured(this)
+        TtsKokoroConfig.registerIfConfigured(this)
 
         // Đăng ký 2 lịch chạy nền (push mỗi 3h, pull mỗi 5h) — dùng
         // enqueueUniquePeriodicWork với policy KEEP bên trong nên gọi lại

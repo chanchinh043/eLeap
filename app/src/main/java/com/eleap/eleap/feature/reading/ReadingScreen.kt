@@ -16,8 +16,9 @@ import androidx.compose.ui.platform.LocalContext
 import androidx.compose.ui.unit.dp
 import androidx.lifecycle.viewmodel.compose.viewModel
 import com.eleap.eleap.core.tts.TtsManager
+import com.eleap.eleap.core.tts.TtsVendor
 import com.eleap.eleap.core.tts.TtsVoiceSnapshot
-import com.eleap.eleap.core.tts.remote.TtsRemotePackScheduler
+import com.eleap.eleap.core.tts.kokoro.TtsKokoroPackScheduler
 import com.eleap.eleap.feature.reading.ui.PhrasePopup
 import com.eleap.eleap.feature.reading.ui.PopupAnchorInfo
 import com.eleap.eleap.feature.reading.ui.SentencePopup
@@ -72,15 +73,25 @@ fun ReadingScreen(
         vm.loadReading(readingId)
     }
 
-    // ── Enqueue tải gói audio (.ogg) cho bài đang mở, đúng giọng đang chọn ───
+    // ── Enqueue tải gói audio cho bài đang mở, đúng giọng đang chọn ─────────
     // TtsVoiceSnapshot KHÔNG còn tự enqueue khi đổi giọng (xem
     // TtsVoiceSnapshot.kt) — nơi mở bài đọc PHẢI tự gọi việc này. Gọi lại mỗi
-    // khi readingId HOẶC speechSid đổi (vd người dùng đổi giọng ngay trong
-    // lúc đang đọc bài) — WorkManager tự dedupe qua ExistingWorkPolicy.KEEP
-    // theo (readingId, sid) nên gọi lại nhiều lần với cùng cặp không tốn kém.
+    // khi readingId HOẶC speechVendor/speechSid đổi (vd người dùng đổi giọng
+    // ngay trong lúc đang đọc bài) — WorkManager tự dedupe qua
+    // ExistingWorkPolicy.KEEP theo (readingId, sid) nên gọi lại nhiều lần với
+    // cùng cặp không tốn kém.
+    //
+    // ⚠️ CHỈ enqueue khi vendor đang chọn là KOKORO — TtsKokoroPackScheduler
+    // là cơ chế đồng bộ ĐẶC THÙ của riêng Kokoro (tải gói .zip pregenerated
+    // từ Drive). Nếu sau này có vendor khác (vd dịch vụ synth on-demand) mà
+    // người dùng đang chọn, KHÔNG enqueue gì ở đây — vendor đó (nếu cần) tự
+    // có cơ chế riêng trong thư mục của nó, không đi qua scheduler này.
+    val speechVendor = remember { TtsVoiceSnapshot.currentVendor() }
     val speechSid = remember { TtsVoiceSnapshot.currentSid() }
-    LaunchedEffect(readingId, speechSid) {
-        TtsRemotePackScheduler.enqueueDownload(context, readingId, speechSid)
+    LaunchedEffect(readingId, speechVendor, speechSid) {
+        if (speechVendor == TtsVendor.KOKORO) {
+            TtsKokoroPackScheduler.enqueueDownload(context, readingId, speechSid)
+        }
     }
 
     // ── WordPopup ─────────────────────────────────────────────────────────────

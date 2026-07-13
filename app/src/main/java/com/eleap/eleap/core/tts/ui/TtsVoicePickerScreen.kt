@@ -1,26 +1,40 @@
 // TtsVoicePickerScreen.kt
 // Đặt tại: com/eleap/eleap/core/tts/ui/TtsVoicePickerScreen.kt
+// (đã cập nhật cho kiến trúc đa-vendor: TtsVoiceSnapshot giờ nhớ CẢ vendor
+// lẫn sid — xem TtsVoiceSnapshot.kt — và việc enqueue tải gói giờ CHỈ áp
+// dụng cho giọng thuộc vendor KOKORO, không phải mọi vendor)
 //
 // Màn chọn giọng đọc — điểm gọi DUY NHẤT tới
-// TtsVoiceSnapshot.setSelectedSid() trong toàn app (trước đây KHÔNG có nơi
-// nào gọi hàm này, sid luôn cố định ở DEFAULT_SID=0, xem ghi chú review
-// trước đó). Dùng TtsVoiceCatalog.englishVoices làm nguồn danh sách hiển
-// thị — eLeap chỉ dạy tiếng Anh nên không cần hiện 53 giọng đủ ngôn ngữ của
-// TtsVoiceCatalog.allVoices.
+// TtsVoiceSnapshot.setSelectedVoice() trong toàn app. Dùng
+// TtsVoiceCatalog.englishVoices làm nguồn danh sách hiển thị — eLeap chỉ
+// dạy tiếng Anh nên không cần hiện toàn bộ giọng đủ ngôn ngữ của
+// TtsVoiceCatalog.allVoices (danh sách này giờ gộp từ MỌI vendor đã khai
+// báo, không chỉ riêng Kokoro).
 //
 // ⚠️ Tham số readingId là OPTIONAL: màn này có thể mở từ 2 nơi —
 //   (a) Từ TRONG 1 bài đọc cụ thể (vd nút cài đặt ở ReadingScreen) — có
 //       readingId, đổi giọng ở đây sẽ enqueue tải NGAY gói giọng mới cho
-//       đúng bài đang đọc, để cache có sẵn kịp lúc quay lại đọc tiếp.
+//       đúng bài đang đọc (CHỈ khi giọng vừa chọn thuộc vendor KOKORO — xem
+//       ghi chú ở onVoiceSelected() bên dưới), để cache có sẵn kịp lúc quay
+//       lại đọc tiếp.
 //   (b) Từ màn cài đặt CHUNG (không gắn với bài nào) — readingId=null, chỉ
 //       lưu lựa chọn, KHÔNG enqueue gì cả (không biết tải gói cho bài nào).
 //       Gói của các bài khác sẽ tự được tải khi người dùng MỞ bài đó (xem
-//       LaunchedEffect(readingId, speechSid) ở ReadingScreen.kt).
+//       LaunchedEffect(readingId, speechVendor, speechSid) ở
+//       ReadingScreen.kt).
+//
+// ⚠️ VÌ SAO CHỈ ENQUEUE KHI VENDOR == KOKORO: TtsKokoroPackScheduler là cơ
+// chế đồng bộ ĐẶC THÙ của riêng Kokoro (tải gói .zip pregenerated từ
+// Drive) — 1 nhà cung cấp khác (vd dịch vụ synth on-demand) có thể không
+// cần đồng bộ gì cả (tự phát trực tiếp hoặc tự cache theo cách riêng khi
+// phát lần đầu), nên KHÔNG có khái niệm "enqueue tải gói" tương ứng. Màn
+// này KHÔNG gọi 1 "scheduler chung" nào — mỗi vendor tự quyết định cần làm
+// gì sau khi được chọn, màn chọn giọng chỉ biết rẽ nhánh theo đúng vendor.
 //
 // KHÔNG có audio xem trước (preview) ở bước này — bấm chọn xong chỉ lưu +
-// enqueue tải, không phát thử ngay (gói vừa chọn thường CHƯA có trong cache
-// nên phát thử sẽ chỉ nghe được Android TTS fallback, dễ gây hiểu lầm là
-// giọng mới nghe "dở" hơn giọng cũ). Có thể thêm sau nếu cần.
+// enqueue tải (nếu cần), không phát thử ngay (gói vừa chọn thường CHƯA có
+// trong cache nên phát thử sẽ chỉ nghe được Android TTS fallback, dễ gây
+// hiểu lầm là giọng mới nghe "dở" hơn giọng cũ). Có thể thêm sau nếu cần.
 package com.eleap.eleap.core.tts.ui
 
 import androidx.compose.foundation.background
@@ -41,10 +55,11 @@ import androidx.compose.ui.Alignment
 import androidx.compose.ui.Modifier
 import androidx.compose.ui.platform.LocalContext
 import androidx.compose.ui.unit.dp
+import com.eleap.eleap.core.tts.TtsVendor
 import com.eleap.eleap.core.tts.TtsVoiceCatalog
 import com.eleap.eleap.core.tts.TtsVoiceOption
 import com.eleap.eleap.core.tts.TtsVoiceSnapshot
-import com.eleap.eleap.core.tts.remote.TtsRemotePackScheduler
+import com.eleap.eleap.core.tts.kokoro.TtsKokoroPackScheduler
 
 @OptIn(ExperimentalMaterial3Api::class)
 @Composable
@@ -53,19 +68,29 @@ fun TtsVoicePickerScreen(
     readingId: String? = null,
 ) {
     val context = LocalContext.current
+
+    // ── Trạng thái lựa chọn hiện tại — giờ là CẶP (vendor, sid), không còn
+    // chỉ 1 con số sid như bản cũ. So sánh "đang chọn giọng nào" PHẢI xét cả
+    // 2 giá trị, vì 2 vendor khác nhau hoàn toàn có thể trùng số sid mà
+    // không liên quan gì tới nhau (vd Kokoro sid=0 và 1 vendor khác cũng
+    // đánh sid=0 cho giọng đầu tiên của họ). ─────────────────────────────
+    var selectedVendor by remember { mutableStateOf(TtsVoiceSnapshot.currentVendor()) }
     var selectedSid by remember { mutableStateOf(TtsVoiceSnapshot.currentSid()) }
 
     fun onVoiceSelected(voice: TtsVoiceOption) {
-        if (voice.sid == selectedSid) return   // đã đang chọn đúng giọng này, không làm gì thêm
+        if (voice.vendor == selectedVendor && voice.sid == selectedSid) return   // đã đang chọn đúng giọng này, không làm gì thêm
 
-        TtsVoiceSnapshot.setSelectedSid(voice.sid)
+        TtsVoiceSnapshot.setSelectedVoice(voice.vendor, voice.sid)
+        selectedVendor = voice.vendor
         selectedSid = voice.sid
 
-        // ⚠️ Chỉ enqueue khi biết ĐANG đọc bài nào (xem ghi chú đầu file) —
-        // TtsVoiceSnapshot không tự làm việc này (đã bỏ từ bước tách bạch
-        // trách nhiệm, xem TtsVoiceSnapshot.kt).
-        if (readingId != null) {
-            TtsRemotePackScheduler.enqueueDownload(context, readingId, voice.sid)
+        // ⚠️ Chỉ enqueue khi (a) biết ĐANG đọc bài nào (xem ghi chú đầu
+        // file) VÀ (b) giọng vừa chọn thuộc vendor KOKORO — vendor khác
+        // không đi qua TtsKokoroPackScheduler, tự có cơ chế riêng (nếu cần)
+        // trong thư mục của chính nó. TtsVoiceSnapshot không tự làm việc
+        // này (đã tách bạch trách nhiệm từ trước, xem TtsVoiceSnapshot.kt).
+        if (readingId != null && voice.vendor == TtsVendor.KOKORO) {
+            TtsKokoroPackScheduler.enqueueDownload(context, readingId, voice.sid)
         }
     }
 
@@ -87,10 +112,12 @@ fun TtsVoicePickerScreen(
                 .fillMaxSize()
                 .padding(padding)
         ) {
-            items(TtsVoiceCatalog.englishVoices, key = { it.sid }) { voice ->
+            // ── key phải là CẶP (vendor, sid) — dùng riêng sid làm key như
+            // bản cũ sẽ đụng độ nếu 2 vendor cùng đánh trùng số sid. ────────
+            items(TtsVoiceCatalog.englishVoices, key = { "${it.vendor}_${it.sid}" }) { voice ->
                 VoiceRow(
                     voice      = voice,
-                    isSelected = voice.sid == selectedSid,
+                    isSelected = voice.vendor == selectedVendor && voice.sid == selectedSid,
                     onClick    = { onVoiceSelected(voice) }
                 )
             }

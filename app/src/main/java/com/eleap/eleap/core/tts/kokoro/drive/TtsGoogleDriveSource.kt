@@ -1,21 +1,32 @@
 // TtsGoogleDriveSource.kt
-// Đặt tại: com/eleap/eleap/core/tts/remote/TtsGoogleDriveSource.kt
+// Đặt tại: com/eleap/eleap/core/tts/kokoro/drive/TtsGoogleDriveSource.kt
+// (chuyển từ core/tts/kokoro/ sang core/tts/kokoro/drive/ — logic không
+// đổi, chỉ đổi package. Đây là 1 TRANSPORT CỤ THỂ trong số có thể nhiều
+// transport mà Kokoro hỗ trợ — nếu sau này thêm S3/CDN riêng, sẽ có thêm
+// 1 thư mục anh em kokoro/s3/ với TtsS3Source.kt tương tự, không đụng gì
+// tới file này)
 //
-// Implement TtsRemoteSource bằng Google Drive — dùng Service Account (OAuth)
-// để có access_token thật, vì API key đơn thuần không đủ quyền gọi
-// files.list (xem TtsServiceAccountAuth.kt để biết chi tiết luồng JWT
-// Bearer + đánh đổi bảo mật đã chấp nhận).
+// Implement TtsKokoroPackSource bằng Google Drive — transport CỤ THỂ mà
+// Kokoro đang dùng để phân phối gói giọng. Đây KHÔNG phải "vendor giọng
+// đọc" — Google Drive chỉ là NƠI CHỨA file zip mà Kokoro chọn dùng; nếu mai
+// đổi sang S3, chỉ cần viết 1 kokoro/s3/TtsS3Source.kt khác, không đụng gì
+// tới phần còn lại của Kokoro (Downloader/Sync/Voices).
+//
+// Dùng Service Account (OAuth) để có access_token thật, vì API key đơn
+// thuần không đủ quyền gọi files.list (xem TtsServiceAccountAuth.kt để biết
+// chi tiết luồng JWT Bearer + đánh đổi bảo mật đã chấp nhận).
 //
 // ── VÌ SAO KHÔNG CẦN TỰ QUẢN LÝ manifest.json/sha256 RIÊNG ─────────────────
 // Drive tự tính VÀ trả về field "sha256Checksum" cho mọi file khi liệt kê
-// qua API — field này khớp Y NGUYÊN với TtsRemotePackRef.sha256 mà
-// TtsRemotePackDownloader.verifyChecksum() dùng để xác thực trước khi giải
+// qua API — field này khớp Y NGUYÊN với TtsKokoroPackRef.sha256 mà
+// TtsKokoroPackDownloader.verifyChecksum() dùng để xác thực trước khi giải
 // nén. "Danh sách file trong thư mục Drive" vẫn tự nó là manifest.
 //
 // ── QUY ƯỚC ĐẶT TÊN FILE TRÊN DRIVE ─────────────────────────────────────
 // Tất cả file .zip nằm PHẲNG trong 1 thư mục gốc (rootFolderId), đặt tên
-// đúng dạng "{readingId}_{sid}.zip". Bên trong mỗi .zip là các file .ogg đặt
-// tên đúng quy ước "{type}_{itemId}_{contentHash}.ogg" của TtsAudioCache.
+// đúng dạng "{readingId}_{sid}.zip". Bên trong mỗi .zip là các file audio
+// đặt tên đúng quy ước "{type}_{itemId}_{contentHash}.<ext>" của
+// TtsAudioCache.
 //
 // ── QUYỀN TRUY CẬP THƯ MỤC ──────────────────────────────────────────────
 // Thư mục Drive PHẢI được share (Share → dán email service account, quyền
@@ -24,10 +35,13 @@
 //
 // Dùng HttpURLConnection + org.json (đều có sẵn trong Android SDK) — KHÔNG
 // thêm dependency mới.
-package com.eleap.eleap.core.tts.remote
+package com.eleap.eleap.core.tts.kokoro.drive
 
 import android.content.Context
 import android.util.Log
+import com.eleap.eleap.core.tts.kokoro.TtsKokoroPackManifest
+import com.eleap.eleap.core.tts.kokoro.TtsKokoroPackRef
+import com.eleap.eleap.core.tts.kokoro.TtsKokoroPackSource
 import kotlinx.coroutines.Dispatchers
 import kotlinx.coroutines.withContext
 import org.json.JSONObject
@@ -44,16 +58,16 @@ private const val READ_TIMEOUT_MS = 30_000
 
 // ── context: dùng để TtsServiceAccountAuth đọc assets/tts_service_account.json
 // và tự làm mới access_token khi cần — LUÔN truyền applicationContext ở nơi
-// khởi tạo (TtsRemoteConfig) để tránh leak Activity/Context ngắn hạn. ───────
+// khởi tạo (TtsKokoroConfig) để tránh leak Activity/Context ngắn hạn. ───────
 class TtsGoogleDriveSource(
     private val context: Context,
     private val rootFolderId: String,
-) : TtsRemoteSource {
+) : TtsKokoroPackSource {
 
     // ── Hỏi Drive: những file .zip nào trong thư mục gốc có tên bắt đầu
     // bằng "{readingId}_" — trả về null nếu không có file khớp, nếu thiếu
     // access_token, hoặc nếu gọi mạng thất bại — đúng hợp đồng đã định nghĩa
-    // ở TtsRemoteSource.kt: KHÔNG throw. ────────────────────────────────
+    // ở TtsKokoroPackSource.kt: KHÔNG throw. ────────────────────────────────
     //
     // Bọc TOÀN BỘ thân hàm trong withContext(Dispatchers.IO) — cả
     // TtsServiceAccountAuth.getAccessToken() (có thể tự gọi mạng đồng bộ để
@@ -62,7 +76,7 @@ class TtsGoogleDriveSource(
     // thread. suspend fun KHÔNG tự động chạy ngoài Main thread — nó chạy
     // trên đúng thread của coroutine gọi nó, nên PHẢI tự bọc ở đây để mọi
     // caller trong tương lai (kể cả gọi trực tiếp từ UI) đều an toàn.
-    override suspend fun fetchManifest(readingId: String): TtsRemoteManifest? = withContext(Dispatchers.IO) {
+    override suspend fun fetchManifest(readingId: String): TtsKokoroPackManifest? = withContext(Dispatchers.IO) {
         val accessToken = TtsServiceAccountAuth.getAccessToken(context)
         if (accessToken == null) {
             Log.d(TAG, "fetchManifest: không lấy được access_token, coi như chưa cấu hình")
@@ -96,7 +110,7 @@ class TtsGoogleDriveSource(
                 Log.d(TAG, "fetchManifest: Drive không có file nào cho readingId=$readingId")
                 null
             } else {
-                TtsRemoteManifest(packs)
+                TtsKokoroPackManifest(packs)
             }
         } catch (e: Exception) {
             Log.e(TAG, "fetchManifest: lỗi parse response Drive cho readingId=$readingId", e)
@@ -106,7 +120,7 @@ class TtsGoogleDriveSource(
 
     // ── Tải nội dung 1 file (đã biết fileId qua downloadUrl) về đúng
     // destZip. Trả về false nếu bất kỳ bước nào thất bại — KHÔNG throw. ────
-    override suspend fun downloadPackFile(pack: TtsRemotePackRef, destZip: File): Boolean = withContext(Dispatchers.IO) {
+    override suspend fun downloadPackFile(pack: TtsKokoroPackRef, destZip: File): Boolean = withContext(Dispatchers.IO) {
         val accessToken = TtsServiceAccountAuth.getAccessToken(context)
         if (accessToken == null) {
             Log.w(TAG, "downloadPackFile: không lấy được access_token, huỷ tải reading=${pack.readingId} sid=${pack.sid}")
@@ -140,13 +154,13 @@ class TtsGoogleDriveSource(
         }
     }
 
-    // ── Parse response JSON của Drive files.list thành List<TtsRemotePackRef> ─
-    private fun parseFilesResponse(responseBody: String, readingId: String): List<TtsRemotePackRef> {
+    // ── Parse response JSON của Drive files.list thành List<TtsKokoroPackRef> ─
+    private fun parseFilesResponse(responseBody: String, readingId: String): List<TtsKokoroPackRef> {
         val json = JSONObject(responseBody)
         val filesArray = json.optJSONArray("files") ?: return emptyList()
 
         val prefix = "${readingId}_"
-        val result = mutableListOf<TtsRemotePackRef>()
+        val result = mutableListOf<TtsKokoroPackRef>()
 
         for (i in 0 until filesArray.length()) {
             val fileObj = filesArray.getJSONObject(i)
@@ -172,7 +186,7 @@ class TtsGoogleDriveSource(
             val version = System.currentTimeMillis().toInt()
 
             result.add(
-                TtsRemotePackRef(
+                TtsKokoroPackRef(
                     readingId = readingId,
                     sid = sid,
                     downloadUrl = buildDownloadUrl(fileId),

@@ -1,5 +1,10 @@
 // TtsServiceAccountAuth.kt
-// Đặt tại: com/eleap/eleap/core/tts/remote/TtsServiceAccountAuth.kt
+// Đặt tại: com/eleap/eleap/core/tts/kokoro/drive/TtsServiceAccountAuth.kt
+// (chuyển từ core/tts/kokoro/ sang core/tts/kokoro/drive/ — logic không đổi,
+// chỉ đổi package. Đây là chi tiết xác thực CỦA RIÊNG transport Drive, tách
+// khỏi cấp kokoro/ để không lẫn với hợp đồng chung TtsKokoroPackSource/
+// TtsKokoroPackManifest — 1 transport khác (vd S3) sẽ có cách xác thực
+// hoàn toàn khác, nằm trong thư mục riêng của nó, vd kokoro/s3/)
 //
 // Tự thực hiện OAuth2 "JWT Bearer flow" cho Service Account — KHÔNG dùng
 // thư viện google-auth-library (nặng, kéo nhiều dependency phụ), chỉ dùng
@@ -20,7 +25,7 @@
 // ── LUỒNG (theo đúng chuẩn RFC 7523 - JWT Bearer) ──────────────────────────
 // 1. Đọc file assets/tts_service_account.json (client_email, private_key,
 //    token_uri) — nếu không có file này, coi như CHƯA cấu hình, mọi hàm trả
-//    về null, không throw (TtsRemoteConfig sẽ tự bỏ qua đăng ký nguồn).
+//    về null, không throw (TtsKokoroConfig sẽ tự bỏ qua đăng ký nguồn).
 // 2. Tự dựng JWT gồm 3 phần base64url nối bằng dấu '.':
 //      header.claims.signature
 //    - header: {"alg":"RS256","typ":"JWT"}
@@ -37,9 +42,9 @@
 //    giữa chừng thì token hết hạn.
 //
 // Toàn bộ hàm đều KHÔNG throw ra ngoài — mọi lỗi (thiếu file, lỗi mạng, lỗi
-// ký) đều log rồi trả về null, đúng hợp đồng "remote/ luôn là lưới an toàn
+// ký) đều log rồi trả về null, đúng hợp đồng "kokoro/ luôn là lưới an toàn
 // tuỳ chọn, không bao giờ làm app crash" đã thống nhất từ đầu.
-package com.eleap.eleap.core.tts.remote
+package com.eleap.eleap.core.tts.kokoro.drive
 
 import android.content.Context
 import android.util.Base64
@@ -92,7 +97,7 @@ object TtsServiceAccountAuth {
     @Volatile
     private var loadAttempted = false
 
-    // ── Dùng ở TtsRemoteConfig để quyết định có đăng ký TtsGoogleDriveSource
+    // ── Dùng ở TtsKokoroConfig để quyết định có đăng ký TtsGoogleDriveSource
     // hay không — true nếu asset tồn tại và parse được đủ 3 trường cần thiết.
     fun isConfigured(context: Context): Boolean = loadServiceAccount(context) != null
 

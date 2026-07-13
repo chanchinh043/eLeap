@@ -1,13 +1,22 @@
-// TtsRemotePackDownloader.kt
-// Đặt tại: com/eleap/eleap/core/tts/remote/TtsRemotePackDownloader.kt
+// TtsKokoroPackDownloader.kt
+// Đặt tại: com/eleap/eleap/core/tts/kokoro/TtsKokoroPackDownloader.kt
+// (đổi tên từ TtsRemotePackDownloader.kt, chuyển từ core/tts/remote/ sang
+// core/tts/kokoro/ — logic nghiệp vụ giữ nguyên, chỉ cập nhật lời gọi
+// TtsAudioCache.voiceDir() để truyền thêm vendor=TtsVendor.KOKORO)
 //
-// Orchestrator DUY NHẤT của package remote/ — không quan tâm nguồn tải là
-// Google Drive hay gì khác (nhận vào qua interface TtsRemoteSource), chỉ lo
-// đúng 3 việc tuần tự: (1) tải file .zip về thư mục tạm, (2) xác thực
-// checksum, (3) giải nén thẳng vào ĐÚNG thư mục mà TtsAudioCache.voiceDir()
-// quy định — để TtsPlaybackRouter tự nhận ra cache mà không cần biết gì về
-// package remote/ này (xem TtsAudioCache.kt: "sự tồn tại của đúng file tự
-// nó là index").
+// Orchestrator đồng bộ RIÊNG CỦA KOKORO — không quan tâm transport tải là
+// Google Drive hay gì khác (nhận vào qua interface TtsKokoroPackSource),
+// chỉ lo đúng 3 việc tuần tự: (1) tải file .zip về thư mục tạm, (2) xác
+// thực checksum, (3) giải nén thẳng vào ĐÚNG thư mục mà
+// TtsAudioCache.voiceDir() quy định — để TtsPlaybackRouter tự nhận ra cache
+// mà không cần biết gì về việc Kokoro đồng bộ kiểu gì (xem TtsAudioCache.kt:
+// "sự tồn tại của đúng file tự nó là index").
+//
+// ⚠️ ĐÂY LÀ CƠ CHẾ ĐỒNG BỘ ĐẶC THÙ CỦA KOKORO — không phải hạ tầng dùng
+// chung cho mọi nhà cung cấp. 1 nhà cung cấp khác (vd dịch vụ synth
+// on-demand) có thể không cần file tương tự file này chút nào (không có
+// khái niệm "gói zip cần tải", tự synth rồi ghi thẳng vào TtsAudioCache
+// theo cách riêng của nó) — xem ghi chú ở TtsKokoroPackSource.kt.
 //
 // ⚠️ File .zip tạm nằm ở context.cacheDir (KHÔNG phải filesDir) — vì đây chỉ
 // là trung gian, hệ điều hành có thể tự xoá cacheDir bất kỳ lúc nào khi
@@ -21,36 +30,52 @@
 // buộc vì nội dung zip đến từ nguồn BÊN NGOÀI, không nên tin tưởng tuyệt đối
 // cấu trúc bên trong.
 //
+// ⚠️ TÊN FILE audio bên trong zip giữ NGUYÊN khi giải nén (không build lại
+// qua TtsAudioCache.buildFilePath()) — server Kokoro tự đóng gói sẵn đúng
+// quy ước "{type}_{itemId}_{contentHash}.ogg" (xem TtsAudioCache.kt), nên
+// Downloader chỉ cần giải nén y nguyên vào đúng voiceDir(). Kokoro luôn tạo
+// ra .ogg nên KHÔNG cần biết gì về việc TtsAudioCache giờ không còn cố định
+// đuôi file nữa (xem TtsAudioCache.kt bước trước) — điều đó chỉ ảnh hưởng
+// tới cách ĐỌC (getCachedFile() quét theo tên gốc, không quan tâm đuôi),
+// không ảnh hưởng tới cách Downloader này GHI.
+//
 // Không phải class tự giữ trạng thái — mọi hàm đều nhận đủ tham số cần
 // thiết (context, source, readingId, sid), gọi xong là xong, không cần
 // init()/singleton lifecycle nào cả.
-package com.eleap.eleap.core.tts.remote
+package com.eleap.eleap.core.tts.kokoro
 
 import android.content.Context
 import android.util.Log
+import com.eleap.eleap.core.tts.TtsVendor
+import com.eleap.eleap.core.tts.cache.TtsAudioCache
 import java.io.File
 import java.io.FileOutputStream
 import java.security.MessageDigest
 import java.util.zip.ZipInputStream
-import com.eleap.eleap.core.tts.cache.TtsAudioCache
 
-private const val TAG = "TtsRemotePackDownloader"
+private const val TAG = "TtsKokoroPackDownloader"
 
-// ── Tên file đánh dấu "đã đồng bộ gói remote xong" — ghi vào ĐÚNG thư mục
-// voiceDir(readingId, sid) ngay sau khi giải nén thành công. Đây KHÔNG phải
-// audio, TtsAudioCache/TtsPlaybackRouter không đọc file này — chỉ
-// TtsRemotePackDownloader tự đọc lại để trả lời "đã tải gói này chưa" mà
-// KHÔNG cần hỏi lại Drive (isPackSynced() bên dưới).
+// ── VENDOR CỐ ĐỊNH: file này CHỈ xử lý đồng bộ cho Kokoro — mọi lời gọi
+// TtsAudioCache.voiceDir() bên dưới đều truyền cứng TtsVendor.KOKORO, không
+// nhận vendor làm tham số vì file này vốn dĩ đã nằm trong package kokoro/,
+// không có lý do gì xử lý vendor khác. ──────────────────────────────────
+private val VENDOR = TtsVendor.KOKORO
+
+// ── Tên file đánh dấu "đã đồng bộ gói xong" — ghi vào ĐÚNG thư mục
+// voiceDir(readingId, VENDOR, sid) ngay sau khi giải nén thành công. Đây
+// KHÔNG phải audio, TtsAudioCache/TtsPlaybackRouter không đọc file này —
+// chỉ TtsKokoroPackDownloader tự đọc lại để trả lời "đã tải gói này chưa"
+// mà KHÔNG cần hỏi lại Drive (isPackSynced() bên dưới).
 //
 // Marker này lưu ĐÚNG sha256 của pack tại thời điểm tải, có thêm marker
-// REMOTE_CHECKED_AT_MARKER (bên dưới) để so sánh phát hiện bản mới trên
+// PACK_CHECKED_AT_MARKER (bên dưới) để so sánh phát hiện bản mới trên
 // Drive theo chu kỳ, xem checkForUpdate() và isPackUpToDate().
-private const val REMOTE_SYNCED_MARKER = ".remote_synced"
+private const val PACK_SYNCED_MARKER = ".pack_synced"
 
 // ── Tên file đánh dấu "lần cuối cùng đã hỏi Drive xem có bản mới không" —
-// TÁCH RIÊNG khỏi REMOTE_SYNCED_MARKER (1 marker = 1 mục đích). Chỉ
-// TtsRemotePackDownloader tự đọc/ghi, không nơi nào khác cần biết.
-private const val REMOTE_CHECKED_AT_MARKER = ".remote_checked_at"
+// TÁCH RIÊNG khỏi PACK_SYNCED_MARKER (1 marker = 1 mục đích). Chỉ
+// TtsKokoroPackDownloader tự đọc/ghi, không nơi nào khác cần biết.
+private const val PACK_CHECKED_AT_MARKER = ".pack_checked_at"
 
 // ── Khoảng thời gian tối thiểu giữa 2 lần hỏi Drive xem có bản mới hay
 // không, cho ĐÚNG 1 (readingId, sid) — đây là đòn bẩy CHÍNH để vừa bắt được
@@ -59,7 +84,7 @@ private const val REMOTE_CHECKED_AT_MARKER = ".remote_checked_at"
 // thoảng nâng cấp 1 vài giọng" — không cần realtime.
 private const val CHECK_INTERVAL_MS = 24 * 60 * 60 * 1000L
 
-object TtsRemotePackDownloader {
+object TtsKokoroPackDownloader {
 
     // ── Kiểm tra NHANH (không gọi mạng): gói (readingId, sid) đã từng tải +
     // giải nén thành công chưa. Gọi hàm này TRƯỚC khi cân nhắc gọi
@@ -67,7 +92,7 @@ object TtsRemotePackDownloader {
     // Drive. Đây là điểm DUY NHẤT quyết định "tránh tải 2 lần" cho cùng 1
     // (readingId, sid), dùng chung cho mọi nơi gọi. ─────────────────────
     fun isPackSynced(context: Context, readingId: String, sid: Int): Boolean {
-        val markerFile = File(TtsAudioCache.voiceDir(context, readingId, sid), REMOTE_SYNCED_MARKER)
+        val markerFile = File(TtsAudioCache.voiceDir(context, readingId, VENDOR, sid), PACK_SYNCED_MARKER)
         return markerFile.exists()
     }
 
@@ -84,7 +109,7 @@ object TtsRemotePackDownloader {
     }
 
     private fun readCheckedAtMillis(context: Context, readingId: String, sid: Int): Long? {
-        val file = File(TtsAudioCache.voiceDir(context, readingId, sid), REMOTE_CHECKED_AT_MARKER)
+        val file = File(TtsAudioCache.voiceDir(context, readingId, VENDOR, sid), PACK_CHECKED_AT_MARKER)
         if (!file.exists()) return null
         return try {
             file.readText().trim().toLongOrNull()
@@ -95,15 +120,15 @@ object TtsRemotePackDownloader {
 
     private fun writeCheckedAtMillis(context: Context, readingId: String, sid: Int, nowMillis: Long) {
         try {
-            val destDir = TtsAudioCache.voiceDir(context, readingId, sid)
-            File(destDir, REMOTE_CHECKED_AT_MARKER).writeText(nowMillis.toString())
+            val destDir = TtsAudioCache.voiceDir(context, readingId, VENDOR, sid)
+            File(destDir, PACK_CHECKED_AT_MARKER).writeText(nowMillis.toString())
         } catch (e: Exception) {
             Log.w(TAG, "writeCheckedAtMillis: ghi thất bại reading=$readingId sid=$sid (không ảnh hưởng audio đã có)", e)
         }
     }
 
     private fun readSyncedSha256(context: Context, readingId: String, sid: Int): String? {
-        val file = File(TtsAudioCache.voiceDir(context, readingId, sid), REMOTE_SYNCED_MARKER)
+        val file = File(TtsAudioCache.voiceDir(context, readingId, VENDOR, sid), PACK_SYNCED_MARKER)
         if (!file.exists()) return null
         return try {
             file.readText().trim().ifBlank { null }
@@ -131,7 +156,7 @@ object TtsRemotePackDownloader {
     // thường.
     suspend fun checkForUpdate(
         context: Context,
-        source: TtsRemoteSource,
+        source: TtsKokoroPackSource,
         readingId: String,
         sid: Int,
     ): Boolean {
@@ -168,7 +193,7 @@ object TtsRemotePackDownloader {
         // sha256 khác local → đã up đè bản mới lên Drive (cùng tên file,
         // Drive tự tính lại sha256Checksum mới) — tải lại đúng gói này.
         // downloadAndExtract() tự giải nén ĐÈ lên file cũ (cùng tên) và tự
-        // ghi lại REMOTE_SYNCED_MARKER với sha256 mới.
+        // ghi lại PACK_SYNCED_MARKER với sha256 mới.
         Log.d(
             TAG,
             "checkForUpdate: PHÁT HIỆN bản MỚI trên Drive cho reading=$readingId sid=$sid " +
@@ -185,25 +210,32 @@ object TtsRemotePackDownloader {
 
     // ── Điểm gọi GATED DUY NHẤT — dùng chung cho MỌI caller muốn đảm bảo
     // cache local đã đồng bộ với Drive mà KHÔNG tốn băng thông/quota nếu
-    // chưa tới hạn. Mọi caller hiện tại (TtsRemotePackWorker) và tương lai
+    // chưa tới hạn. Mọi caller hiện tại (TtsKokoroPackWorker) và tương lai
     // (vd nút "làm mới" trong Settings) tự động được bảo vệ, không cần tự
     // nhớ implement lại gate ở từng nơi.
     //
+    // ⚠️ NHẬN `source` LÀM THAM SỐ (không tự lấy từ registry toàn cục) — đây
+    // là điểm SỬA so với bản gốc TtsRemotePackDownloader.syncIfNeeded() cũ
+    // (từng tự gọi TtsRemoteSourceRegistry.current() bên trong). Giữ
+    // TtsKokoroPackDownloader KHÔNG phụ thuộc trực tiếp vào registry —
+    // caller (TtsKokoroPackWorker) tự tra registry của Kokoro rồi truyền
+    // vào, giúp Downloader dễ test hơn (truyền source giả vào thẳng) và
+    // tường minh hơn (đọc chữ ký hàm là biết ngay cần gì, không cần lần
+    // theo registry ẩn bên trong).
+    //
     // Trả về true nếu sau lượt gọi này cache coi như đã đồng bộ (không cần
     // làm gì vì chưa tới hạn, hoặc check thấy không có gì mới, hoặc vừa tải
-    // bản mới thành công) — false nếu chưa cấu hình nguồn remote, hoặc
-    // check/tải thất bại (cache cũ — nếu có — vẫn dùng bình thường ở mọi
-    // nhánh false, không có gì bị xoá).
-    suspend fun syncIfNeeded(context: Context, readingId: String, sid: Int): Boolean {
+    // bản mới thành công) — false nếu check/tải thất bại (cache cũ — nếu
+    // có — vẫn dùng bình thường ở mọi nhánh false, không có gì bị xoá).
+    suspend fun syncIfNeeded(
+        context: Context,
+        source: TtsKokoroPackSource,
+        readingId: String,
+        sid: Int,
+    ): Boolean {
         if (isPackUpToDate(context, readingId, sid)) {
             Log.d(TAG, "syncIfNeeded: reading=$readingId sid=$sid đã đồng bộ và chưa tới hạn check lại, bỏ qua")
             return true
-        }
-
-        val source = TtsRemoteSourceRegistry.current()
-        if (source == null) {
-            Log.d(TAG, "syncIfNeeded: chưa cấu hình nguồn remote, coi như không có gì để đồng bộ")
-            return false
         }
 
         return if (isPackSynced(context, readingId, sid)) {
@@ -231,7 +263,7 @@ object TtsRemotePackDownloader {
     // đổi).
     suspend fun downloadAndExtract(
         context: Context,
-        source: TtsRemoteSource,
+        source: TtsKokoroPackSource,
         readingId: String,
         sid: Int,
     ): Boolean {
@@ -247,7 +279,7 @@ object TtsRemotePackDownloader {
             return false
         }
 
-        val tempZip = File(context.cacheDir, "tts_remote_${readingId}_${sid}_${System.currentTimeMillis()}.zip")
+        val tempZip = File(context.cacheDir, "tts_kokoro_pack_${readingId}_${sid}_${System.currentTimeMillis()}.zip")
         try {
             val downloaded = source.downloadPackFile(pack, tempZip)
             if (!downloaded) {
@@ -260,7 +292,7 @@ object TtsRemotePackDownloader {
                 return false
             }
 
-            val destDir = TtsAudioCache.voiceDir(context, readingId, sid)
+            val destDir = TtsAudioCache.voiceDir(context, readingId, VENDOR, sid)
             val extracted = extractZip(tempZip, destDir)
             if (!extracted) {
                 Log.w(TAG, "downloadAndExtract: giải nén lỗi reading=$readingId sid=$sid")
@@ -274,7 +306,7 @@ object TtsRemotePackDownloader {
             // chỉ log cảnh báo, KHÔNG coi cả lượt tải là thất bại — audio đã
             // giải nén xong vẫn dùng được bình thường.
             try {
-                File(destDir, REMOTE_SYNCED_MARKER).writeText(pack.sha256)
+                File(destDir, PACK_SYNCED_MARKER).writeText(pack.sha256)
             } catch (e: Exception) {
                 Log.w(TAG, "downloadAndExtract: ghi marker thất bại reading=$readingId sid=$sid (không ảnh hưởng audio đã tải)", e)
             }
@@ -312,11 +344,17 @@ object TtsRemotePackDownloader {
     // có, tự chặn entry nào cố thoát ra ngoài destDir (zip slip). Trả về
     // false ngay khi gặp entry bất thường hoặc lỗi I/O bất kỳ, KHÔNG cố giải
     // nén tiếp phần còn lại (an toàn hơn giải nén dở dang, để lần tải sau
-    // làm lại từ đầu). Trước khi giải nén, XOÁ SẠCH các file .ogg cũ trong
+    // làm lại từ đầu). Trước khi giải nén, XOÁ SẠCH các file audio cũ trong
     // thư mục đích — đảm bảo không tồn đọng file lỗi thời của phiên bản
     // trước (vd item đã bị xoá khỏi bài, hoặc đổi hash do nội dung sửa lại)
-    // — ⚠️ file marker (.remote_synced/.remote_checked_at) KHÔNG bị xoá vì
-    // sẽ được ghi lại đúng NGAY SAU khi hàm này chạy xong ở downloadAndExtract().
+    // — ⚠️ file marker (.pack_synced/.pack_checked_at) KHÔNG bị xoá vì sẽ
+    // được ghi lại đúng NGAY SAU khi hàm này chạy xong ở downloadAndExtract().
+    //
+    // ⚠️ TÊN FILE giữ NGUYÊN từ entry.name trong zip — server Kokoro tự đóng
+    // gói đúng quy ước "{type}_{itemId}_{hash}.ogg" của TtsAudioCache, hàm
+    // này KHÔNG gọi TtsAudioCache.buildFilePath() để build lại tên, chỉ tin
+    // tưởng tên đã đúng sẵn trong zip (an toàn vì đã qua verifyChecksum() ở
+    // bước trước).
     private fun extractZip(zipFile: File, destDir: File): Boolean {
         if (!destDir.exists() && !destDir.mkdirs()) {
             Log.e(TAG, "extractZip: mkdirs() thất bại cho $destDir")
@@ -352,16 +390,23 @@ object TtsRemotePackDownloader {
         }
     }
 
-    // ── Xoá mọi file .ogg đã có TRƯỚC KHI giải nén gói mới đè lên — tránh
+    // ── Xoá mọi file audio đã có TRƯỚC KHI giải nén gói mới đè lên — tránh
     // tồn đọng audio của item đã bị xoá khỏi bài (server không còn đóng gói
     // lại nữa) hoặc audio ứng với hash cũ (nội dung đã sửa, tên file đổi
     // theo hash mới, file cũ nếu không xoá sẽ nằm lại vĩnh viễn không ai
-    // dùng tới). CHỈ xoá file .ogg — không đụng tới 2 marker
-    // (.remote_synced/.remote_checked_at), vì chúng sẽ được ghi lại ngay
-    // sau khi giải nén xong ở downloadAndExtract().
+    // dùng tới). CHỈ xoá file audio (không phải thư mục con, không phải 2
+    // marker .pack_synced/.pack_checked_at — chúng sẽ được ghi lại ngay sau
+    // khi giải nén xong ở downloadAndExtract()).
+    //
+    // ⚠️ Trước đây lọc theo `extension == "ogg"` cứng — giờ Kokoro luôn tạo
+    // .ogg nên vẫn đúng trong thực tế, nhưng để KHÔNG phụ thuộc giả định
+    // "TtsAudioCache chỉ có .ogg" (đã bỏ ở tầng cache chung), lọc bằng cách
+    // loại trừ đúng 2 tên marker đã biết thay vì lọc theo đuôi — an toàn
+    // hơn nếu sau này Kokoro đổi định dạng audio mà không cần sửa dòng này.
     private fun clearOldAudioFiles(destDir: File) {
         destDir.listFiles()?.forEach { file ->
-            if (file.isFile && file.extension.equals("ogg", ignoreCase = true)) {
+            val isMarker = file.name == PACK_SYNCED_MARKER || file.name == PACK_CHECKED_AT_MARKER
+            if (file.isFile && !isMarker) {
                 file.delete()
             }
         }
