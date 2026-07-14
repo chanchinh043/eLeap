@@ -77,6 +77,19 @@ private const val PACK_SYNCED_MARKER = ".pack_synced"
 // TtsKokoroPackDownloader tự đọc/ghi, không nơi nào khác cần biết.
 private const val PACK_CHECKED_AT_MARKER = ".pack_checked_at"
 
+// ── Tên file đánh dấu "bài này đã tải ĐỦ mọi giọng Kokoro hiện có trên
+// Drive" — đặt Ở CẤP BÀI (trong vendorDir(readingId, KOKORO), KHÔNG phải
+// trong voiceDir của 1 sid cụ thể), vì đây là trạng thái CHUNG cho toàn bộ
+// danh sách giọng, không phải của riêng 1 giọng.
+//
+// ⚠️ TÁCH BIỆT HOÀN TOÀN khỏi PACK_CHECKED_AT_MARKER (per-sid, có hạn 24h,
+// dùng để dò bản mới ĐỊNH KỲ — xem syncAllVoicesForReading()/checkForUpdate()
+// bên dưới). 1 khi marker này đã ghi, isReadingFullySynced() trả về true
+// MÃI MÃI (kể cả sau khi tắt app/mở lại), KHÔNG bị ảnh hưởng bởi việc 24h
+// đã trôi qua hay chưa — việc dò bản mới định kỳ cho giọng ĐÃ TẢI là LOGIC
+// KHÁC, không đụng vào marker này.
+private const val READING_FULLY_SYNCED_MARKER = ".reading_fully_synced"
+
 // ── Khoảng thời gian tối thiểu giữa 2 lần hỏi Drive xem có bản mới hay
 // không, cho ĐÚNG 1 (readingId, sid) — đây là đòn bẩy CHÍNH để vừa bắt được
 // bản voice nâng cấp (up đè trên Drive) vừa không tốn quota Drive API/tốn
@@ -115,6 +128,19 @@ object TtsKokoroPackDownloader {
     fun isPackUpToDate(context: Context, readingId: String, sid: Int, nowMillis: Long = System.currentTimeMillis()): Boolean {
         val checkedAt = readCheckedAtMillis(context, readingId, sid) ?: return false
         return nowMillis - checkedAt < CHECK_INTERVAL_MS
+    }
+
+    // ── Kiểm tra NHANH (KHÔNG gọi mạng, chỉ đọc 1 file nhỏ) — bài đọc này đã
+    // từng tải ĐỦ toàn bộ giọng Kokoro hiện có trên Drive hay chưa. Đây là
+    // ĐIỂM GỌI DÙNG CHO "MỞ BÀI ĐỌC" — nếu true, KHÔNG cần làm gì thêm (không
+    // gọi Drive, không kiểm tra từng sid, không quan tâm 24h) — xem
+    // ensureReadingFullySynced() bên dưới, hàm đó tự gọi lại đúng hàm này ở
+    // bước đầu tiên. Việc dò bản mới định kỳ cho giọng đã tải là TRÁCH NHIỆM
+    // RIÊNG của syncAllVoicesForReading()/checkForUpdate(), KHÔNG liên quan
+    // tới cờ này.
+    fun isReadingFullySynced(context: Context, readingId: String): Boolean {
+        val marker = File(TtsAudioCache.vendorDir(context, readingId, VENDOR), READING_FULLY_SYNCED_MARKER)
+        return marker.exists()
     }
 
     private fun readCheckedAtMillis(context: Context, readingId: String, sid: Int): Long? {
@@ -468,6 +494,101 @@ object TtsKokoroPackDownloader {
             // trong orderedSids vẫn tiếp tục xử lý bình thường.
         }
 
+        return true
+    }
+
+    // ── ĐIỂM GỌI DÙNG CHO "MỞ BÀI ĐỌC" — mục tiêu DUY NHẤT là tải cho BẰNG
+    // ĐƯỢC toàn bộ giọng Kokoro HIỆN CÓ trên Drive cho bài này (giọng nào
+    // Drive không có thì bỏ qua, không tính là thiếu), rồi mới ghi
+    // READING_FULLY_SYNCED_MARKER. KHÁC HẲN syncAllVoicesForReading() ở
+    // trên (dùng cho dò bản mới ĐỊNH KỲ, có gate 24h, luôn coi "chưa tới hạn"
+    // là xong việc dù chưa chắc đã tải đủ) — 2 hàm phục vụ 2 mục đích khác
+    // nhau, KHÔNG gọi lẫn nhau, KHÔNG chia sẻ điều kiện dừng.
+    //
+    // ⚠️ KHÔNG dùng isPackUpToDate()/gate 24h ở đây — 1 sid tải lỗi ở lượt
+    // trước (mất mạng giữa chừng) PHẢI được thử lại ở lượt gọi KẾ TIẾP, dù
+    // mới cách đây vài giây, không phải chờ đủ 24h. Việc dò "server vừa up
+    // bản MỚI đè lên bản đã tải" (khác với "tải lần đầu chưa xong") vẫn là
+    // việc của syncAllVoicesForReading()/checkForUpdate(), không phải hàm này.
+    //
+    // Trả về true CHỈ KHI đã xử lý xong (tải được hoặc xác nhận Drive không
+    // có) cho TOÀN BỘ orderedSids trong ĐÚNG 1 lượt gọi — lúc đó marker cấp
+    // bài được ghi. Trả về false nếu: không gọi được Drive, HOẶC còn ít nhất
+    // 1 sid tải lỗi — ở cả 2 trường hợp, KHÔNG ghi marker, caller (Worker)
+    // tự quyết định có retry hay không (xem TtsKokoroReadingEnsureSyncWorker
+    // ở TtsKokoroPackSync.kt — dùng Result.retry() thay vì luôn success()).
+    suspend fun ensureReadingFullySynced(
+        context: Context,
+        source: TtsKokoroPackSource,
+        readingId: String,
+        orderedSids: List<Int>,
+    ): Boolean {
+        if (orderedSids.isEmpty()) return true
+
+        // ── Cổng ĐẦU TIÊN, không gọi mạng — nếu bài này đã từng tải đủ, coi
+        // như xong, KHÔNG cần hỏi Drive dù chỉ 1 lần. Đây là nhánh chạy ở
+        // TUYỆT ĐẠI ĐA SỐ lượt mở lại 1 bài đã tải xong từ trước. ──────────
+        if (isReadingFullySynced(context, readingId)) {
+            Log.d(TAG, "ensureReadingFullySynced: reading=$readingId đã đánh dấu tải ĐỦ từ trước, bỏ qua")
+            return true
+        }
+
+        val manifest = source.fetchManifest(readingId)
+        if (manifest == null) {
+            Log.d(TAG, "ensureReadingFullySynced: không gọi được Drive (mất mạng?), reading=$readingId, sẽ thử lại")
+            return false
+        }
+
+        val now = System.currentTimeMillis()
+        var allOk = true
+
+        for (sid in orderedSids) {
+            val pack = manifest.findPack(readingId, sid)
+            if (pack == null) {
+                // Drive không có giọng này cho bài này — coi là ĐÃ XỬ LÝ XONG
+                // cho sid này (không phải lỗi), tiếp tục các sid còn lại.
+                writeCheckedAtMillis(context, readingId, sid, now)
+                continue
+            }
+
+            // Đã có sẵn ĐÚNG bản (sha256 khớp) từ 1 lượt tải trước đó (vd
+            // syncAllVoicesForReading() đã tải sid này trước rồi) — không
+            // cần tải lại, chỉ cần công nhận đã xử lý xong.
+            val localSha256 = readSyncedSha256(context, readingId, sid)
+            if (pack.sha256.equals(localSha256, ignoreCase = true)) {
+                writeCheckedAtMillis(context, readingId, sid, now)
+                continue
+            }
+
+            val ok = downloadAndExtractPack(context, source, pack)
+            if (ok) {
+                writeCheckedAtMillis(context, readingId, sid, now)
+            } else {
+                allOk = false
+                Log.w(TAG, "ensureReadingFullySynced: tải thất bại sid=$sid reading=$readingId, sẽ thử lại ở lượt sau")
+                // Vẫn TIẾP TỤC tải các sid còn lại — không dừng giữa chừng
+                // chỉ vì 1 sid lỗi, để tận dụng tối đa mạng đang có sẵn.
+            }
+        }
+
+        if (!allOk) {
+            Log.d(TAG, "ensureReadingFullySynced: reading=$readingId CHƯA đủ giọng, chưa ghi marker hoàn tất")
+            return false
+        }
+
+        try {
+            val vendorDir = TtsAudioCache.vendorDir(context, readingId, VENDOR)
+            if (!vendorDir.exists()) vendorDir.mkdirs()
+            File(vendorDir, READING_FULLY_SYNCED_MARKER).writeText(now.toString())
+        } catch (e: Exception) {
+            // Audio đã tải xong hết, chỉ ghi marker thất bại (hiếm, hết dung
+            // lượng...) — trả về false để lượt sau thử ghi lại marker, KHÔNG
+            // coi là mất dữ liệu (mọi file audio vẫn dùng bình thường).
+            Log.w(TAG, "ensureReadingFullySynced: ghi marker hoàn tất thất bại reading=$readingId", e)
+            return false
+        }
+
+        Log.d(TAG, "ensureReadingFullySynced: reading=$readingId đã tải ĐỦ ${orderedSids.size} giọng, đánh dấu hoàn tất")
         return true
     }
 

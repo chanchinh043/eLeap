@@ -368,13 +368,13 @@ fun WordClickableRow(
                                                 phraseCancelled = true
                                             }
                                         } else {
-                                            // Mode S: giữ nguyên hành vi cũ — dò từ gần nhất
-                                            // theo hàng ngang hiện tại của ngón tay.
-                                            val currentIdx = indexNearestX(change.position)
-                                            val endIdx = currentIdx ?: anchorIdx
-                                            val lo = minOf(anchorIdx, endIdx)
-                                            val hi = maxOf(anchorIdx, endIdx)
-                                            liveRange = lo..hi
+                                            // Mode S: NHẠY giống hệt mode P — một khi đã
+                                            // highlightActivated (vượt ngưỡng kéo hoặc đã
+                                            // sang từ khác) thì bôi NGAY toàn bộ câu, không
+                                            // cần kéo ngón tay đi hết chiều dài câu mới thấy
+                                            // preview đủ. (Trước đây dò currentIdx rồi chỉ bôi
+                                            // từ anchorIdx..currentIdx, phải kéo xa mới bôi hết.)
+                                            liveRange = if (words.isNotEmpty()) 0..words.lastIndex else null
                                         }
                                     }
                                     change.consume()   // ngăn LazyColumn scroll theo X

@@ -32,6 +32,7 @@ package com.eleap.eleap.core.tts.kokoro
 
 import android.content.Context
 import android.util.Log
+import androidx.work.BackoffPolicy
 import androidx.work.Constraints
 import androidx.work.CoroutineWorker
 import androidx.work.ExistingWorkPolicy
@@ -42,6 +43,7 @@ import androidx.work.WorkerParameters
 import androidx.work.workDataOf
 import com.eleap.eleap.core.tts.TtsVendor
 import com.eleap.eleap.core.tts.TtsVoiceCatalog
+import java.util.concurrent.TimeUnit
 
 private const val TAG = "TtsKokoroPackSync"
 
@@ -212,6 +214,69 @@ object TtsKokoroPackScheduler {
                     "${orderedSids.size} giọng, thứ tự ưu tiên=$orderedSids"
         )
     }
+
+    // ── Enqueue lượt "tải ĐỦ toàn bộ giọng Kokoro (tiếng Anh) cho bài này,
+    // retry tới khi xong" — ĐIỂM GỌI DÙNG KHI NGƯỜI DÙNG MỞ 1 BÀI ĐỌC. Khác
+    // enqueueDownloadAllVoices() ở trên (dùng cờ per-sid có hạn 24h, phù hợp
+    // cho việc DÒ BẢN MỚI định kỳ) — hàm này dùng
+    // TtsKokoroReadingEnsureSyncWorker, có Result.retry() với backoff, nhắm
+    // đúng mục tiêu "tải cho bằng được lần đầu", KHÔNG quan tâm 24h.
+    //
+    // ⚠️ Cùng 1 CHỮ ký tham số như enqueueDownloadAllVoices() nhưng dùng
+    // UNIQUE WORK NAME KHÁC (hậu tố "_ensure") — 2 lượt work có thể tồn tại
+    // song song mà không đụng nhau, dù trong thực tế ReadingScreen hiện chỉ
+    // gọi ĐÚNG 1 trong 2 (xem ghi chú ở ReadingScreen.kt).
+    //
+    // KEEP — nếu bài này đã có 1 lượt "ensure" đang chạy/đang retry/đang chờ
+    // mạng, không tạo bản sao chạy song song; nếu lượt trước đã XONG (dù đã
+    // tải đủ hay đã bỏ cuộc sau khi hết số lần retry cho phép — xem
+    // TtsKokoroReadingEnsureSyncWorker.MAX_ATTEMPTS), enqueue lại bình
+    // thường (vd người dùng rời bài rồi quay lại sau, cho 1 cơ hội thử lại
+    // mới).
+    fun enqueueEnsureReadingSynced(context: Context, readingId: String, selectedSid: Int) {
+        val allSids = TtsVoiceCatalog.englishVoices
+            .filter { it.vendor == TtsVendor.KOKORO }
+            .map { it.sid }
+            .distinct()
+
+        if (allSids.isEmpty()) {
+            Log.w(TAG, "enqueueEnsureReadingSynced: danh mục giọng Kokoro tiếng Anh rỗng, bỏ qua reading=$readingId")
+            return
+        }
+
+        val orderedSids = (listOf(selectedSid) + allSids).distinct()
+
+        val constraints = Constraints.Builder()
+            .setRequiredNetworkType(NetworkType.CONNECTED)
+            .build()
+
+        val inputData = workDataOf(
+            TtsKokoroReadingEnsureSyncWorker.KEY_READING_ID to readingId,
+            TtsKokoroReadingEnsureSyncWorker.KEY_ORDERED_SIDS to orderedSids.toIntArray(),
+        )
+
+        val request = OneTimeWorkRequestBuilder<TtsKokoroReadingEnsureSyncWorker>()
+            .setConstraints(constraints)
+            .setInputData(inputData)
+            .setBackoffCriteria(BackoffPolicy.EXPONENTIAL, WORK_BACKOFF_MIN_MS, TimeUnit.MILLISECONDS)
+            .build()
+
+        WorkManager.getInstance(context).enqueueUniqueWork(
+            "${UNIQUE_WORK_PREFIX}ensure_$readingId",
+            ExistingWorkPolicy.KEEP,
+            request,
+        )
+
+        Log.d(
+            TAG,
+            "enqueueEnsureReadingSynced: đã enqueue 1 Worker (có retry) cho reading=$readingId, " +
+                    "${orderedSids.size} giọng, thứ tự ưu tiên=$orderedSids"
+        )
+    }
+
+    // WorkManager yêu cầu backoff tối thiểu 10s — dùng hằng số riêng để rõ
+    // ràng, tránh magic number lẫn trong lời gọi setBackoffCriteria().
+    private const val WORK_BACKOFF_MIN_MS = 10_000L
 }
 
 // ═══════════════════════════════════════════════════════════════════════════
@@ -327,5 +392,71 @@ class TtsKokoroReadingSyncWorker(
         val ok = TtsKokoroPackDownloader.syncAllVoicesForReading(applicationContext, source, readingId, orderedSids)
         Log.d(TAG, "doWork(reading): reading=$readingId (${orderedSids.size} giọng) kết quả=$ok")
         return Result.success()
+    }
+}
+
+// ═══════════════════════════════════════════════════════════════════════════
+// 5. WORKER (tải đủ lần đầu, RETRY tới khi xong) — dùng khi MỞ 1 bài đọc,
+//    KHÁC 3 Worker ở trên (tất cả đều luôn Result.success(), coi mất mạng/
+//    lỗi là bình thường, để lượt MỞ BÀI SAU tự thử lại). Worker này chủ động
+//    Result.retry() khi CHƯA tải đủ, để WorkManager tự chạy lại (có backoff,
+//    tự chờ tới khi có mạng) MÀ KHÔNG cần người dùng tự mở lại bài — đúng
+//    yêu cầu "ngầm tải, có thể retry tới khi tải xong tất cả giọng hiện có".
+// ═══════════════════════════════════════════════════════════════════════════
+//
+// Gọi TtsKokoroPackDownloader.ensureReadingFullySynced() — hàm đó tự có
+// cổng "đã tải đủ" ở bước đầu (không gọi mạng nếu đã xong), nên gọi lại
+// Worker này nhiều lần (kể cả sau khi đã xong) là AN TOÀN và RẺ.
+//
+// ⚠️ MAX_ATTEMPTS: chặn trên để tránh retry vô hạn tốn pin nếu rơi vào tình
+// huống bất thường kéo dài (vd server luôn lỗi cho đúng 1 giọng). Hết
+// MAX_ATTEMPTS mà vẫn chưa xong → Result.success() (KHÔNG phải retry() hay
+// failure()) để WorkManager coi lượt này là "đã xong" (không tự retry nữa),
+// nhưng vẫn để ExistingWorkPolicy.KEEP cho phép lượt MỞ BÀI TIẾP THEO tự
+// enqueue lại, cho thêm 1 loạt cơ hội mới — không bao giờ "khoá cứng" bài
+// đọc ở trạng thái chưa tải đủ vĩnh viễn.
+class TtsKokoroReadingEnsureSyncWorker(
+    appContext: Context,
+    params: WorkerParameters,
+) : CoroutineWorker(appContext, params) {
+
+    companion object {
+        const val KEY_READING_ID = "reading_id"
+        const val KEY_ORDERED_SIDS = "ordered_sids"
+        private const val MAX_ATTEMPTS = 20
+    }
+
+    override suspend fun doWork(): Result {
+        val readingId = inputData.getString(KEY_READING_ID)
+        val orderedSids = inputData.getIntArray(KEY_ORDERED_SIDS)?.toList()
+
+        if (readingId.isNullOrBlank() || orderedSids.isNullOrEmpty()) {
+            Log.w(TAG, "doWork(ensure): thiếu readingId/orderedSids hợp lệ, bỏ qua")
+            return Result.success()
+        }
+
+        val source = TtsKokoroPackSourceRegistry.current()
+        if (source == null) {
+            Log.d(TAG, "doWork(ensure): chưa cấu hình transport cho Kokoro, bỏ qua reading=$readingId")
+            return Result.success()
+        }
+
+        val ok = TtsKokoroPackDownloader.ensureReadingFullySynced(applicationContext, source, readingId, orderedSids)
+        if (ok) {
+            Log.d(TAG, "doWork(ensure): reading=$readingId đã tải ĐỦ, dừng retry")
+            return Result.success()
+        }
+
+        if (runAttemptCount >= MAX_ATTEMPTS) {
+            Log.w(
+                TAG,
+                "doWork(ensure): reading=$readingId vẫn CHƯA đủ sau $runAttemptCount lần thử, tạm dừng " +
+                        "(lần mở bài KẾ TIẾP sẽ tự enqueue lại, thử tiếp)"
+            )
+            return Result.success()
+        }
+
+        Log.d(TAG, "doWork(ensure): reading=$readingId CHƯA đủ giọng (lần thử #$runAttemptCount), sẽ retry")
+        return Result.retry()
     }
 }

@@ -73,12 +73,23 @@ fun ReadingScreen(
         vm.loadReading(readingId)
     }
 
-    // ── Enqueue tải TOÀN BỘ giọng Kokoro (tiếng Anh) cho bài đang mở, ưu
+    // ── Enqueue tải ĐỦ TOÀN BỘ giọng Kokoro (tiếng Anh) cho bài đang mở, ưu
     // tiên giọng đang chọn tải TRƯỚC — TtsVoiceSnapshot KHÔNG còn tự
     // enqueue khi đổi giọng (xem TtsVoiceSnapshot.kt) — nơi mở bài đọc PHẢI
     // tự gọi việc này. Gọi lại mỗi khi readingId HOẶC speechVendor/speechSid
-    // đổi (vd người dùng đổi giọng ngay trong lúc đang đọc bài) —
-    // enqueueDownloadAllVoices() tự dedupe theo TÊN LÔ (readingId) qua
+    // đổi (vd người dùng đổi giọng ngay trong lúc đang đọc bài).
+    //
+    // ⚠️ DÙNG enqueueEnsureReadingSynced() (KHÔNG PHẢI enqueueDownloadAllVoices()):
+    // đây là "lượt tải cho BẰNG ĐƯỢC lần đầu" — nếu bài CHƯA từng tải đủ, sẽ
+    // ngầm tải + tự RETRY (có backoff, WorkManager tự canh mạng) tới khi đủ
+    // TOÀN BỘ giọng hiện có trên Drive rồi mới đánh dấu hoàn tất (giọng nào
+    // Drive không có thì bỏ qua). Nếu bài ĐÃ đánh dấu hoàn tất từ trước (kể
+    // cả sau khi tắt/mở lại app), Worker chỉ đọc 1 file cờ rồi dừng ngay,
+    // KHÔNG gọi Drive, KHÔNG quan tâm đã bao lâu kể từ lần tải. Việc dò bản
+    // MỚI cho giọng đã tải theo chu kỳ (enqueueDownloadAllVoices(), có gate
+    // 24h) là TÍNH NĂNG KHÁC, chưa được gọi ở đây — sẽ nối dây sau khi cần.
+    //
+    // enqueueEnsureReadingSynced() tự dedupe theo TÊN LÔ (readingId) qua
     // ExistingWorkPolicy.KEEP, nên gọi lại nhiều lần với cùng readingId
     // không tốn kém; đổi speechSid sẽ tạo 1 lô mới với thứ tự ưu tiên khác
     // (giọng vừa chọn lên đầu).
@@ -92,7 +103,7 @@ fun ReadingScreen(
     val speechSid = remember { TtsVoiceSnapshot.currentSid() }
     LaunchedEffect(readingId, speechVendor, speechSid) {
         if (speechVendor == TtsVendor.KOKORO) {
-            TtsKokoroPackScheduler.enqueueDownloadAllVoices(context, readingId, speechSid)
+            TtsKokoroPackScheduler.enqueueEnsureReadingSynced(context, readingId, speechSid)
         }
     }
 

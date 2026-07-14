@@ -78,15 +78,24 @@ object TtsAudioCache {
     private fun readingDir(context: Context, readingId: String): File =
         File(rootDir(context), readingId)
 
+    // ── Thư mục của 1 (bài, nhà cung cấp) — CHUNG cho MỌI giọng (sid) của
+    // vendor đó: filesDir/tts_cache/{readingId}/{vendor} ────────────────────
+    // Không `private` — dùng làm nơi lưu các marker Ở CẤP BÀI, không gắn với
+    // 1 sid cụ thể nào (vd ".reading_fully_synced" của
+    // TtsKokoroPackDownloader — đánh dấu "đã tải ĐỦ mọi giọng hiện có của
+    // vendor này cho bài này", xem TtsKokoroPackDownloader.isReadingFullySynced()).
+    //
+    // vendor.name dùng làm tên thư mục — TtsVendor chỉ chứa hằng số IN HOA
+    // không dấu (xem TtsVendor.kt), an toàn làm tên thư mục.
+    fun vendorDir(context: Context, readingId: String, vendor: TtsVendor): File =
+        File(readingDir(context, readingId), vendor.name)
+
     // ── Thư mục của 1 (bài, nhà cung cấp, giọng) cụ thể:
     // filesDir/tts_cache/{readingId}/{vendor}/{sid} ─────────────────────────
     // Không `private` — mọi nhà cung cấp cần biết CHÍNH XÁC thư mục đích để
     // ghi file cache vào đúng chỗ. Đây là hàm DUY NHẤT build đúng path này.
-    //
-    // vendor.name dùng làm tên thư mục — TtsVendor chỉ chứa hằng số IN HOA
-    // không dấu (xem TtsVendor.kt), an toàn làm tên thư mục.
     fun voiceDir(context: Context, readingId: String, vendor: TtsVendor, sid: Int): File =
-        File(File(readingDir(context, readingId), vendor.name), sid.toString())
+        File(vendorDir(context, readingId, vendor), sid.toString())
 
     // ── contentHash: 8 ký tự đầu SHA-256 của text — dùng để phát hiện nội
     // dung đã đổi mà không cần biết "phiên bản" nào, chỉ cần so sánh hash
