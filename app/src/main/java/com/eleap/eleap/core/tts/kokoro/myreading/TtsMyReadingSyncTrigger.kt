@@ -17,7 +17,9 @@
 //       chính là "phát hiện SỰ KIỆN vừa đồng bộ xong", không phải quét toàn
 //       bộ bài mỗi lần sync. Do đó CHỈ gọi cho đúng những readingId có mặt
 //       trong succeededIds của lượt pushPendingLocked() vừa chạy — xem hàm
-//       onReadingsSynced() bên dưới, gọi tại MyReadingSyncEngine.
+//       onReadingsSynced() bên dưới, gọi tại MyReadingSyncEngine. (Ngoại lệ
+//       riêng cho GUEST — xem MyReadingAiProcessor.kt: gọi thẳng ngay sau
+//       khi AI xử lý xong, vì guest không bao giờ đi qua đường push Supabase.)
 //
 // ⚠️ CHỈ XIN CHO 1 GIỌNG — giọng người dùng ĐANG CHỌN hiện tại
 // (TtsVoiceSnapshot.currentVendor()/currentSid()), KHÔNG xin sẵn toàn bộ 53
@@ -31,6 +33,14 @@
 // TtsKokoroPackScheduler khi vendor == KOKORO (xem TtsVoicePickerScreen.kt),
 // vendor khác (nếu có sau này) tự có cơ chế riêng, không đi qua đây.
 //
+// ⚠️ BẢN CẬP NHẬT — DEVICE GỬI TEXT TRỰC TIẾP, KHÔNG QUA SUPABASE: server
+// KHÔNG BAO GIỜ tự hỏi Supabase để lấy text (xem ghi chú "redesign" ở
+// TtsMyReadingRequestClient.kt) — toàn bộ text cần tổng hợp (items:
+// sentence/word/phrase) được build NGAY TẠI ĐÂY từ `sentences` đã có sẵn
+// (cùng nguồn dùng để tính contentHash) và gửi kèm thẳng trong request. Nhờ
+// vậy hoạt động y hệt cho CẢ guest lẫn user thật — không phụ thuộc bài đã
+// push lên Supabase hay chưa.
+//
 // Hàm KHÔNG throw ra ngoài — lỗi ở đây (gọi server thất bại) KHÔNG được làm
 // hỏng lượt sync readings/sentences đang chạy, đúng nguyên tắc "core/tts/
 // luôn là lưới an toàn tuỳ chọn". MyReadingSyncEngine gọi hàm này "bắn rồi
@@ -43,6 +53,7 @@ import com.eleap.eleap.core.tts.TtsVendor
 import com.eleap.eleap.core.tts.TtsVoiceSnapshot
 import com.eleap.eleap.feature.myreading.data.MyReadingRepository
 import com.eleap.eleap.feature.reading.data.Reading
+import com.eleap.eleap.feature.reading.data.ReadingSentence
 
 private const val TAG = "TtsMyReadingSyncTrigger"
 
@@ -50,12 +61,13 @@ object TtsMyReadingSyncTrigger {
 
     // ── Điểm gọi CHÍNH — gọi từ MyReadingSyncEngine.pushPendingLocked() NGAY
     // SAU KHI biết succeededIds của lượt push này (readingId nào vừa
-    // create/update thành công lên Supabase). Nhận thẳng danh sách Reading
-    // đã push thành công (không phải chỉ readingId) để đọc isAiProcessed mà
-    // không cần query lại DB thêm 1 lần.
+    // create/update thành công lên Supabase), HOẶC từ MyReadingAiProcessor
+    // ngay sau khi AI xử lý xong cho GUEST (xem ghi chú ở đó). Nhận thẳng
+    // danh sách Reading đã push thành công (không phải chỉ readingId) để đọc
+    // isAiProcessed mà không cần query lại DB thêm 1 lần.
     //
-    // context: dùng để lấy MyReadingRepository (đọc sentences tính hash) và
-    // đọc BuildConfig — LUÔN truyền applicationContext ở nơi gọi.
+    // context: dùng để lấy MyReadingRepository (đọc sentences build items +
+    // tính hash) và đọc BuildConfig — LUÔN truyền applicationContext ở nơi gọi.
     suspend fun onReadingsSynced(context: Context, syncedReadings: List<Reading>) {
         val vendor = TtsVoiceSnapshot.currentVendor()
         if (vendor != TtsVendor.KOKORO) {
@@ -85,10 +97,21 @@ object TtsMyReadingSyncTrigger {
                 }
 
                 val contentHash = TtsMyReadingContentHash.compute(sentences)
+                val items = buildItems(sentences)
+                if (items.isEmpty()) {
+                    // Có sentences nhưng không câu nào có textEn hợp lệ — hiếm
+                    // (dữ liệu lỗi), không có gì để server tổng hợp, bỏ qua
+                    // thay vì gửi request rỗng vô ích (server vẫn tạo job
+                    // nhưng chỉ log cảnh báo rồi mãi mãi "failed" ở bước 8).
+                    Log.w(TAG, "onReadingsSynced: reading_id=${reading.readingId} có sentences nhưng build items rỗng, bỏ qua")
+                    continue
+                }
+
                 val status = client.requestSynthesis(
                     readingId   = reading.readingId,
                     sid         = sid,
                     contentHash = contentHash,
+                    items       = items,
                 )
 
                 if (status != null && status != TtsMyReadingJobStatus.READY) {
@@ -110,7 +133,7 @@ object TtsMyReadingSyncTrigger {
                 Log.d(
                     TAG,
                     "onReadingsSynced: đã xin tổng hợp reading_id=${reading.readingId} sid=$sid " +
-                            "contentHash=$contentHash → status=$status"
+                            "contentHash=$contentHash items=${items.size} → status=$status"
                 )
             } catch (e: Exception) {
                 // 1 bài lỗi (vd mất mạng giữa chừng) không chặn các bài còn
@@ -123,5 +146,52 @@ object TtsMyReadingSyncTrigger {
                 Log.e(TAG, "onReadingsSynced: lỗi xin tổng hợp reading_id=${reading.readingId}", e)
             }
         }
+    }
+
+    // ── Build TOÀN BỘ items (sentence + phrase + word) cần server tổng hợp
+    // giọng, từ ĐÚNG danh sách sentences dùng để tính contentHash — đảm bảo
+    // 2 lần gọi cùng nội dung luôn ra cùng contentHash VÀ cùng items, không
+    // có nguy cơ lệch pha giữa 2 nguồn dữ liệu khác nhau.
+    //
+    // Duyệt theo sentenceOrder (giống TtsMyReadingContentHash.compute()) để
+    // thứ tự items ổn định, dễ debug qua GET /debug/job-items — tuy server
+    // không phụ thuộc thứ tự này để hoạt động đúng.
+    //
+    // Lọc bỏ mọi item có textEn null/rỗng — không có gì để server đọc, gửi
+    // lên chỉ tốn băng thông và làm job processor (bước 8) phải tự lọc lại.
+    private fun buildItems(sentences: List<ReadingSentence>): List<TtsMyReadingItem> {
+        val items = mutableListOf<TtsMyReadingItem>()
+
+        sentences.sortedBy { it.sentenceOrder }.forEach { sentence ->
+            sentence.textEn?.takeIf { it.isNotBlank() }?.let { text ->
+                items += TtsMyReadingItem(
+                    type    = TtsMyReadingItemType.SENTENCE,
+                    itemId  = sentence.sentenceId,
+                    textEn  = text,
+                )
+            }
+
+            sentence.phrases.forEach { phrase ->
+                phrase.textEn?.takeIf { it.isNotBlank() }?.let { text ->
+                    items += TtsMyReadingItem(
+                        type    = TtsMyReadingItemType.PHRASE,
+                        itemId  = phrase.phraseId,
+                        textEn  = text,
+                    )
+                }
+            }
+
+            sentence.words.forEach { word ->
+                word.textEn?.takeIf { it.isNotBlank() }?.let { text ->
+                    items += TtsMyReadingItem(
+                        type    = TtsMyReadingItemType.WORD,
+                        itemId  = word.wordId,
+                        textEn  = text,
+                    )
+                }
+            }
+        }
+
+        return items
     }
 }

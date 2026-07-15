@@ -79,6 +79,27 @@ enum class TtsMyReadingJobStatus {
     }
 }
 
+// ── Loại item — KHỚP 1:1 với pattern "^(sentence|word|phrase)$" ở
+// MyReadingItem (main.py, tầng Pydantic) và với tên field `type` trong JSON
+// body gửi lên. apiValue LUÔN là chữ thường, KHÔNG dùng .name/.toLowerCase()
+// tự động ở nơi gọi để tránh vỡ hợp đồng nếu sau này đổi thứ tự enum. ──────
+enum class TtsMyReadingItemType(val apiValue: String) {
+    SENTENCE("sentence"),
+    WORD("word"),
+    PHRASE("phrase"),
+}
+
+// ── 1 đơn vị text cần server tổng hợp giọng — KHỚP 1:1 field JSON mà
+// MyReadingItem (main.py) mong đợi: type/itemId/textEn (camelCase, đúng như
+// Android gửi mọi field khác trong body request này). Xây dựng bởi
+// TtsMyReadingSyncTrigger.buildItems() từ CHÍNH danh sách sentences dùng để
+// tính contentHash — đảm bảo không lệch pha giữa hash và nội dung gửi lên. ──
+data class TtsMyReadingItem(
+    val type: TtsMyReadingItemType,
+    val itemId: String,
+    val textEn: String,
+)
+
 // ── Client gọi server — KHÔNG phải singleton object như các file khác
 // trong kokoro/, vì baseUrl là tham số biến thiên theo cấu hình (đọc từ
 // BuildConfig ở nơi khởi tạo, xem TtsMyReadingConfig.kt sẽ thêm ở bước sau)
@@ -95,15 +116,32 @@ class TtsMyReadingRequestClient(
     // Trả về null nếu gọi mạng thất bại — caller (nơi trigger) không cần
     // coi đây là lỗi nghiêm trọng, chỉ đơn giản là "chưa xin được, thử lại
     // ở lần trigger sau" (vd lần mở bài kế tiếp).
+    // items: TOÀN BỘ nội dung cần tổng hợp giọng cho bài này (sentence +
+    // phrase + word) — server (main.py, bước 4a) KHÔNG có nguồn nào khác để
+    // lấy text, thiếu items = job sẽ mãi mãi "failed" ở bước xử lý (bước 8).
+    // Cho phép truyền rỗng ở tầng chữ ký hàm (không chặn cứng ở đây) — nơi
+    // gọi (TtsMyReadingSyncTrigger) đã tự lọc rỗng trước khi gọi tới đây.
     suspend fun requestSynthesis(
         readingId: String,
         sid: Int,
         contentHash: String,
+        items: List<TtsMyReadingItem>,
     ): TtsMyReadingJobStatus? = withContext(Dispatchers.IO) {
+        val itemsArray = org.json.JSONArray()
+        items.forEach { item ->
+            itemsArray.put(
+                JSONObject()
+                    .put("type", item.type.apiValue)
+                    .put("itemId", item.itemId)
+                    .put("textEn", item.textEn)
+            )
+        }
+
         val body = JSONObject()
             .put("readingId", readingId)
             .put("sid", sid)
             .put("contentHash", contentHash)
+            .put("items", itemsArray)
             .toString()
 
         try {
