@@ -45,6 +45,7 @@ class TtsMyReadingPrecacheWorker(
 
     override suspend fun doWork(): Result {
         TtsMyReadingPendingStore.init(applicationContext)
+        TtsMyReadingSentRequestStore.init(applicationContext)
         TtsVoiceSnapshot.init(applicationContext)
 
         val baseUrl = TtsMyReadingConfig.baseUrl()
@@ -81,6 +82,19 @@ class TtsMyReadingPrecacheWorker(
                     TtsMyReadingJobStatus.FAILED -> {
                         Log.w(TAG, "doWork: reading_id=${entry.readingId} sid=${entry.sid} server báo FAILED, bỏ theo dõi")
                         TtsMyReadingPendingStore.remove(entry.readingId, entry.sid)
+                        // ── Dọn luôn TtsMyReadingSentRequestStore — job đã
+                        // FAILED VĨNH VIỄN cho đúng contentHash này, "đã gửi"
+                        // không còn ý nghĩa gì để tiếp tục chặn gửi lại. Nội
+                        // dung bài KHÔNG đổi thì TtsMyReadingSyncTrigger vẫn
+                        // sẽ không tự động gửi lại (không có gì kích hoạt lại
+                        // onReadingsSynced() khi is_ai_processed đã true và
+                        // nội dung không đổi — đúng thiết kế hiện tại, không
+                        // có auto-retry cho job failed) — nhưng dọn cờ "đã
+                        // gửi" ở đây giúp bất kỳ đường gửi lại nào trong
+                        // tương lai (vd nút "Thử lại" thủ công, hoặc
+                        // onReadingsSynced() được gọi lại vì lý do khác) KHÔNG
+                        // bị chặn oan bởi trạng thái FAILED cũ.
+                        TtsMyReadingSentRequestStore.remove(entry.readingId, entry.sid)
                     }
                     TtsMyReadingJobStatus.PENDING, TtsMyReadingJobStatus.PROCESSING -> {
                         // Giữ nguyên, hỏi lại chu kỳ sau — không log ồn ào

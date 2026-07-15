@@ -13,23 +13,30 @@
 //
 // ⚠️ Tham số readingId là OPTIONAL: màn này có thể mở từ 2 nơi —
 //   (a) Từ TRONG 1 bài đọc cụ thể (vd nút cài đặt ở ReadingScreen) — có
-//       readingId, đổi giọng ở đây sẽ enqueue tải NGAY gói giọng mới cho
-//       đúng bài đang đọc (CHỈ khi giọng vừa chọn thuộc vendor KOKORO — xem
-//       ghi chú ở onVoiceSelected() bên dưới), để cache có sẵn kịp lúc quay
-//       lại đọc tiếp.
+//       readingId, đổi giọng ở đây sẽ:
+//         1. enqueue tải NGAY gói giọng mới cho đúng bài đang đọc qua
+//            TtsKokoroPackScheduler (CHỈ khi giọng vừa chọn thuộc vendor
+//            KOKORO) — dùng cho bài HỆ THỐNG (build sẵn, batch).
+//         2. NẾU bài đang mở là 1 bài MyReading (server tổng hợp THEO YÊU
+//            CẦU, không phải batch thủ công), còn gọi thêm
+//            TtsMyReadingSyncTrigger.onVoiceChangedForReading() để XIN
+//            SERVER tổng hợp giọng mới cho đúng bài này (nếu chưa từng xin
+//            trước đó cho đúng nội dung + giọng này — tự dedup, xem
+//            TtsMyReadingSentRequestStore). Với bài HỆ THỐNG, hàm này tự
+//            no-op an toàn (không tìm thấy bài trong MyReadingRepository).
 //   (b) Từ màn cài đặt CHUNG (không gắn với bài nào) — readingId=null, chỉ
-//       lưu lựa chọn, KHÔNG enqueue gì cả (không biết tải gói cho bài nào).
-//       Gói của các bài khác sẽ tự được tải khi người dùng MỞ bài đó (xem
+//       lưu lựa chọn, KHÔNG enqueue/xin gì cả (không biết bài nào). Gói của
+//       các bài khác sẽ tự được tải/xin khi người dùng MỞ bài đó (xem
 //       LaunchedEffect(readingId, speechVendor, speechSid) ở
-//       ReadingScreen.kt).
+//       ReadingScreen.kt, và TtsMyReadingDownloadGate cho riêng MyReading).
 //
-// ⚠️ VÌ SAO CHỈ ENQUEUE KHI VENDOR == KOKORO: TtsKokoroPackScheduler là cơ
-// chế đồng bộ ĐẶC THÙ của riêng Kokoro (tải gói .zip pregenerated từ
-// Drive) — 1 nhà cung cấp khác (vd dịch vụ synth on-demand) có thể không
-// cần đồng bộ gì cả (tự phát trực tiếp hoặc tự cache theo cách riêng khi
-// phát lần đầu), nên KHÔNG có khái niệm "enqueue tải gói" tương ứng. Màn
-// này KHÔNG gọi 1 "scheduler chung" nào — mỗi vendor tự quyết định cần làm
-// gì sau khi được chọn, màn chọn giọng chỉ biết rẽ nhánh theo đúng vendor.
+// ⚠️ VÌ SAO CHỈ ENQUEUE/XIN KHI VENDOR == KOKORO: TtsKokoroPackScheduler và
+// luồng MyReading TTS đều là cơ chế ĐẶC THÙ của riêng Kokoro — 1 nhà cung
+// cấp khác (vd dịch vụ synth on-demand) có thể không cần đồng bộ gì cả (tự
+// phát trực tiếp hoặc tự cache theo cách riêng khi phát lần đầu), nên KHÔNG
+// có khái niệm "enqueue tải gói"/"xin server tổng hợp" tương ứng. Màn này
+// KHÔNG gọi 1 "scheduler chung" nào — mỗi vendor tự quyết định cần làm gì
+// sau khi được chọn, màn chọn giọng chỉ biết rẽ nhánh theo đúng vendor.
 //
 // KHÔNG có audio xem trước (preview) ở bước này — bấm chọn xong chỉ lưu +
 // enqueue tải (nếu cần), không phát thử ngay (gói vừa chọn thường CHƯA có
@@ -50,6 +57,7 @@ import androidx.compose.runtime.Composable
 import androidx.compose.runtime.getValue
 import androidx.compose.runtime.mutableStateOf
 import androidx.compose.runtime.remember
+import androidx.compose.runtime.rememberCoroutineScope
 import androidx.compose.runtime.setValue
 import androidx.compose.ui.Alignment
 import androidx.compose.ui.Modifier
@@ -60,6 +68,8 @@ import com.eleap.eleap.core.tts.TtsVoiceCatalog
 import com.eleap.eleap.core.tts.TtsVoiceOption
 import com.eleap.eleap.core.tts.TtsVoiceSnapshot
 import com.eleap.eleap.core.tts.kokoro.TtsKokoroPackScheduler
+import com.eleap.eleap.core.tts.kokoro.myreading.TtsMyReadingSyncTrigger
+import kotlinx.coroutines.launch
 
 @OptIn(ExperimentalMaterial3Api::class)
 @Composable
@@ -68,6 +78,7 @@ fun TtsVoicePickerScreen(
     readingId: String? = null,
 ) {
     val context = LocalContext.current
+    val scope = rememberCoroutineScope()
 
     // ── Trạng thái lựa chọn hiện tại — giờ là CẶP (vendor, sid), không còn
     // chỉ 1 con số sid như bản cũ. So sánh "đang chọn giọng nào" PHẢI xét cả
@@ -84,13 +95,25 @@ fun TtsVoicePickerScreen(
         selectedVendor = voice.vendor
         selectedSid = voice.sid
 
-        // ⚠️ Chỉ enqueue khi (a) biết ĐANG đọc bài nào (xem ghi chú đầu
+        // ⚠️ Chỉ enqueue/xin khi (a) biết ĐANG đọc bài nào (xem ghi chú đầu
         // file) VÀ (b) giọng vừa chọn thuộc vendor KOKORO — vendor khác
-        // không đi qua TtsKokoroPackScheduler, tự có cơ chế riêng (nếu cần)
-        // trong thư mục của chính nó. TtsVoiceSnapshot không tự làm việc
-        // này (đã tách bạch trách nhiệm từ trước, xem TtsVoiceSnapshot.kt).
+        // không đi qua TtsKokoroPackScheduler/TtsMyReadingSyncTrigger, tự có
+        // cơ chế riêng (nếu cần) trong thư mục của chính nó. TtsVoiceSnapshot
+        // không tự làm việc này (đã tách bạch trách nhiệm từ trước, xem
+        // TtsVoiceSnapshot.kt).
         if (readingId != null && voice.vendor == TtsVendor.KOKORO) {
+            // (1) Bài HỆ THỐNG (build sẵn, batch) — tải gói .zip cho giọng
+            // mới nếu Drive đã có sẵn.
             TtsKokoroPackScheduler.enqueueDownload(context, readingId, voice.sid)
+
+            // (2) Bài MyReading (server tổng hợp THEO YÊU CẦU) — xin server
+            // tổng hợp NGAY cho giọng vừa chọn. Tự no-op an toàn nếu
+            // readingId này không phải bài MyReading (xem
+            // onVoiceChangedForReading), và tự dedup nếu đã từng xin đúng
+            // (readingId, sid mới, nội dung hiện tại) trước đó.
+            scope.launch {
+                TtsMyReadingSyncTrigger.onVoiceChangedForReading(context, readingId)
+            }
         }
     }
 

@@ -8,7 +8,7 @@
 // ở đây sau khi push thành công, mọi quyết định "gọi hay không, gọi cho sid
 // nào" nằm hết trong file này.
 //
-// ⚠️ ĐIỀU KIỆN KÍCH HOẠT — CẢ HAI phải đúng, thiếu 1 trong 2 đều KHÔNG gọi:
+// ⚠️ ĐIỀU KIỆN KÍCH HOẠT (đường CHÍNH, onReadingsSynced) — CẢ HAI phải đúng:
 //   (a) reading.isAiProcessed == true — bài phải đã qua AI dịch xong (có đủ
 //       title_vi/phrases/words), server tổng hợp giọng cho bài CHƯA dịch là
 //       vô nghĩa (không có gì để đọc khớp với UI).
@@ -21,13 +21,20 @@
 //       riêng cho GUEST — xem MyReadingAiProcessor.kt: gọi thẳng ngay sau
 //       khi AI xử lý xong, vì guest không bao giờ đi qua đường push Supabase.)
 //
+// ⚠️ CÒN 1 ĐƯỜNG VÀO NỮA — onVoiceChangedForReading() — dùng khi người dùng
+// ĐỔI GIỌNG ngay trong 1 bài MyReading đang mở (xem TtsVoicePickerScreen).
+// Khác onReadingsSynced() ở chỗ: không cần "vừa push xong", chỉ cần bài đó
+// đã isAiProcessed — vì mục đích là "giọng MỚI chưa từng được xin cho bài
+// này", không phải "phát hiện sự kiện sync". Dedup vẫn dùng chung
+// TtsMyReadingSentRequestStore (theo sid) nên không lo gửi trùng.
+//
 // ⚠️ CHỈ XIN CHO 1 GIỌNG — giọng người dùng ĐANG CHỌN hiện tại
 // (TtsVoiceSnapshot.currentVendor()/currentSid()), KHÔNG xin sẵn toàn bộ 53
 // giọng Kokoro cho mỗi bài. Lý do: nhu cầu thực tế là "khi mở bài, có giọng
 // đang chọn để nghe", xin dư thừa mọi giọng vừa tốn tài nguyên server vừa
 // không chắc người dùng bao giờ chọn tới. Nếu người dùng đổi giọng sau này,
-// TtsVoicePickerScreen (ở bước sau, phần "trigger tải về phía App khi mở
-// bài") sẽ tự xin thêm cho giọng mới — không cần lo trước ở đây.
+// TtsVoicePickerScreen tự gọi onVoiceChangedForReading() cho bài đang mở —
+// không cần lo trước ở đây.
 //
 // ⚠️ CHỈ ÁP DỤNG VENDOR KOKORO — giống lý do TtsVoicePickerScreen chỉ enqueue
 // TtsKokoroPackScheduler khi vendor == KOKORO (xem TtsVoicePickerScreen.kt),
@@ -97,6 +104,27 @@ object TtsMyReadingSyncTrigger {
                 }
 
                 val contentHash = TtsMyReadingContentHash.compute(sentences)
+
+                // ── Đã gửi ĐÚNG contentHash này và được server xác nhận
+                // (HTTP 200) ở lượt trigger TRƯỚC ĐÓ rồi → KHÔNG gửi lại.
+                // Kiểm tra NGAY TRƯỚC khi build items (build items tốn công
+                // duyệt toàn bộ sentences/phrases/words, bỏ sớm nếu biết
+                // chắc không cần gửi). Nếu nội dung bài đã đổi (contentHash
+                // khác lần gửi trước) hoặc đây là lần gửi ĐẦU TIÊN cho
+                // (readingId, sid) này, hasSentSameContent() trả về false →
+                // vẫn tiến hành gửi như bình thường. Cùng logic dedup này áp
+                // dụng CHUNG cho cả 2 lối vào (onReadingsSynced VÀ
+                // onVoiceChangedForReading bên dưới) — vì key lưu trữ gồm cả
+                // sid, mỗi giọng có 1 dòng "đã gửi" riêng.
+                if (TtsMyReadingSentRequestStore.hasSentSameContent(reading.readingId, sid, contentHash)) {
+                    Log.d(
+                        TAG,
+                        "onReadingsSynced: reading_id=${reading.readingId} sid=$sid contentHash=$contentHash " +
+                                "ĐÃ gửi và được server xác nhận trước đó, bỏ qua"
+                    )
+                    continue
+                }
+
                 val items = buildItems(sentences)
                 if (items.isEmpty()) {
                     // Có sentences nhưng không câu nào có textEn hợp lệ — hiếm
@@ -113,6 +141,20 @@ object TtsMyReadingSyncTrigger {
                     contentHash = contentHash,
                     items       = items,
                 )
+
+                if (status != null) {
+                    // ── status khác null nghĩa là server đã trả HTTP 200 —
+                    // request ĐÃ ĐƯỢC GHI VÀO DB CỦA SERVER (xem main.py: lỗi
+                    // ghi DB giờ trả 503, KHÔNG còn trả status giả) — ĐÂY mới
+                    // là thời điểm hợp lệ để ghi nhớ "đã gửi", đúng yêu cầu
+                    // "sau khi lưu thành công nó sẽ báo lại cho device là đã
+                    // nhận request để sau đó device không phải gửi lại nữa".
+                    // Nếu status == null (lỗi mạng/server trả 503) — TUYỆT
+                    // ĐỐI KHÔNG markSent(), để lần trigger sau (bài được sửa
+                    // lần nữa, hoặc watchdog) tự thử gửi lại — xem ghi chú
+                    // "ĐÃ XÁC NHẬN" ở TtsMyReadingSentRequestStore.kt.
+                    TtsMyReadingSentRequestStore.markSent(reading.readingId, sid, contentHash)
+                }
 
                 if (status != null && status != TtsMyReadingJobStatus.READY) {
                     // Chưa ready ngay — ghi vào store để
@@ -145,6 +187,55 @@ object TtsMyReadingSyncTrigger {
                 // cơ chế quét định kỳ ở bước sau.
                 Log.e(TAG, "onReadingsSynced: lỗi xin tổng hợp reading_id=${reading.readingId}", e)
             }
+        }
+    }
+
+    // ── MỚI — Gọi khi người dùng ĐỔI GIỌNG ngay trong 1 bài MyReading đang
+    // mở (xem TtsVoicePickerScreen.onVoiceSelected, truyền readingId của
+    // bài đang đọc). CHỈ xin server cho ĐÚNG bài này với giọng MỚI vừa
+    // chọn, KHÔNG quét toàn bộ danh sách MyReading trong máy.
+    //
+    // ⚠️ KHÔNG yêu cầu điều kiện (b) "vừa push xong" như onReadingsSynced()
+    // — ở đây mục đích khác hẳn: "giọng MỚI người dùng vừa chọn có thể CHƯA
+    // TỪNG được xin cho bài này", không phải "phát hiện sự kiện vừa sync".
+    // Vẫn giữ điều kiện (a) isAiProcessed == true, và vẫn tái dùng NGUYÊN
+    // logic dedup của onReadingsSynced() (hasSentSameContent theo sid) —
+    // nên gọi lặp lại (vd bấm đổi qua đổi lại) không tạo request thừa.
+    //
+    // Nếu readingId không phải bài MyReading (vd bài hệ thống) —
+    // getReadingForSync() trả về null — hàm tự no-op, an toàn gọi từ mọi
+    // màn đọc mà không cần caller tự kiểm tra trước "đây có phải MyReading
+    // không".
+    //
+    // KHÔNG throw ra ngoài — cùng nguyên tắc "lưới an toàn tuỳ chọn" của
+    // toàn bộ file này.
+    suspend fun onVoiceChangedForReading(context: Context, readingId: String) {
+        val vendor = TtsVoiceSnapshot.currentVendor()
+        if (vendor != TtsVendor.KOKORO) return
+
+        try {
+            val repo = MyReadingRepository.getInstance(context)
+            // ⚠️ GIẢ ĐỊNH chữ ký hàm dựa theo cách dùng ở
+            // MyReadingAiProcessor.kt: getReadingForSync(readingId) trả về
+            // Pair<Reading, *>?  — nếu MyReadingRepository.kt thật có chữ ký
+            // khác, sửa lại đúng dòng này.
+            val reading = repo.getReadingForSync(readingId)?.first
+            if (reading == null) {
+                Log.d(TAG, "onVoiceChangedForReading: reading_id=$readingId không phải bài MyReading, bỏ qua")
+                return
+            }
+            if (!reading.isAiProcessed) {
+                Log.d(TAG, "onVoiceChangedForReading: reading_id=$readingId chưa AI xử lý xong, bỏ qua")
+                return
+            }
+
+            Log.d(
+                TAG,
+                "onVoiceChangedForReading: reading_id=$readingId giọng mới sid=${TtsVoiceSnapshot.currentSid()}"
+            )
+            onReadingsSynced(context, listOf(reading))
+        } catch (e: Exception) {
+            Log.e(TAG, "onVoiceChangedForReading: lỗi khi xin TTS cho reading_id=$readingId", e)
         }
     }
 
