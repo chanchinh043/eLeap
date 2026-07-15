@@ -304,12 +304,15 @@ fun MainScreen() {
                 screen = nextScreen
             },
             onOpenVoicePicker = { screen = Screen.TTS_VOICE_PICKER },
-            // ← MỚI: bài đang mở là MyReading hay hệ thống — dựa vào
-            // readingEntryPoint đã có sẵn (ghi nhận lúc onSelectReading),
-            // không cần thêm state riêng. Dùng để truyền cho
-            // TtsVoicePickerScreen(isMyReading=...) ở nhánh TTS_VOICE_PICKER
-            // bên dưới (xem TtsVoicePickerScreen.kt).
-            isCurrentReadingMyReading = readingEntryPoint == Screen.MY_READING,
+            // ← Bài đang mở là MyReading hay hệ thống — tra THẲNG theo
+            // readingId đang chọn (readingVm.isMyReadingId()), KHÔNG suy
+            // luận qua readingEntryPoint (màn vào trước đó). Đây là nguồn
+            // sự thật DUY NHẤT, tránh lệch trong các trường hợp biên: process
+            // bị kill rồi khôi phục state, hoặc sau này có đường điều hướng
+            // mới vào thẳng READING mà không set readingEntryPoint đúng.
+            // Dùng để truyền cho TtsVoicePickerScreen(isMyReading=...) ở
+            // nhánh TTS_VOICE_PICKER bên dưới (xem TtsVoicePickerScreen.kt).
+            isCurrentReadingMyReading = selectedReadingId?.let { readingVm.isMyReadingId(it) } ?: false,
             onBack = { goBack() }
         )
 
