@@ -12,18 +12,27 @@
 // báo, không chỉ riêng Kokoro).
 //
 // ⚠️ Tham số readingId là OPTIONAL: màn này có thể mở từ 2 nơi —
-//   (a) Từ TRONG 1 bài đọc cụ thể (vd nút cài đặt ở ReadingScreen) — có
-//       readingId, đổi giọng ở đây sẽ:
-//         1. enqueue tải NGAY gói giọng mới cho đúng bài đang đọc qua
-//            TtsKokoroPackScheduler (CHỈ khi giọng vừa chọn thuộc vendor
-//            KOKORO) — dùng cho bài HỆ THỐNG (build sẵn, batch).
-//         2. NẾU bài đang mở là 1 bài MyReading (server tổng hợp THEO YÊU
-//            CẦU, không phải batch thủ công), còn gọi thêm
-//            TtsMyReadingSyncTrigger.onVoiceChangedForReading() để XIN
-//            SERVER tổng hợp giọng mới cho đúng bài này (nếu chưa từng xin
-//            trước đó cho đúng nội dung + giọng này — tự dedup, xem
-//            TtsMyReadingSentRequestStore). Với bài HỆ THỐNG, hàm này tự
-//            no-op an toàn (không tìm thấy bài trong MyReadingRepository).
+//   (a) Từ TRONG 1 bài đọc cụ thể (vd nút "V" ở ReadingScreen) — có
+//       readingId, đổi giọng ở đây sẽ (CHỈ khi giọng vừa chọn thuộc vendor
+//       KOKORO):
+//         • Bài HỆ THỐNG (isMyReading=false): enqueue tải NGAY gói giọng
+//           mới qua TtsKokoroPackScheduler.enqueueDownload() — Drive luôn
+//           có sẵn mọi giọng từ trước (build batch thủ công), an toàn tải
+//           ngay lập tức.
+//         • Bài MYREADING (isMyReading=true): TUYỆT ĐỐI KHÔNG gọi
+//           enqueueDownload() ở đây — Drive CHẮC CHẮN CHƯA có gói cho
+//           giọng vừa chọn (server chưa kịp xử lý). Gọi enqueueDownload()
+//           lúc này sẽ khiến TtsKokoroPackDownloader ghi "đã kiểm tra
+//           Drive lúc X" cho đúng sid này (dù không tìm thấy gì trên
+//           Drive) → khoá 24 GIỜ trước khi syncIfNeeded() chịu hỏi lại
+//           Drive, kể cả sau khi server đã upload xong (xem
+//           TtsKokoroPackDownloader.CHECK_INTERVAL_MS). Thay vào đó, CHỈ
+//           gửi request tổng hợp cho server qua
+//           TtsMyReadingSyncTrigger.onVoiceChangedForReading() — việc tải
+//           Drive để ReadingScreen (qua TtsMyReadingDownloadGate) hoặc
+//           TtsMyReadingPrecacheWorker tự làm SAU KHI server xác nhận
+//           READY, không có gì bị khoá trước vì đó là lần gọi
+//           enqueueDownload() ĐẦU TIÊN cho sid này.
 //   (b) Từ màn cài đặt CHUNG (không gắn với bài nào) — readingId=null, chỉ
 //       lưu lựa chọn, KHÔNG enqueue/xin gì cả (không biết bài nào). Gói của
 //       các bài khác sẽ tự được tải/xin khi người dùng MỞ bài đó (xem
@@ -76,6 +85,7 @@ import kotlinx.coroutines.launch
 fun TtsVoicePickerScreen(
     onBack: () -> Unit,
     readingId: String? = null,
+    isMyReading: Boolean = false,   // ← MỚI — caller tự xác định, xem ReadingViewModel.isMyReadingId()
 ) {
     val context = LocalContext.current
     val scope = rememberCoroutineScope()
@@ -96,23 +106,19 @@ fun TtsVoicePickerScreen(
         selectedSid = voice.sid
 
         // ⚠️ Chỉ enqueue/xin khi (a) biết ĐANG đọc bài nào (xem ghi chú đầu
-        // file) VÀ (b) giọng vừa chọn thuộc vendor KOKORO — vendor khác
-        // không đi qua TtsKokoroPackScheduler/TtsMyReadingSyncTrigger, tự có
-        // cơ chế riêng (nếu cần) trong thư mục của chính nó. TtsVoiceSnapshot
-        // không tự làm việc này (đã tách bạch trách nhiệm từ trước, xem
-        // TtsVoiceSnapshot.kt).
+        // file) VÀ (b) giọng vừa chọn thuộc vendor KOKORO.
         if (readingId != null && voice.vendor == TtsVendor.KOKORO) {
-            // (1) Bài HỆ THỐNG (build sẵn, batch) — tải gói .zip cho giọng
-            // mới nếu Drive đã có sẵn.
-            TtsKokoroPackScheduler.enqueueDownload(context, readingId, voice.sid)
-
-            // (2) Bài MyReading (server tổng hợp THEO YÊU CẦU) — xin server
-            // tổng hợp NGAY cho giọng vừa chọn. Tự no-op an toàn nếu
-            // readingId này không phải bài MyReading (xem
-            // onVoiceChangedForReading), và tự dedup nếu đã từng xin đúng
-            // (readingId, sid mới, nội dung hiện tại) trước đó.
-            scope.launch {
-                TtsMyReadingSyncTrigger.onVoiceChangedForReading(context, readingId)
+            if (isMyReading) {
+                // Bài MyReading — CHỈ gửi request tổng hợp cho server, KHÔNG
+                // đụng gì tới TtsKokoroPackScheduler ở đây (xem ghi chú ⚠️
+                // đầu file — tránh khoá cooldown 24h oan cho sid này).
+                scope.launch {
+                    TtsMyReadingSyncTrigger.onVoiceChangedForReading(context, readingId)
+                }
+            } else {
+                // Bài hệ thống — Drive luôn có sẵn TOÀN BỘ giọng từ trước,
+                // tải ngay an toàn.
+                TtsKokoroPackScheduler.enqueueDownload(context, readingId, voice.sid)
             }
         }
     }

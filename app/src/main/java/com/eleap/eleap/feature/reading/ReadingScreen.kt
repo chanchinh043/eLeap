@@ -74,26 +74,11 @@ fun ReadingScreen(
         vm.loadReading(readingId)
     }
 
-    // ── Enqueue tải ĐỦ TOÀN BỘ giọng Kokoro (tiếng Anh) cho bài đang mở, ưu
-    // tiên giọng đang chọn tải TRƯỚC — TtsVoiceSnapshot KHÔNG còn tự
-    // enqueue khi đổi giọng (xem TtsVoiceSnapshot.kt) — nơi mở bài đọc PHẢI
-    // tự gọi việc này. Gọi lại mỗi khi readingId HOẶC speechVendor/speechSid
-    // đổi (vd người dùng đổi giọng ngay trong lúc đang đọc bài).
-    //
-    // ⚠️ DÙNG enqueueEnsureReadingSynced() (KHÔNG PHẢI enqueueDownloadAllVoices()):
-    // đây là "lượt tải cho BẰNG ĐƯỢC lần đầu" — nếu bài CHƯA từng tải đủ, sẽ
-    // ngầm tải + tự RETRY (có backoff, WorkManager tự canh mạng) tới khi đủ
-    // TOÀN BỘ giọng hiện có trên Drive rồi mới đánh dấu hoàn tất (giọng nào
-    // Drive không có thì bỏ qua). Nếu bài ĐÃ đánh dấu hoàn tất từ trước (kể
-    // cả sau khi tắt/mở lại app), Worker chỉ đọc 1 file cờ rồi dừng ngay,
-    // KHÔNG gọi Drive, KHÔNG quan tâm đã bao lâu kể từ lần tải. Việc dò bản
-    // MỚI cho giọng đã tải theo chu kỳ (enqueueDownloadAllVoices(), có gate
-    // 24h) là TÍNH NĂNG KHÁC, chưa được gọi ở đây — sẽ nối dây sau khi cần.
-    //
-    // enqueueEnsureReadingSynced() tự dedupe theo TÊN LÔ (readingId) qua
-    // ExistingWorkPolicy.KEEP, nên gọi lại nhiều lần với cùng readingId
-    // không tốn kém; đổi speechSid sẽ tạo 1 lô mới với thứ tự ưu tiên khác
-    // (giọng vừa chọn lên đầu).
+    // ── Enqueue tải giọng Kokoro cho bài đang mở, ưu tiên giọng đang chọn
+    // tải TRƯỚC — TtsVoiceSnapshot KHÔNG còn tự enqueue khi đổi giọng (xem
+    // TtsVoiceSnapshot.kt) — nơi mở bài đọc PHẢI tự gọi việc này. Gọi lại
+    // mỗi khi readingId HOẶC speechVendor/speechSid đổi (vd người dùng đổi
+    // giọng ngay trong lúc đang đọc bài).
     //
     // ⚠️ CHỈ enqueue khi vendor đang chọn là KOKORO — TtsKokoroPackScheduler
     // là cơ chế đồng bộ ĐẶC THÙ của riêng Kokoro (tải gói .zip pregenerated
@@ -103,14 +88,12 @@ fun ReadingScreen(
     val speechVendor = remember { TtsVoiceSnapshot.currentVendor() }
     val speechSid = remember { TtsVoiceSnapshot.currentSid() }
 
-    // ⚠️ THÊM GATE CHO MYREADING (xem TtsMyReadingDownloadGate.kt): bài
-    // MyReading tổng hợp audio BẤT ĐỒNG BỘ ở server — nếu gọi thẳng
-    // enqueueEnsureReadingSynced() ngay cả khi server CHƯA xử lý xong, nó
-    // sẽ hiểu nhầm "Drive không có gì" thành "đã xử lý xong" và ghi marker
-    // fully-synced VĨNH VIỄN, khiến app không bao giờ tự kiểm tra lại Drive
-    // dù server upload xong sau đó. Gate hỏi thẳng server (không phải Drive)
-    // xem job có READY chưa; false thì bỏ qua lượt này, thử lại lần mở bài
-    // sau — KHÔNG có gì bị mất, chỉ đơn giản là chưa enqueue lần này.
+    // ⚠️ GATE CHO MYREADING (xem TtsMyReadingDownloadGate.kt): bài MyReading
+    // tổng hợp audio BẤT ĐỒNG BỘ ở server — nếu gọi thẳng bất kỳ hàm tải
+    // Drive nào ngay cả khi server CHƯA xử lý xong, nó sẽ hiểu nhầm "Drive
+    // không có gì" thành "đã xử lý xong". Gate hỏi thẳng server (không phải
+    // Drive) xem job có READY chưa; false thì bỏ qua lượt này, thử lại lần
+    // mở bài sau — KHÔNG có gì bị mất, chỉ đơn giản là chưa enqueue lần này.
     //
     // Với bài HỆ THỐNG (isMyReading=false) hoặc khi tính năng MyReading TTS
     // chưa cấu hình (TtsMyReadingConfig.baseUrl()==null), gate trả về true
@@ -131,7 +114,25 @@ fun ReadingScreen(
                 isMyReading = isMyReading,
             )
             if (canProceed) {
-                TtsKokoroPackScheduler.enqueueEnsureReadingSynced(context, readingId, speechSid)
+                // ⚠️ TÁCH THEO isMyReading — bài HỆ THỐNG dùng
+                // enqueueEnsureReadingSynced() như cũ (marker "đã tải ĐỦ"
+                // vĩnh viễn là ĐÚNG cho bài hệ thống, vì Drive luôn có sẵn
+                // TOÀN BỘ giọng ngay từ đầu — không có khái niệm "giọng mới
+                // xuất hiện sau"). Bài MYREADING PHẢI dùng enqueueDownload()
+                // (per-sid, KHÔNG có marker cả bài) — vì server tổng hợp
+                // TỪNG GIỌNG THEO YÊU CẦU, có thể có giọng MỚI xuất hiện bất
+                // kỳ lúc nào sau khi 1 giọng khác đã "tải đủ" từ trước. Nếu
+                // dùng enqueueEnsureReadingSynced() cho MyReading, ngay khi
+                // giọng ĐẦU TIÊN tải xong, marker vĩnh viễn bị ghi và app sẽ
+                // KHÔNG BAO GIỜ kiểm tra lại Drive cho các giọng khác được
+                // yêu cầu sau đó, dù server đã xử lý xong (xem
+                // TtsKokoroPackDownloader.ensureReadingFullySynced():
+                // isReadingFullySynced() short-circuit ngay dòng đầu).
+                if (isMyReading) {
+                    TtsKokoroPackScheduler.enqueueDownload(context, readingId, speechSid)
+                } else {
+                    TtsKokoroPackScheduler.enqueueEnsureReadingSynced(context, readingId, speechSid)
+                }
             }
         }
     }

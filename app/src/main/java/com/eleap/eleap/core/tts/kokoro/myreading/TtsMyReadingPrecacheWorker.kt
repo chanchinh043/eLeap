@@ -9,10 +9,10 @@
 //
 // Mỗi chu kỳ: đọc toàn bộ job đang chờ từ TtsMyReadingPendingStore, hỏi lại
 // status cho từng job —
-//   READY     → enqueue TtsKokoroPackScheduler.enqueueEnsureReadingSynced()
-//               NGAY (KHÔNG qua TtsMyReadingDownloadGate — đã biết chắc
-//               READY từ chính lần hỏi này, gate chỉ cần thiết khi hỏi Drive
-//               TRỰC TIẾP mà chưa xác nhận qua server), rồi xoá khỏi store.
+//   READY     → enqueue tải Kokoro pack NGAY qua
+//               TtsKokoroPackScheduler.enqueueDownload() (per-sid — xem
+//               ghi chú ⚠️ bên dưới, KHÔNG PHẢI enqueueEnsureReadingSynced()),
+//               rồi xoá khỏi store.
 //   FAILED    → xoá khỏi store — server báo lỗi vĩnh viễn cho bộ
 //               (readingId, sid, contentHash) này, không có gì để chờ thêm.
 //               Nếu sau này nội dung bài đổi, TtsMyReadingSyncTrigger sẽ tự
@@ -22,6 +22,17 @@
 //   UNKNOWN    → giữ nguyên (có thể chỉ là lỗi mạng tạm thời), hỏi lại ở
 //               chu kỳ sau — KHÔNG xoá, tránh mất dấu job chỉ vì 1 lần gọi
 //               mạng thất bại.
+//
+// ⚠️ VÌ SAO enqueueDownload() (per-sid) — KHÔNG PHẢI enqueueEnsureReadingSynced():
+// enqueueEnsureReadingSynced() dùng cơ chế "đã tải ĐỦ toàn bộ giọng, đánh
+// dấu VĨNH VIỄN" (xem TtsKokoroPackDownloader.ensureReadingFullySynced() —
+// READING_FULLY_SYNCED_MARKER, cấp CẢ BÀI, ghi 1 lần rồi không bao giờ kiểm
+// tra lại Drive nữa) — đúng cho bài HỆ THỐNG (Drive có sẵn TOÀN BỘ giọng từ
+// đầu), nhưng SAI cho MyReading (server tổng hợp TỪNG GIỌNG THEO YÊU CẦU,
+// có thể có giọng MỚI xuất hiện SAU KHI giọng khác đã được đánh dấu "tải đủ
+// vĩnh viễn"). Dùng enqueueDownload() (per-sid, gate theo syncIfNeeded() 24h
+// — không có marker cả bài) để mỗi giọng MyReading được kiểm tra/tải độc
+// lập, không bị chặn bởi việc giọng khác đã "xong" từ trước.
 //
 // Không dùng Hilt — WorkManager dùng default WorkerFactory (constructor
 // rỗng), Worker tự gọi init() của các singleton cần dùng phòng trường hợp
@@ -74,7 +85,9 @@ class TtsMyReadingPrecacheWorker(
                 when (status) {
                     TtsMyReadingJobStatus.READY -> {
                         Log.d(TAG, "doWork: reading_id=${entry.readingId} sid=${entry.sid} đã READY, enqueue tải")
-                        TtsKokoroPackScheduler.enqueueEnsureReadingSynced(
+                        // ⚠️ enqueueDownload() (per-sid) — xem ghi chú đầu
+                        // file về lý do KHÔNG dùng enqueueEnsureReadingSynced().
+                        TtsKokoroPackScheduler.enqueueDownload(
                             applicationContext, entry.readingId, entry.sid
                         )
                         TtsMyReadingPendingStore.remove(entry.readingId, entry.sid)

@@ -304,6 +304,12 @@ fun MainScreen() {
                 screen = nextScreen
             },
             onOpenVoicePicker = { screen = Screen.TTS_VOICE_PICKER },
+            // ← MỚI: bài đang mở là MyReading hay hệ thống — dựa vào
+            // readingEntryPoint đã có sẵn (ghi nhận lúc onSelectReading),
+            // không cần thêm state riêng. Dùng để truyền cho
+            // TtsVoicePickerScreen(isMyReading=...) ở nhánh TTS_VOICE_PICKER
+            // bên dưới (xem TtsVoicePickerScreen.kt).
+            isCurrentReadingMyReading = readingEntryPoint == Screen.MY_READING,
             onBack = { goBack() }
         )
 
@@ -339,6 +345,7 @@ private fun ScreenContent(
     onSelectReading: (String) -> Unit,
     onReadingStudyClick: (tabName: String, nextScreen: Screen) -> Unit,
     onOpenVoicePicker: () -> Unit,
+    isCurrentReadingMyReading: Boolean,
     onBack: () -> Unit,
 ) {
     when (screen) {
@@ -423,8 +430,13 @@ private fun ScreenContent(
         // enqueue tải NGAY gói mới cho đúng bài đang đọc (xem
         // TtsVoicePickerScreen.kt) ────────────────────────────────────────
         Screen.TTS_VOICE_PICKER -> TtsVoicePickerScreen(
-            onBack    = onBack,
-            readingId = selectedReadingId
+            onBack      = onBack,
+            readingId   = selectedReadingId,
+            // ← MỚI: cho TtsVoicePickerScreen biết bài đang mở là MyReading
+            // hay hệ thống, để nó rẽ đúng nhánh (enqueueDownload() ngay cho
+            // bài hệ thống, hay chỉ gửi request tổng hợp cho MyReading — xem
+            // ghi chú đầu file TtsVoicePickerScreen.kt).
+            isMyReading = isCurrentReadingMyReading,
         )
     }
 }
