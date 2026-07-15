@@ -7,6 +7,8 @@ package com.eleap.eleap.feature.myreading.data
 
 import android.content.Context
 import android.util.Log
+import com.eleap.eleap.core.auth.CurrentUser
+import com.eleap.eleap.core.tts.kokoro.myreading.TtsMyReadingSyncTrigger
 import kotlinx.coroutines.sync.Mutex
 import kotlinx.coroutines.sync.withLock
 
@@ -57,6 +59,7 @@ private fun clearFailure(readingId: String) {
 // ─────────────────────────────────────────────────────────────────────────────
 
 private suspend fun processOneMyReading(
+    context: Context,
     repo: MyReadingRepository,
     readingId: String,
     titleEn: String,
@@ -89,6 +92,44 @@ private suspend fun processOneMyReading(
     }
 
     clearFailure(readingId)
+
+    // ⚠️ RIÊNG CHO GUEST: guest KHÔNG BAO GIỜ đi qua MyReadingSyncPushWorker
+    // (worker đó return sớm ngay khi thấy userId == CurrentUser.GUEST_ID, vì
+    // guest không đăng nhập nên không có gì để push lên Supabase) — nghĩa là
+    // TtsMyReadingSyncTrigger.onReadingsSynced() (bình thường được gọi từ
+    // MyReadingSyncEngine.pushPendingLocked() SAU KHI push Supabase thành
+    // công) sẽ KHÔNG BAO GIỜ chạy cho bài của guest nếu chỉ trông chờ vào
+    // luồng sync. Ở đây là LỐI VÀO THỨ 2, độc lập — gọi thẳng ngay tại thời
+    // điểm is_ai_processed vừa chuyển true cho guest, không cần chờ (và sẽ
+    // không bao giờ có) sự kiện "vừa push Supabase xong".
+    //
+    // Chỉ áp dụng cho GUEST — user đã đăng nhập vẫn đi đúng đường cũ (qua
+    // MyReadingSyncEngine sau khi push), KHÔNG gọi thêm ở đây để tránh xin
+    // server 2 lần cho cùng 1 bài (server có dedup theo contentHash nên gọi
+    // trùng không hỏng gì, nhưng không cần thiết — giữ đúng 1 nguồn kích hoạt
+    // cho mỗi loại user).
+    if (CurrentUser.userId.value == CurrentUser.GUEST_ID) {
+        try {
+            // Lấy lại đúng dòng Reading vừa ghi (is_ai_processed đã = true
+            // sau writeAiResult() ở trên) — TtsMyReadingSyncTrigger chỉ cần
+            // đúng readingId + isAiProcessed=true để tiến hành, không cần gì
+            // thêm từ Reading. getReadingForSync() đã có sẵn ở
+            // MyReadingRepository, dùng lại thay vì tự query thêm.
+            val reading = repo.getReadingForSync(readingId)?.first
+            if (reading != null) {
+                TtsMyReadingSyncTrigger.onReadingsSynced(context, listOf(reading))
+            } else {
+                Log.w(TAG, "$label: không đọc lại được Reading sau khi ghi AI xong, bỏ qua xin TTS cho guest")
+            }
+        } catch (e: Exception) {
+            // Lỗi ở đây (mạng, server TTS down...) KHÔNG được làm hỏng kết
+            // quả xử lý AI vừa xong — bài vẫn coi là dịch thành công, chỉ là
+            // chưa xin được audio TTS, giống đúng nguyên tắc "core/tts/ luôn
+            // là lưới an toàn tuỳ chọn" đã thống nhất.
+            Log.e(TAG, "$label: lỗi khi xin TTS cho guest", e)
+        }
+    }
+
     onStatus("✓ Đã dịch xong: ${aiData.titleVi ?: titleEn}")
     Log.d(TAG, "◀◀◀ HOÀN TẤT xử lý AI cho $label")
 }
@@ -137,7 +178,7 @@ suspend fun processUnhandledMyReadings(
         for ((readingId, titleEn) in pending) {
             onStatus("Đang dịch bài: $titleEn…")
             try {
-                processOneMyReading(repo, readingId, titleEn, onStatus)
+                processOneMyReading(context, repo, readingId, titleEn, onStatus)
                 anySuccess = true
             } catch (e: Exception) {
                 Log.e(TAG, "✗✗✗ processUnhandledMyReadings LỖI: reading_id=$readingId | ${e.javaClass.simpleName}: ${e.message}", e)

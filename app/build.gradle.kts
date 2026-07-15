@@ -41,6 +41,12 @@ android {
             "TTS_DRIVE_ROOT_FOLDER_ID",
             "\"${localProperties.getProperty("TTS_DRIVE_ROOT_FOLDER_ID", "")}\""
         )
+
+        buildConfigField(
+            "String",
+            "TTS_MYREADING_API_BASE_URL",
+            "\"${localProperties.getProperty("TTS_MYREADING_API_BASE_URL", "")}\""
+        )
     }
 
     buildTypes {

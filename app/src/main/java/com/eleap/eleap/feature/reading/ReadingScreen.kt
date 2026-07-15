@@ -19,6 +19,7 @@ import com.eleap.eleap.core.tts.TtsManager
 import com.eleap.eleap.core.tts.TtsVendor
 import com.eleap.eleap.core.tts.TtsVoiceSnapshot
 import com.eleap.eleap.core.tts.kokoro.TtsKokoroPackScheduler
+import com.eleap.eleap.core.tts.kokoro.myreading.TtsMyReadingDownloadGate
 import com.eleap.eleap.feature.reading.ui.PhrasePopup
 import com.eleap.eleap.feature.reading.ui.PopupAnchorInfo
 import com.eleap.eleap.feature.reading.ui.SentencePopup
@@ -101,9 +102,37 @@ fun ReadingScreen(
     // có cơ chế riêng trong thư mục của nó, không đi qua scheduler này.
     val speechVendor = remember { TtsVoiceSnapshot.currentVendor() }
     val speechSid = remember { TtsVoiceSnapshot.currentSid() }
-    LaunchedEffect(readingId, speechVendor, speechSid) {
-        if (speechVendor == TtsVendor.KOKORO) {
-            TtsKokoroPackScheduler.enqueueEnsureReadingSynced(context, readingId, speechSid)
+
+    // ⚠️ THÊM GATE CHO MYREADING (xem TtsMyReadingDownloadGate.kt): bài
+    // MyReading tổng hợp audio BẤT ĐỒNG BỘ ở server — nếu gọi thẳng
+    // enqueueEnsureReadingSynced() ngay cả khi server CHƯA xử lý xong, nó
+    // sẽ hiểu nhầm "Drive không có gì" thành "đã xử lý xong" và ghi marker
+    // fully-synced VĨNH VIỄN, khiến app không bao giờ tự kiểm tra lại Drive
+    // dù server upload xong sau đó. Gate hỏi thẳng server (không phải Drive)
+    // xem job có READY chưa; false thì bỏ qua lượt này, thử lại lần mở bài
+    // sau — KHÔNG có gì bị mất, chỉ đơn giản là chưa enqueue lần này.
+    //
+    // Với bài HỆ THỐNG (isMyReading=false) hoặc khi tính năng MyReading TTS
+    // chưa cấu hình (TtsMyReadingConfig.baseUrl()==null), gate trả về true
+    // NGAY LẬP TỨC — giữ nguyên 100% hành vi cũ, không có gì thay đổi.
+    //
+    // key thêm `sentences`: cần đợi sentences load xong (gate tự return
+    // false nếu rỗng) VÀ tự chạy lại gate khi nội dung bài đổi (vd AI vừa
+    // ghi xong phrase/word, sentences reload) — trường hợp lần mở bài đầu
+    // tiên rơi đúng lúc AI chưa xong thì lần reload sau đó sẽ tự thử lại.
+    LaunchedEffect(readingId, speechVendor, speechSid, sentences) {
+        if (speechVendor == TtsVendor.KOKORO && sentences.isNotEmpty()) {
+            val isMyReading = vm.isMyReadingId(readingId)
+            val canProceed = TtsMyReadingDownloadGate.shouldProceedToDriveSync(
+                context     = context,
+                readingId   = readingId,
+                sid         = speechSid,
+                sentences   = sentences,
+                isMyReading = isMyReading,
+            )
+            if (canProceed) {
+                TtsKokoroPackScheduler.enqueueEnsureReadingSynced(context, readingId, speechSid)
+            }
         }
     }
 

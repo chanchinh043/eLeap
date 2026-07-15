@@ -6,6 +6,8 @@ import com.eleap.eleap.core.sync.SyncScheduler
 import com.eleap.eleap.core.tts.TtsManager
 import com.eleap.eleap.core.tts.TtsVoiceSnapshot
 import com.eleap.eleap.core.tts.kokoro.TtsKokoroConfig
+import com.eleap.eleap.core.tts.kokoro.myreading.TtsMyReadingPendingStore
+import com.eleap.eleap.core.tts.kokoro.myreading.TtsMyReadingPrecacheScheduler
 import com.eleap.eleap.feature.myreading.data.MyReadingRepository
 import com.eleap.eleap.feature.myreading.sync.MyReadingSyncCursor
 import com.eleap.eleap.feature.myreading.sync.MyReadingSyncEngine
@@ -91,6 +93,14 @@ class MainActivity : ComponentActivity() {
         //     thẳng Android TTS.
         TtsVoiceSnapshot.init(this)
         TtsKokoroConfig.registerIfConfigured(this)
+        // ⚠️ Cùng lý do như 2 dòng trên — thiếu dòng này thì
+        // TtsMyReadingPrecacheWorker (chạy nền định kỳ, xem
+        // TtsMyReadingPrecacheScheduler bên dưới) không đọc được danh sách
+        // job đang chờ, luôn coi như rỗng, không bao giờ tự pre-cache audio
+        // MyReading trước khi user mở bài (vẫn không sao — chỉ là tối ưu
+        // tuỳ chọn, TtsMyReadingDownloadGate lúc mở bài vẫn hoạt động đúng
+        // dù thiếu dòng này, xem TtsMyReadingPendingStore.kt).
+        TtsMyReadingPendingStore.init(this)
 
         // Đăng ký 2 lịch chạy nền (push mỗi 3h, pull mỗi 5h) — dùng
         // enqueueUniquePeriodicWork với policy KEEP bên trong nên gọi lại
@@ -100,6 +110,11 @@ class MainActivity : ComponentActivity() {
         // SaveWordButton) là chạy thật.
         SyncScheduler.schedulePeriodicWork(this)
         MyReadingSyncScheduler.schedulePeriodicWork(this)
+        // Tuỳ chọn — KHÔNG bắt buộc, xem TtsMyReadingPrecacheWorker.kt. Nếu
+        // bỏ dòng này, tính năng vẫn hoạt động đúng qua
+        // TtsMyReadingDownloadGate lúc mở bài, chỉ là audio pre-cache xuất
+        // hiện muộn hơn (đúng lúc mở bài lần kế thay vì chủ động tải trước).
+        TtsMyReadingPrecacheScheduler.schedulePeriodicWork(this)
 
         // Đăng ký lifecycle observer TRƯỚC khi xử lý deep link/session — để
         // không bỏ lỡ ON_START đầu tiên của app (ProcessLifecycleOwner phát

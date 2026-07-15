@@ -25,6 +25,7 @@ package com.eleap.eleap.feature.myreading.sync
 
 import android.content.Context
 import android.util.Log
+import com.eleap.eleap.core.tts.kokoro.myreading.TtsMyReadingSyncTrigger
 import com.eleap.eleap.feature.myreading.data.MyReadingRepository
 import com.eleap.eleap.feature.myreading.data.MyReadingSyncStatus
 import com.eleap.eleap.feature.reading.data.Reading
@@ -42,6 +43,12 @@ private const val TAG = "MyReadingSyncEngine"
 object MyReadingSyncEngine {
 
     private lateinit var repo: MyReadingRepository
+
+    // Giữ lại applicationContext — CHỈ dùng để chuyển tiếp cho
+    // TtsMyReadingSyncTrigger.onReadingsSynced() sau khi push thành công
+    // (xem pushPendingLocked() bên dưới). KHÔNG dùng cho việc gì khác trong
+    // file này — mọi thao tác DB vẫn đi qua repo như trước.
+    private lateinit var appContext: Context
 
     // ── Tín hiệu "vừa có dữ liệu MyReading thay đổi do sync" ─────────────────
     private val _dataChanged = MutableSharedFlow<String>(
@@ -66,6 +73,7 @@ object MyReadingSyncEngine {
     // Gọi 1 lần ở MainActivity.onCreate(), sau khi MyReadingSyncCursor.init()
     // đã chạy.
     fun init(context: Context) {
+        appContext = context.applicationContext
         repo = MyReadingRepository.getInstance(context)
     }
 
@@ -116,6 +124,13 @@ object MyReadingSyncEngine {
 
         val succeededIds = mutableListOf<String>()
 
+        // Chỉ thu thập cho nhánh CREATE/UPDATE (không phải DELETE) — dùng
+        // freshReading (đọc lại từ DB ngay TRƯỚC lúc push, có isAiProcessed
+        // mới nhất) thay vì `reading` gốc trong pendingReadings, phòng
+        // trường hợp AI vừa ghi xong is_ai_processed=1 SAU khi
+        // getPendingReadings() đã lấy snapshot cũ. Xem TtsMyReadingSyncTrigger.kt.
+        val syncedForTts = mutableListOf<Reading>()
+
         for (reading in pendingReadings) {
             try {
                 when (reading.syncStatus) {
@@ -139,9 +154,11 @@ object MyReadingSyncEngine {
                                 words     = sentences.flatMap { s -> s.words.map { it.toDto() } },
                             )
                             succeededIds += reading.readingId
+                            syncedForTts += freshReading
                         } else {
                             if (pushUpdateWithLocking(freshReading, sentences, rowDto)) {
                                 succeededIds += reading.readingId
+                                syncedForTts += freshReading
                             }
                             // false nghĩa là conflict và server đã thắng —
                             // local đã bị áp lại từ server bên trong
@@ -169,6 +186,20 @@ object MyReadingSyncEngine {
         if (succeededIds.isNotEmpty()) {
             repo.markSynced(succeededIds)
         }
+
+        // ── Sau khi biết CHẮC CHẮN đã push thành công lên Supabase — báo
+        // cho lớp TTS (nếu bài nào đó đã is_ai_processed=1) để xin server
+        // tổng hợp giọng đọc. "Bắn rồi quên": lỗi ở đây KHÔNG được làm hỏng
+        // kết quả push readings/sentences (đã xong xuôi ở trên), nên bọc
+        // try/catch riêng, không để exception thoát ra khỏi pushPendingLocked().
+        if (syncedForTts.isNotEmpty()) {
+            try {
+                TtsMyReadingSyncTrigger.onReadingsSynced(appContext, syncedForTts)
+            } catch (e: Exception) {
+                Log.e(TAG, "pushPendingLocked: lỗi khi báo TtsMyReadingSyncTrigger", e)
+            }
+        }
+
         return succeededIds.size
     }
 

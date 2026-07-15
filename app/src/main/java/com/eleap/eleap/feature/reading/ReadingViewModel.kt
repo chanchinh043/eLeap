@@ -187,6 +187,16 @@ class ReadingViewModel(
         loadReadings(forceRefresh = true)
     }
 
+    // ── Bài readingId có phải MyReading (userId != null) không? — dùng bởi
+    // ReadingScreen để quyết định có cần đi qua TtsMyReadingDownloadGate
+    // trước khi enqueue tải Kokoro pack hay không (bài hệ thống thì không
+    // cần, xem TtsMyReadingDownloadGate.kt). Đồng bộ, KHÔNG query DB — dựa
+    // thẳng vào myReadings đã collect sẵn từ readings (nạp lúc loadReadings()),
+    // đủ chính xác cho mục đích này (readings luôn nạp trước khi mở 1 bài
+    // cụ thể, xem ReadingListScreen/MyReadingListScreen).
+    fun isMyReadingId(readingId: String): Boolean =
+        myReadings.value.any { it.readingId == readingId }
+
     fun loadReading(readingId: String) {
         if (readingId == cachedReadingId) {
             Log.d("ReadingVM", "readingId=$readingId đã cache, bỏ qua loadReading()")
