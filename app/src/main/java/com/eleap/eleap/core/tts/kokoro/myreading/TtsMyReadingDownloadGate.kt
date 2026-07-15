@@ -40,10 +40,21 @@
 // năng "xin server tổng hợp" CHƯA BẬT, gate trả về true để giữ nguyên hành
 // vi cũ (thử Drive trực tiếp) — không có rủi ro marker sai vì không có
 // pipeline bất đồng bộ nào đang chạy trong trường hợp này.
+//
+// ⚠️ MỚI — CHECK CỤC BỘ TRƯỚC KHI GỌI SERVER: nếu
+// TtsKokoroPackDownloader.isPackSynced(readingId, sid) đã trả về true (gói
+// đã tải + giải nén xong TỪ TRƯỚC — chỉ đọc 1 file marker nhỏ trên đĩa,
+// KHÔNG gọi mạng), gate trả về true NGAY, KHÔNG gọi checkStatus() tới
+// server nữa. Trước đây (thiếu bước này) mỗi lần ReadingScreen tạo mới/
+// LaunchedEffect chạy lại (vd AI watchdog reload sentences mỗi 15s) đều
+// tốn 1 lượt gọi mạng tới server dù đã biết chắc gói này đã tải xong từ
+// lâu — vô ích, chỉ tổ tốn băng thông/thời gian. Đây là điểm gọi DUY NHẤT
+// quyết định "đã tải rồi thì đừng hỏi lại nữa".
 package com.eleap.eleap.core.tts.kokoro.myreading
 
 import android.content.Context
 import android.util.Log
+import com.eleap.eleap.core.tts.kokoro.TtsKokoroPackDownloader
 import com.eleap.eleap.feature.reading.data.ReadingSentence
 
 private const val TAG = "TtsMyReadingDownloadGate"
@@ -62,6 +73,15 @@ object TtsMyReadingDownloadGate {
         isMyReading: Boolean,
     ): Boolean {
         if (!isMyReading) return true
+
+        // ⚠️ MỚI — check CỤC BỘ, KHÔNG gọi mạng: gói này đã tải xong từ
+        // trước rồi thì khỏi cần hỏi server nữa, cho tiến hành ngay (bước
+        // enqueueEnsureReadingSynced() phía sau cũng tự fast-path qua
+        // isPackUpToDate() nội bộ, không tốn gì thêm).
+        if (TtsKokoroPackDownloader.isPackSynced(context, readingId, sid)) {
+            Log.d(TAG, "shouldProceedToDriveSync: reading_id=$readingId sid=$sid đã tải xong từ trước (cục bộ), bỏ qua hỏi server")
+            return true
+        }
 
         val baseUrl = TtsMyReadingConfig.baseUrl() ?: return true
 
