@@ -125,4 +125,7 @@ dependencies {
     androidTestImplementation(libs.androidx.junit)
     debugImplementation(libs.androidx.compose.ui.test.manifest)
     debugImplementation(libs.androidx.compose.ui.tooling)
+
+    // Thay mediaplayer
+    implementation("androidx.media3:media3-exoplayer:1.4.1")
 }
