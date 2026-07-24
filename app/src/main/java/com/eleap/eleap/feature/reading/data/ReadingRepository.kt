@@ -87,6 +87,11 @@ data class SentenceWord(
 // ── dict (dict.db) ────────────────────────────────────────────────────────────
 data class DictEntry(
     val word: String,
+    // Bản sao của `word` có chèn ký hiệu markup <...>/[...] để tô màu trọng
+    // âm/nguyên âm dài khi hiển thị ở WordPopup — KHÔNG dùng để tra cứu (tra
+    // cứu vẫn luôn dùng `word` sạch). Có thể null nếu dict.db cũ chưa có cột
+    // này hoặc không xác định được vị trí markup cho từ đó (xem §8 quy tắc).
+    val wordMarkup: String?,
     val ipa: String?,
     val ipaVi: String?,
     val meaning: String?,
@@ -221,6 +226,7 @@ class ReadingDao(
                     list.add(
                         DictEntry(
                             word         = it.getString(it.getColumnIndexOrThrow("word")),
+                            wordMarkup   = it.getString(it.getColumnIndexOrThrow("word_markup")),
                             ipa          = it.getString(it.getColumnIndexOrThrow("ipa")),
                             ipaVi        = it.getString(it.getColumnIndexOrThrow("ipa_vi")),
                             meaning      = it.getString(it.getColumnIndexOrThrow("meaning")),

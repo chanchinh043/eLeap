@@ -12,6 +12,8 @@ import androidx.compose.ui.Modifier
 import androidx.compose.ui.geometry.Rect
 import androidx.compose.ui.platform.LocalDensity
 import androidx.compose.ui.platform.LocalContext
+import androidx.compose.ui.text.AnnotatedString
+import androidx.compose.ui.text.buildAnnotatedString
 import androidx.compose.ui.text.font.FontStyle
 import androidx.compose.ui.unit.dp
 import androidx.compose.ui.window.Popup
@@ -102,14 +104,19 @@ fun WordPopup(
                         horizontalArrangement = Arrangement.spacedBy(8.dp)
                     ) {
                         Text(
-                            text  = word.textEn ?: "",
+                            text  = dictEntry?.wordMarkup?.let { parseMarkup(it) }
+                                ?: AnnotatedString(word.textEn ?: ""),
                             style = MaterialTheme.typography.titleLarge
                         )
                         if (ipa != null || ipaVi != null) {
                             Row(horizontalArrangement = Arrangement.spacedBy(4.dp)) {
                                 ipa?.let {
                                     Text(
-                                        text      = "[$it]",
+                                        text      = buildAnnotatedString {
+                                            append("[")
+                                            append(parseMarkup(it))
+                                            append("]")
+                                        },
                                         style     = MaterialTheme.typography.bodyMedium,
                                         color     = MaterialTheme.colorScheme.secondary,
                                         fontStyle = FontStyle.Italic
