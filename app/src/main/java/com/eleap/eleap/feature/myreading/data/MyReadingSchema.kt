@@ -201,7 +201,7 @@ fun splitMyWords(sentenceText: String): List<String> =
 // ─────────────────────────────────────────────────────────────────────────────
 
 private const val DB_NAME    = "myreading.db"
-private const val DB_VERSION = 3
+private const val DB_VERSION = 4
 
 class MyReadingDbHelper(context: Context) :
     SQLiteOpenHelper(context.applicationContext, DB_NAME, null, DB_VERSION) {
@@ -262,7 +262,9 @@ class MyReadingDbHelper(context: Context) :
                 text_vi             TEXT,
                 phrase_explanation  TEXT,
                 start_word_order    INTEGER,
-                end_word_order      INTEGER
+                end_word_order      INTEGER,
+                lmwe                TEXT,
+                lmwe_explanation    TEXT
             )
             """.trimIndent()
         )
@@ -305,6 +307,15 @@ class MyReadingDbHelper(context: Context) :
             )
             createUpdatedAtTrigger(db)
             Log.d(TAG, "onUpgrade $oldVersion→$newVersion: đã thêm cột deleted_at, sync_status + trigger trg_myreading_updated_at")
+        }
+        if (oldVersion < 4) {
+            // lmwe/lmwe_explanation: đánh dấu 1 phrase là LMWE (Lexicalized
+            // Multi-Word Expression — idiom/phrasal verb/collocation cố định)
+            // + giải thích đi kèm. Cả 2 nullable — DB cũ nâng cấp lên vẫn
+            // đọc/ghi bình thường, chỉ là NULL cho các phrase đã có sẵn.
+            db.execSQL("ALTER TABLE sentence_phrases ADD COLUMN lmwe TEXT")
+            db.execSQL("ALTER TABLE sentence_phrases ADD COLUMN lmwe_explanation TEXT")
+            Log.d(TAG, "onUpgrade $oldVersion→$newVersion: đã thêm cột lmwe, lmwe_explanation vào sentence_phrases")
         }
     }
 

@@ -62,6 +62,11 @@ data class MyAiPhrase(
     val explanation: String?,
     val startWordOrder: Int,
     val endWordOrder: Int,      // rule: endWordOrder - startWordOrder + 1 >= 2
+    // lmwe: dạng nguyên mẫu nếu cụm này là 1 Lexicalized Multi-Word
+    // Expression (idiom/phrasal verb/collocation cố định) — null nếu không.
+    val lmwe: String? = null,
+    // lmweExplanation: giải thích đi kèm lmwe, null khi lmwe null.
+    val lmweExplanation: String? = null,
 )
 
 data class MyAiSentence(
@@ -121,7 +126,9 @@ Hãy phân tích toàn bộ bài và trả về MỘT object JSON DUY NHẤT (kh
           "text_vi": "nghĩa tiếng Việt",
           "explanation": "giải thích cụm từ bằng tiếng Việt",
           "start_word_order": <word_order của từ đầu tiên trong cụm, bắt đầu từ 1>,
-          "end_word_order": <word_order của từ cuối cùng trong cụm>
+          "end_word_order": <word_order của từ cuối cùng trong cụm>,
+          "lmwe": "<null, hoặc dạng nguyên mẫu của cụm nếu đây là 1 LMWE (Lexicalized Multi-Word Expression: idiom, phrasal verb, collocation cố định) — null nếu cụm chỉ là nhóm từ ghép ngữ pháp thông thường>",
+          "lmwe_explanation": "<null nếu lmwe null; nếu lmwe khác null thì giải thích ngắn bằng tiếng Việt tại sao cụm này là LMWE, nghĩa cố định khác gì so với ghép nghĩa từng từ>"
         }
       ],
       "words": [
@@ -155,6 +162,7 @@ Quy tắc bắt buộc:
 - BẮT BUỘC: mỗi phrase phải có ÍT NHẤT 2 từ (end_word_order - start_word_order >= 1). Không tạo phrase chỉ gồm 1 từ.
 - BẮT BUỘC: các phrase trong cùng 1 câu KHÔNG được chồng lấn lên nhau (1 word_order chỉ được thuộc tối đa 1 phrase). Các phrase không cần liên tiếp nhau và không cần bắt đầu từ word_order = 1.
 - BẮT BUỘC: start_word_order/end_word_order của mỗi phrase phải khớp CHÍNH XÁC với phrase_id mà chính các word đó được gán ở Bước 3 — đây là điểm hay sai nhất, hãy rà soát lại trước khi trả kết quả.
+- field "lmwe" của mỗi phrase: chỉ điền khi cụm đó thực sự là 1 LMWE (idiom/phrasal verb/collocation cố định), còn lại để null. "lmwe_explanation" LUÔN đi kèm: null khi "lmwe" null, có nội dung khi "lmwe" khác null.
 - Không thêm bất kỳ văn bản nào ngoài JSON.
 """.trimIndent()
 }
@@ -268,6 +276,8 @@ private fun parseMyReadingAiResponseInternal(raw: String): MyAiReading {
                 explanation    = p.strOrNull("explanation"),
                 startWordOrder = p.getInt("start_word_order"),
                 endWordOrder   = p.getInt("end_word_order"),
+                lmwe            = p.strOrNull("lmwe"),
+                lmweExplanation = p.strOrNull("lmwe_explanation"),
             )
         }
 
@@ -393,6 +403,8 @@ fun repairAndValidateMyAiReading(aiData: MyAiReading, wordCounts: Map<Int, Int>)
                 explanation    = meta?.explanation,
                 startWordOrder = startOrder,
                 endWordOrder   = endOrder,
+                lmwe            = meta?.lmwe,
+                lmweExplanation = meta?.lmweExplanation,
             )
             i = j
         }

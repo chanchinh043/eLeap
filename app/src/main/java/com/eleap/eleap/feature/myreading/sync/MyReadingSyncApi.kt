@@ -86,6 +86,8 @@ data class SentencePhraseDto(
     @SerialName("phrase_explanation") val phraseExplanation: String? = null,
     @SerialName("start_word_order") val startWordOrder: Int,
     @SerialName("end_word_order") val endWordOrder: Int,
+    val lmwe: String? = null,
+    @SerialName("lmwe_explanation") val lmweExplanation: String? = null,
 )
 
 @Serializable

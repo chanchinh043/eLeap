@@ -109,6 +109,10 @@ class MyReadingDao(private val db: SQLiteDatabase) {
             "SELECT * FROM sentence_phrases WHERE sentence_id = ?",
             arrayOf(sentenceId)
         ).use { c ->
+            // getColumnIndex (KHÔNG "OrThrow") + check < 0 để vẫn đọc được
+            // các bản myreading.db cũ (DB_VERSION < 4) chưa có 2 cột này.
+            val lmweIdx = c.getColumnIndex("lmwe")
+            val lmweExplanationIdx = c.getColumnIndex("lmwe_explanation")
             while (c.moveToNext()) {
                 list.add(
                     SentencePhrase(
@@ -119,6 +123,8 @@ class MyReadingDao(private val db: SQLiteDatabase) {
                         phraseExplanation = c.getString(c.getColumnIndexOrThrow("phrase_explanation")),
                         startWordOrder    = c.getInt(c.getColumnIndexOrThrow("start_word_order")),
                         endWordOrder      = c.getInt(c.getColumnIndexOrThrow("end_word_order")),
+                        lmwe              = if (lmweIdx < 0 || c.isNull(lmweIdx)) null else c.getString(lmweIdx),
+                        lmweExplanation   = if (lmweExplanationIdx < 0 || c.isNull(lmweExplanationIdx)) null else c.getString(lmweExplanationIdx),
                     )
                 )
             }
@@ -428,6 +434,8 @@ class MyReadingDao(private val db: SQLiteDatabase) {
                         p.explanation?.let { put("phrase_explanation", it) }
                         put("start_word_order", p.startWordOrder)
                         put("end_word_order", p.endWordOrder)
+                        p.lmwe?.let { put("lmwe", it) }
+                        p.lmweExplanation?.let { put("lmwe_explanation", it) }
                     }
                     val rowId = db.insert("sentence_phrases", null, pcv)
                     if (rowId != -1L) phraseIdMap[p.id] = phraseId
@@ -778,6 +786,8 @@ class MyReadingDao(private val db: SQLiteDatabase) {
                             put("phrase_explanation", p.phraseExplanation)
                             put("start_word_order",   p.startWordOrder)
                             put("end_word_order",     p.endWordOrder)
+                            put("lmwe",                p.lmwe)
+                            put("lmwe_explanation",    p.lmweExplanation)
                         }
                         db.insert("sentence_phrases", null, pcv)
                     }

@@ -130,6 +130,31 @@ fun PhrasePopup(
                         color = MaterialTheme.colorScheme.onSurfaceVariant
                     )
                 }
+
+                // ── LMWE (thành ngữ/collocation cố định) — chỉ hiện khi có dữ
+                // liệu, tức cụm từ này được đánh dấu là 1 LMWE thực sự ────────
+                phrase.lmwe?.let { lmwe ->
+                    HorizontalDivider()
+                    Column(verticalArrangement = Arrangement.spacedBy(4.dp)) {
+                        Text(
+                            text = "Thành ngữ / cụm cố định (LMWE)",
+                            style = MaterialTheme.typography.labelMedium,
+                            color = MaterialTheme.colorScheme.outline
+                        )
+                        Text(
+                            text = lmwe,
+                            style = MaterialTheme.typography.bodyLarge,
+                            color = MaterialTheme.colorScheme.secondary
+                        )
+                        phrase.lmweExplanation?.let {
+                            Text(
+                                text = it,
+                                style = MaterialTheme.typography.bodyMedium,
+                                color = MaterialTheme.colorScheme.onSurfaceVariant
+                            )
+                        }
+                    }
+                }
             }
         }
     }

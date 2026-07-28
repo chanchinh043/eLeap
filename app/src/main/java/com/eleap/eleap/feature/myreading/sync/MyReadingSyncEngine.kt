@@ -394,6 +394,8 @@ fun SentencePhrase.toDto(): SentencePhraseDto = SentencePhraseDto(
     phraseExplanation = phraseExplanation,
     startWordOrder    = startWordOrder,
     endWordOrder      = endWordOrder,
+    lmwe              = lmwe,
+    lmweExplanation   = lmweExplanation,
 )
 
 fun SentenceWord.toDto(): SentenceWordDto = SentenceWordDto(
@@ -437,6 +439,8 @@ fun assembleSentences(
                     phraseExplanation = p.phraseExplanation,
                     startWordOrder    = p.startWordOrder,
                     endWordOrder      = p.endWordOrder,
+                    lmwe              = p.lmwe,
+                    lmweExplanation   = p.lmweExplanation,
                 )
             },
             words = (wordsBySentence[s.sentenceId] ?: emptyList()).sortedBy { it.wordOrder }.map { w ->

@@ -68,6 +68,13 @@ data class SentencePhrase(
     val phraseExplanation: String?,
     val startWordOrder: Int,
     val endWordOrder: Int,
+    // ── lmwe: dạng nguyên mẫu của cụm từ nếu đây là 1 Lexicalized Multi-Word
+    // Expression (idiom, phrasal verb, collocation cố định...) — null nếu
+    // cụm chỉ là nhóm từ ghép ngữ pháp thông thường (không phải LMWE).
+    val lmwe: String? = null,
+    // ── lmweExplanation: giải thích tại sao cụm này là LMWE, đi kèm `lmwe` —
+    // null khi `lmwe` null, luôn có nội dung khi `lmwe` khác null.
+    val lmweExplanation: String? = null,
 )
 
 // ── sentence_words ────────────────────────────────────────────────────────────
@@ -164,6 +171,12 @@ class ReadingDao(
             arrayOf(sentenceId)
         )
         cursor.use {
+            // lmwe/lmwe_explanation có thể null (cụm không phải LMWE), và có
+            // thể KHÔNG TỒN TẠI ở các bản readings.db cũ chưa build lại theo
+            // schema mới — getColumnIndex (KHÔNG dùng "OrThrow") trả về -1
+            // thay vì crash, để vẫn đọc được các bản DB cũ.
+            val lmweIdx = it.getColumnIndex("lmwe")
+            val lmweExplanationIdx = it.getColumnIndex("lmwe_explanation")
             while (it.moveToNext()) {
                 list.add(
                     SentencePhrase(
@@ -174,6 +187,8 @@ class ReadingDao(
                         phraseExplanation  = it.getString(it.getColumnIndexOrThrow("phrase_explanation")),
                         startWordOrder     = it.getInt(it.getColumnIndexOrThrow("start_word_order")),
                         endWordOrder       = it.getInt(it.getColumnIndexOrThrow("end_word_order")),
+                        lmwe               = if (lmweIdx < 0 || it.isNull(lmweIdx)) null else it.getString(lmweIdx),
+                        lmweExplanation    = if (lmweExplanationIdx < 0 || it.isNull(lmweExplanationIdx)) null else it.getString(lmweExplanationIdx),
                     )
                 )
             }
