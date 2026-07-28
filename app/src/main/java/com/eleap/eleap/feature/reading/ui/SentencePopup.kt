@@ -7,7 +7,6 @@ import androidx.compose.material3.*
 import androidx.compose.runtime.Composable
 import androidx.compose.runtime.LaunchedEffect
 import androidx.compose.runtime.remember
-import androidx.compose.ui.Alignment
 import androidx.compose.ui.Modifier
 import androidx.compose.ui.geometry.Rect
 import androidx.compose.ui.platform.LocalContext
@@ -82,31 +81,8 @@ fun SentencePopup(
                 verticalArrangement = Arrangement.spacedBy(12.dp)
             ) {
 
-                // ── Header: tiêu đề + nút Đóng ───────────────────────────────
-                Row(
-                    modifier = Modifier.fillMaxWidth(),
-                    verticalAlignment = Alignment.CenterVertically,
-                    horizontalArrangement = Arrangement.SpaceBetween
-                ) {
-                    Text(
-                        text = "Dịch câu",
-                        style = MaterialTheme.typography.titleMedium
-                    )
-                    TextButton(
-                        onClick = onDismiss,
-                        contentPadding = PaddingValues(horizontal = 8.dp, vertical = 0.dp)
-                    ) {
-                        Text("Đóng")
-                    }
-                }
-
-                // ── Câu gốc tiếng Anh ────────────────────────────────────────
-                Text(
-                    text = sentence.textEn ?: "",
-                    style = MaterialTheme.typography.bodyLarge
-                )
-
-                HorizontalDivider()
+                // ── Câu gốc tiếng Anh — không hiển thị nữa, chỉ dùng để đọc
+                // (TTS) ở LaunchedEffect phía trên, không render ra UI ──────
 
                 // ── Bản dịch tiếng Việt ──────────────────────────────────────
                 Text(

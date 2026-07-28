@@ -86,24 +86,6 @@ fun PhrasePopup(
                 verticalArrangement = Arrangement.spacedBy(12.dp)
             ) {
 
-                // ── Header: tiêu đề + nút Đóng ───────────────────────────────
-                Row(
-                    modifier = Modifier.fillMaxWidth(),
-                    verticalAlignment = Alignment.CenterVertically,
-                    horizontalArrangement = Arrangement.SpaceBetween
-                ) {
-                    Text(
-                        text = "Dịch cụm từ",
-                        style = MaterialTheme.typography.titleMedium
-                    )
-                    TextButton(
-                        onClick = onDismiss,
-                        contentPadding = PaddingValues(horizontal = 8.dp, vertical = 0.dp)
-                    ) {
-                        Text("Đóng")
-                    }
-                }
-
                 // ── Cụm từ gốc tiếng Anh ─────────────────────────────────────
                 Text(
                     text = phrase.textEn ?: "",
