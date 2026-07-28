@@ -31,7 +31,7 @@ object TtsMyReadingPrecacheScheduler {
     // ── Gọi 1 lần ở MainActivity.onCreate() — KEEP: không tạo chồng lịch
     // mới nếu app khởi động lại nhiều lần.
     fun schedulePeriodicWork(context: Context) {
-        val request = PeriodicWorkRequestBuilder<TtsMyReadingPrecacheWorker>(15, TimeUnit.MINUTES)
+        val request = PeriodicWorkRequestBuilder<TtsMyReadingPrecacheWorker>(5, TimeUnit.MINUTES)
             .setConstraints(networkConstraint)
             .setBackoffCriteria(BackoffPolicy.EXPONENTIAL, 1, TimeUnit.MINUTES)
             .build()

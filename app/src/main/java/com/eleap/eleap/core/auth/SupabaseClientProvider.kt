@@ -18,8 +18,8 @@ object SupabaseClientProvider {
 
     val client by lazy {
         createSupabaseClient(
-            supabaseUrl = "https://mrmpwpbxjyznvbsnqubo.supabase.co",
-            supabaseKey = "sb_publishable__20WmcUv1hjv5WNfC4SH3A_wAiHYHPI"
+            supabaseUrl = "https://zogwcxfndmptowcoufom.supabase.co",
+            supabaseKey = "sb_publishable_H5RE3CXSvhzu3MHVxFflcA_lkGkXHXC"
         ) {
             install(Auth) {
                 // Dùng để SDK tự nhận diện + parse đúng deep link khi
