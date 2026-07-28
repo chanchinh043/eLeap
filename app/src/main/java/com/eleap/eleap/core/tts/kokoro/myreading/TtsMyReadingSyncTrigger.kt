@@ -48,6 +48,19 @@
 // vậy hoạt động y hệt cho CẢ guest lẫn user thật — không phụ thuộc bài đã
 // push lên Supabase hay chưa.
 //
+// ⚠️ MỚI — CHỐNG POLLING TRÙNG LẶP VỚI TtsMyReadingDownloadGate:
+// Trước đây có 2 nguồn ĐỘC LẬP cùng gọi checkStatus() cho CÙNG 1 job trong
+// lúc server đang xử lý: (1) pollUntilReadyThenDownload() ở file này (mỗi
+// 4 giây, tối đa 60 giây) VÀ (2) TtsMyReadingDownloadGate.shouldProceedToDriveSync()
+// (gọi mỗi khi ReadingScreen mở/reload — có thể mỗi 15 giây do AI watchdog
+// — xem comment ở đó). Nếu người dùng mở đúng bài vừa AI dịch xong trong
+// vòng 60 giây đầu, CẢ HAI cùng hỏi server 1 câu hỏi giống hệt nhau, dư
+// thừa. `activelyPolling` (in-memory, sống theo process — KHÔNG cần bền
+// vững qua restart vì chỉ có tác dụng "khỏi hỏi trùng trong cùng 1 phiên
+// polling đang chạy") đánh dấu job nào đang có 1 luồng poll xử lý, để Gate
+// tự biết "đã có người lo job này rồi, khỏi tự hỏi nữa" — xem isPolling()
+// và cách TtsMyReadingDownloadGate gọi nó.
+//
 // Hàm KHÔNG throw ra ngoài — lỗi ở đây (gọi server thất bại) KHÔNG được làm
 // hỏng lượt sync readings/sentences đang chạy, đúng nguyên tắc "core/tts/
 // luôn là lưới an toàn tuỳ chọn". MyReadingSyncEngine gọi hàm này "bắn rồi
@@ -67,6 +80,7 @@ import kotlinx.coroutines.Dispatchers
 import kotlinx.coroutines.SupervisorJob
 import kotlinx.coroutines.delay
 import kotlinx.coroutines.launch
+import java.util.concurrent.ConcurrentHashMap
 
 private const val TAG = "TtsMyReadingSyncTrigger"
 
@@ -92,7 +106,29 @@ private const val POLL_INTERVAL_MS = 4_000L
 // không rò rỉ vô thời hạn.
 private val pollScope = CoroutineScope(SupervisorJob() + Dispatchers.IO)
 
+// ── MỚI — Đánh dấu job nào đang có 1 luồng pollUntilReadyThenDownload()
+// XỬ LÝ, để TtsMyReadingDownloadGate biết mà tự bỏ qua, không tự hỏi server
+// trùng lặp trong lúc luồng poll này còn sống. Key = "readingId|sid" (đủ để
+// phân biệt, không cần contentHash — tại 1 thời điểm chỉ có ý nghĩa 1 job
+// đang active cho mỗi (readingId, sid), xem TtsMyReadingPendingStore.add()
+// cũng tự loại entry cũ theo đúng logic này).
+// ConcurrentHashMap.newKeySet() — an toàn khi nhiều coroutine (nhiều bài
+// đang poll song song trong 1 lượt sync hàng loạt) cùng add/remove.
+private val activelyPolling = ConcurrentHashMap.newKeySet<String>()
+
+private fun pollKey(readingId: String, sid: Int): String = "$readingId|$sid"
+
 object TtsMyReadingSyncTrigger {
+
+    // ── MỚI — Điểm gọi từ TtsMyReadingDownloadGate để biết "job này đang
+    // có 1 luồng poll tự động xử lý rồi, có cần tự hỏi server nữa không".
+    // true = ĐANG có luồng poll xử lý — Gate nên trả về false (bỏ qua lượt
+    // gọi Drive sync lần này, để luồng poll kia tự enqueue tải khi ready).
+    // false = KHÔNG có luồng poll nào — Gate an toàn để tự hỏi status như
+    // bình thường (vd trường hợp app vừa khởi động lại, mất hết state poll
+    // cũ trong RAM, nhưng job vẫn còn pending ở server).
+    fun isPolling(readingId: String, sid: Int): Boolean =
+        activelyPolling.contains(pollKey(readingId, sid))
 
     // ── Điểm gọi CHÍNH — gọi từ MyReadingSyncEngine.pushPendingLocked() NGAY
     // SAU KHI biết succeededIds của lượt push này (readingId nào vừa
@@ -334,6 +370,17 @@ object TtsMyReadingSyncTrigger {
     // tục theo dõi ở các chu kỳ sau — không mất gì, chỉ là không còn "nhanh"
     // nữa.
     //
+    // ⚠️ MỚI — activelyPolling.add()/remove(): đánh dấu "đang có luồng poll
+    // xử lý job này" trong suốt thời gian hàm chạy — TtsMyReadingDownloadGate
+    // dựa vào cờ này để biết mà KHÔNG tự gọi checkStatus() trùng lặp (xem
+    // isPolling() + ghi chú ở đầu file). add() trả về false nếu key đã tồn
+    // tại (đã có luồng khác đang poll đúng job này) — return sớm, tránh 2
+    // luồng poll cùng chạy song song cho cùng 1 job (hiếm khi xảy ra vì
+    // onReadingsSynced() chỉ launch poll đúng 1 lần mỗi lượt gọi request
+    // thành công, nhưng phòng hờ nếu có đường gọi trùng nào khác trong
+    // tương lai). `finally` đảm bảo LUÔN remove() dù hàm thoát ở return nào
+    // (ready/failed/hết lượt poll) — không để sót cờ "đang poll" treo mãi.
+    //
     // KHÔNG throw ra ngoài — cùng nguyên tắc "lưới an toàn tuỳ chọn" của
     // toàn bộ file này; 1 lần checkStatus() lỗi mạng giữa chừng chỉ bỏ qua
     // lượt đó, thử lại ở lượt polling kế tiếp.
@@ -344,44 +391,57 @@ object TtsMyReadingSyncTrigger {
         sid: Int,
         contentHash: String,
     ) {
-        repeat(MAX_POLL_ATTEMPTS) { attempt ->
-            delay(POLL_INTERVAL_MS)
-
-            val status = try {
-                client.checkStatus(readingId = readingId, sid = sid, contentHash = contentHash)
-            } catch (e: Exception) {
-                Log.e(TAG, "pollUntilReadyThenDownload: lỗi checkStatus reading_id=$readingId sid=$sid (lần ${attempt + 1})", e)
-                null
-            }
-
-            when (status) {
-                TtsMyReadingJobStatus.READY -> {
-                    Log.d(
-                        TAG,
-                        "pollUntilReadyThenDownload: reading_id=$readingId sid=$sid READY sau ${attempt + 1} lần hỏi, enqueue tải Drive"
-                    )
-                    TtsKokoroPackScheduler.enqueueDownload(context, readingId, sid)
-                    TtsMyReadingPendingStore.remove(readingId, sid)
-                    return
-                }
-                TtsMyReadingJobStatus.FAILED -> {
-                    Log.w(TAG, "pollUntilReadyThenDownload: reading_id=$readingId sid=$sid server báo FAILED, dừng polling")
-                    TtsMyReadingPendingStore.remove(readingId, sid)
-                    TtsMyReadingSentRequestStore.remove(readingId, sid)
-                    return
-                }
-                else -> {
-                    // PENDING/PROCESSING/UNKNOWN/null — thử lại ở lượt kế
-                    // tiếp, không log ồn ào mỗi lượt bình thường.
-                }
-            }
+        val key = pollKey(readingId, sid)
+        if (!activelyPolling.add(key)) {
+            // Đã có 1 luồng poll khác đang xử lý đúng (readingId, sid) này
+            // rồi — không cần chạy thêm 1 bản nữa, tránh 2 luồng cùng hỏi
+            // server song song vô ích.
+            Log.d(TAG, "pollUntilReadyThenDownload: reading_id=$readingId sid=$sid đã có luồng poll khác đang chạy, bỏ qua")
+            return
         }
 
-        Log.d(
-            TAG,
-            "pollUntilReadyThenDownload: reading_id=$readingId sid=$sid chưa READY sau $MAX_POLL_ATTEMPTS lần hỏi, " +
-                    "để TtsMyReadingPrecacheWorker tiếp tục theo dõi ở chu kỳ sau"
-        )
+        try {
+            repeat(MAX_POLL_ATTEMPTS) { attempt ->
+                delay(POLL_INTERVAL_MS)
+
+                val status = try {
+                    client.checkStatus(readingId = readingId, sid = sid, contentHash = contentHash)
+                } catch (e: Exception) {
+                    Log.e(TAG, "pollUntilReadyThenDownload: lỗi checkStatus reading_id=$readingId sid=$sid (lần ${attempt + 1})", e)
+                    null
+                }
+
+                when (status) {
+                    TtsMyReadingJobStatus.READY -> {
+                        Log.d(
+                            TAG,
+                            "pollUntilReadyThenDownload: reading_id=$readingId sid=$sid READY sau ${attempt + 1} lần hỏi, enqueue tải Drive"
+                        )
+                        TtsKokoroPackScheduler.enqueueDownload(context, readingId, sid)
+                        TtsMyReadingPendingStore.remove(readingId, sid)
+                        return
+                    }
+                    TtsMyReadingJobStatus.FAILED -> {
+                        Log.w(TAG, "pollUntilReadyThenDownload: reading_id=$readingId sid=$sid server báo FAILED, dừng polling")
+                        TtsMyReadingPendingStore.remove(readingId, sid)
+                        TtsMyReadingSentRequestStore.remove(readingId, sid)
+                        return
+                    }
+                    else -> {
+                        // PENDING/PROCESSING/UNKNOWN/null — thử lại ở lượt kế
+                        // tiếp, không log ồn ào mỗi lượt bình thường.
+                    }
+                }
+            }
+
+            Log.d(
+                TAG,
+                "pollUntilReadyThenDownload: reading_id=$readingId sid=$sid chưa READY sau $MAX_POLL_ATTEMPTS lần hỏi, " +
+                        "để TtsMyReadingPrecacheWorker tiếp tục theo dõi ở chu kỳ sau"
+            )
+        } finally {
+            activelyPolling.remove(key)
+        }
     }
 
     // ── Build TOÀN BỘ items (sentence + phrase + word) cần server tổng hợp

@@ -41,7 +41,7 @@
 // vi cũ (thử Drive trực tiếp) — không có rủi ro marker sai vì không có
 // pipeline bất đồng bộ nào đang chạy trong trường hợp này.
 //
-// ⚠️ MỚI — CHECK CỤC BỘ TRƯỚC KHI GỌI SERVER: nếu
+// ⚠️ CHECK CỤC BỘ TRƯỚC KHI GỌI SERVER: nếu
 // TtsKokoroPackDownloader.isPackSynced(readingId, sid) đã trả về true (gói
 // đã tải + giải nén xong TỪ TRƯỚC — chỉ đọc 1 file marker nhỏ trên đĩa,
 // KHÔNG gọi mạng), gate trả về true NGAY, KHÔNG gọi checkStatus() tới
@@ -50,6 +50,21 @@
 // tốn 1 lượt gọi mạng tới server dù đã biết chắc gói này đã tải xong từ
 // lâu — vô ích, chỉ tổ tốn băng thông/thời gian. Đây là điểm gọi DUY NHẤT
 // quyết định "đã tải rồi thì đừng hỏi lại nữa".
+//
+// ⚠️ MỚI — CHECK "ĐANG CÓ LUỒNG POLL TỰ ĐỘNG XỬ LÝ JOB NÀY" TRƯỚC KHI GỌI
+// SERVER: TtsMyReadingSyncTrigger tự launch 1 coroutine poll NGẦM
+// (pollUntilReadyThenDownload(), mỗi 4 giây, tối đa 60 giây) NGAY SAU khi
+// gửi request thành công và server trả pending/processing — luồng đó tự
+// enqueue tải Drive ngay khi phát hiện ready, KHÔNG cần Gate này làm thêm
+// gì. Trước đây (thiếu check này) nếu người dùng mở đúng bài vừa AI dịch
+// xong trong vòng 60 giây đầu (rất phổ biến — dịch xong, mở đọc luôn), Gate
+// SẼ TỰ gọi checkStatus() mỗi lần AI watchdog reload (~15 giây/lần), CHỒNG
+// LÊN luồng poll (4 giây/lần) đang chạy sẵn — 2 nguồn cùng hỏi 1 câu hỏi
+// giống hệt nhau cho server, dư thừa. Giờ nếu TtsMyReadingSyncTrigger.isPolling()
+// trả về true, Gate trả về false NGAY (không gọi mạng) — để luồng poll kia
+// tự lo liệu, khi nó tải xong Drive sẽ tự có file, lần Gate gọi TIẾP THEO
+// (sau khi luồng poll đã dừng) sẽ thấy isPackSynced() = true và cho qua
+// ngay từ bước check cục bộ ở trên, không cần hỏi server nữa.
 package com.eleap.eleap.core.tts.kokoro.myreading
 
 import android.content.Context
@@ -74,13 +89,22 @@ object TtsMyReadingDownloadGate {
     ): Boolean {
         if (!isMyReading) return true
 
-        // ⚠️ MỚI — check CỤC BỘ, KHÔNG gọi mạng: gói này đã tải xong từ
-        // trước rồi thì khỏi cần hỏi server nữa, cho tiến hành ngay (bước
+        // ── Check CỤC BỘ, KHÔNG gọi mạng: gói này đã tải xong từ trước rồi
+        // thì khỏi cần hỏi server nữa, cho tiến hành ngay (bước
         // enqueueEnsureReadingSynced() phía sau cũng tự fast-path qua
         // isPackUpToDate() nội bộ, không tốn gì thêm).
         if (TtsKokoroPackDownloader.isPackSynced(context, readingId, sid)) {
             Log.d(TAG, "shouldProceedToDriveSync: reading_id=$readingId sid=$sid đã tải xong từ trước (cục bộ), bỏ qua hỏi server")
             return true
+        }
+
+        // ⚠️ MỚI — chống hỏi server trùng lặp với luồng poll tự động của
+        // TtsMyReadingSyncTrigger (xem ghi chú ⚠️ MỚI ở đầu file). Nếu đã có
+        // luồng poll đang xử lý đúng job này, để nó tự lo, Gate không cần
+        // tự gọi checkStatus() nữa trong lúc đó.
+        if (TtsMyReadingSyncTrigger.isPolling(readingId, sid)) {
+            Log.d(TAG, "shouldProceedToDriveSync: reading_id=$readingId sid=$sid đang có luồng poll tự động xử lý, bỏ qua hỏi server lần này")
+            return false
         }
 
         val baseUrl = TtsMyReadingConfig.baseUrl() ?: return true
