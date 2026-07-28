@@ -52,6 +52,8 @@ data class UserVocabularyDto(
     @SerialName("source_word_id") val sourceWordId: String? = null,
     @SerialName("source_phrase_id") val sourcePhraseId: String? = null,
 
+    @SerialName("reading_id") val readingId: String? = null,
+
     @SerialName("text_en") val textEn: String? = null,
     @SerialName("text_vi") val textVi: String? = null,
     @SerialName("phrase_text_en") val phraseTextEn: String? = null,
@@ -79,6 +81,7 @@ data class UserVocabularyUpsertDto(
     @SerialName("source_sentence_id") val sourceSentenceId: String? = null,
     @SerialName("source_word_id") val sourceWordId: String? = null,
     @SerialName("source_phrase_id") val sourcePhraseId: String? = null,
+    @SerialName("reading_id") val readingId: String? = null,
     @SerialName("text_en") val textEn: String? = null,
     @SerialName("text_vi") val textVi: String? = null,
     @SerialName("phrase_text_en") val phraseTextEn: String? = null,

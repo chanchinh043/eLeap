@@ -12,6 +12,7 @@ import androidx.compose.runtime.remember
 import androidx.compose.ui.Alignment
 import androidx.compose.ui.Modifier
 import androidx.compose.ui.geometry.Rect
+import androidx.compose.ui.platform.LocalContext
 import androidx.compose.ui.platform.LocalDensity
 import androidx.compose.ui.text.font.FontStyle
 import androidx.compose.ui.unit.Density
@@ -24,6 +25,8 @@ import androidx.compose.ui.window.Popup
 import androidx.compose.ui.window.PopupPositionProvider
 import androidx.compose.ui.window.PopupProperties
 import com.eleap.eleap.core.tts.TtsManager
+import com.eleap.eleap.core.tts.TtsPlaybackRouter
+import com.eleap.eleap.core.tts.cache.TtsCacheItemType
 import com.eleap.eleap.feature.vocab.data.UserVocabularyEntry
 import com.eleap.eleap.feature.vocab.data.VocabDictEntry
 
@@ -90,12 +93,31 @@ fun VocabPopup(
 ) {
     val density: Density = LocalDensity.current
     val spacingPx = with(density) { 8.dp.toPx() }
+    val context = LocalContext.current
 
     // ── Tự động đọc từ 1 lần khi popup hiện lên cho đúng entry này ───────────
     // key = entry.id → chỉ nói lại khi người dùng chọn sang từ KHÁC, không
     // lặp lại nếu Composable chỉ recompose vì lý do khác (vd toggle "Xem thêm").
+    // ⚠️ Ưu tiên TtsPlaybackRouter (tra cache đã tải sẵn theo readingId + giọng
+    // đang chọn, xem WordPopup.kt) — chỉ cần entry có ĐỦ readingId lẫn
+    // sourceWordId (dữ liệu lưu SAU khi có cột reading_id). Nếu thiếu 1 trong 2
+    // (dữ liệu cũ lưu trước đó) → fallback Android TTS như hành vi cũ.
     LaunchedEffect(entry.id) {
-        entry.textEn?.let { TtsManager.speak(it) }
+        entry.textEn?.let { text ->
+            val readingId = entry.readingId
+            val sourceWordId = entry.sourceWordId
+            if (readingId != null && sourceWordId != null) {
+                TtsPlaybackRouter.speak(
+                    context   = context,
+                    text      = text,
+                    readingId = readingId,
+                    itemType  = TtsCacheItemType.WORD,
+                    itemId    = sourceWordId,
+                )
+            } else {
+                TtsManager.speak(text)
+            }
+        }
     }
 
     val positionProvider = remember(anchorRect, spacingPx) {

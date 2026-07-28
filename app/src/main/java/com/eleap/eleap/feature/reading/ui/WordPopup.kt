@@ -216,6 +216,7 @@ fun WordPopup(
                 SaveWordButton(
                     word              = word,
                     phrase            = phrase,
+                    readingId         = readingId,
                     onSaveStateChanged = onSaveStateChanged,
                 )
 

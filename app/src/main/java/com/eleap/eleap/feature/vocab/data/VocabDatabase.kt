@@ -58,6 +58,13 @@ data class UserVocabularyEntry(
     val sourceWordId: String?,
     val sourcePhraseId: String?,
 
+    // Bài đọc chứa từ này (readings.reading_id hoặc myreadings.reading_id) —
+    // lưu THẲNG lúc lưu từ, không suy ngược từ sourceSentenceId (2 bảng khác
+    // nhau cho bài hệ thống/MyReading). Dùng để TtsPlaybackRouter tra đúng
+    // cache theo (readingId, vendor, sid) khi phát ở VocabPopup — xem
+    // VocabPopup.kt. Có thể null với dữ liệu cũ lưu trước khi có cột này.
+    val readingId: String? = null,
+
     // Nội dung
     val textEn: String?,
     val textVi: String?,
@@ -172,6 +179,9 @@ class UserDatabase private constructor(context: Context) {
                     source_word_id     TEXT,
                     source_phrase_id   TEXT,
 
+                    -- Bài đọc chứa từ này (readings.reading_id / myreadings.reading_id)
+                    reading_id         TEXT,
+
                     -- Nội dung
                     text_en            TEXT,
                     text_vi            TEXT,
@@ -257,9 +267,11 @@ class UserDatabase private constructor(context: Context) {
     companion object {
         // DB_VERSION 2 → 3: thêm idx_vocab_user_word_alive (unique index
         // chống trùng source_word_id giữa nhiều thiết bị/nhiều lần lưu).
+        // DB_VERSION 3 → 4: thêm cột reading_id (đọc đúng giọng đang chọn
+        // khi phát TTS ở VocabPopup — xem VocabRepository.kt/VocabPopup.kt).
         // Vẫn dùng DROP + tạo lại (xem ghi chú ở onUpgrade()) — CHỈ chấp
         // nhận được vì app chưa có người dùng thật.
-        private const val DB_VERSION = 3
+        private const val DB_VERSION = 4
         @Volatile private var INSTANCE: UserDatabase? = null
 
         fun getInstance(context: Context): UserDatabase =

@@ -46,6 +46,7 @@ fun SaveWordButton(
     word: SentenceWord,
     phrase: SentencePhrase?,
     sentence: ReadingSentence? = null,
+    readingId: String? = null,
     onSaveStateChanged: () -> Unit = {},
 ) {
     val context = LocalContext.current
@@ -79,6 +80,7 @@ fun SaveWordButton(
                         sourceSentenceId = word.sentenceId,
                         sourceWordId     = word.wordId,
                         sourcePhraseId   = phrase?.phraseId,
+                        readingId        = readingId,
                         textEn           = word.textEn,
                         textVi           = word.textVi,
                         phraseTextEn     = phrase?.textEn,

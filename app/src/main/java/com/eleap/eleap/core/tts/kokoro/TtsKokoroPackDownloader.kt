@@ -613,8 +613,15 @@ object TtsKokoroPackDownloader {
     // làm lại từ đầu). Trước khi giải nén, XOÁ SẠCH các file audio cũ trong
     // thư mục đích — đảm bảo không tồn đọng file lỗi thời của phiên bản
     // trước (vd item đã bị xoá khỏi bài, hoặc đổi hash do nội dung sửa lại)
-    // — ⚠️ file marker (.pack_synced/.pack_checked_at) KHÔNG bị xoá vì sẽ
-    // được ghi lại đúng NGAY SAU khi hàm này chạy xong ở downloadAndExtractPack().
+    // — ⚠️ ĐÃ SỬA (2026-07): PACK_SYNCED_MARKER giờ CŨNG bị xoá cùng lúc với
+    // audio cũ (xem clearOldAudioFiles()) — nếu không, có 1 khoảng trống
+    // giữa lúc audio bị xoá và lúc giải nén+ghi marker mới xong mà
+    // isPackSynced() vẫn trả về true sai lệch, gây ENOENT cho bất kỳ luồng
+    // nào cố phát/warm audio trong khoảng đó (xem ghi chú chi tiết ở
+    // clearOldAudioFiles()). CHỈ còn PACK_CHECKED_AT_MARKER được giữ lại —
+    // marker đó không liên quan tới việc audio có tồn tại hay không.
+    // PACK_SYNCED_MARKER sẽ được ghi lại đúng NGAY SAU khi hàm này chạy xong
+    // ở downloadAndExtractPack(), nếu giải nén thành công.
     //
     // ⚠️ TÊN FILE giữ NGUYÊN từ entry.name trong zip — server Kokoro tự đóng
     // gói đúng quy ước "{type}_{itemId}_{hash}.ogg" của TtsAudioCache, hàm
@@ -660,19 +667,36 @@ object TtsKokoroPackDownloader {
     // tồn đọng audio của item đã bị xoá khỏi bài (server không còn đóng gói
     // lại nữa) hoặc audio ứng với hash cũ (nội dung đã sửa, tên file đổi
     // theo hash mới, file cũ nếu không xoá sẽ nằm lại vĩnh viễn không ai
-    // dùng tới). CHỈ xoá file audio (không phải thư mục con, không phải 2
-    // marker .pack_synced/.pack_checked_at — chúng sẽ được ghi lại ngay sau
-    // khi giải nén xong ở downloadAndExtract()).
+    // dùng tới).
+    //
+    // ⚠️ ĐÃ SỬA BUG (2026-07): PHẢI xoá LUÔN cả PACK_SYNCED_MARKER ở đây,
+    // KHÔNG được giữ lại như bản cũ. Lý do: extractZip() gọi hàm này TRƯỚC
+    // khi giải nén (audio cũ mất NGAY LẬP TỨC), còn PACK_SYNCED_MARKER chỉ
+    // được ghi lại SAU KHI giải nén xong, ở downloadAndExtractPack() (có
+    // thể mất vài giây tới vài chục giây nếu mạng chậm). Nếu marker cũ vẫn
+    // còn "sống sót" qua khoảng trống này, isPackSynced() sẽ trả về TRUE dù
+    // audio thực tế đã bị xoá — bất kỳ luồng nào gọi isPackSynced() rồi
+    // ngay sau đó cố mở/warm file audio (vd khi người dùng đổi giọng) sẽ
+    // gặp ENOENT vì file không còn tồn tại. Đây chính là nguyên nhân gây độ
+    // trễ ~20 giây khi chuyển giọng giữa lúc đang đọc bài — luồng warm() bị
+    // lỗi ENOENT rồi phải chờ tới lượt gọi kế tiếp (hoặc timeout/retry) mới
+    // thấy audio mới đã có.
+    //
+    // Vẫn GIỮ LẠI PACK_CHECKED_AT_MARKER — marker đó chỉ ghi nhận "lần cuối
+    // đã hỏi Drive", không liên quan gì tới việc audio có tồn tại hay
+    // không, xoá nó không cần thiết và sẽ làm mất thông tin cho
+    // isPackUpToDate() một cách vô ích.
     //
     // ⚠️ Trước đây lọc theo `extension == "ogg"` cứng — giờ Kokoro luôn tạo
     // .ogg nên vẫn đúng trong thực tế, nhưng để KHÔNG phụ thuộc giả định
     // "TtsAudioCache chỉ có .ogg" (đã bỏ ở tầng cache chung), lọc bằng cách
-    // loại trừ đúng 2 tên marker đã biết thay vì lọc theo đuôi — an toàn
-    // hơn nếu sau này Kokoro đổi định dạng audio mà không cần sửa dòng này.
+    // loại trừ đúng tên marker cần giữ lại (chỉ còn PACK_CHECKED_AT_MARKER)
+    // thay vì lọc theo đuôi — an toàn hơn nếu sau này Kokoro đổi định dạng
+    // audio mà không cần sửa dòng này.
     private fun clearOldAudioFiles(destDir: File) {
         destDir.listFiles()?.forEach { file ->
-            val isMarker = file.name == PACK_SYNCED_MARKER || file.name == PACK_CHECKED_AT_MARKER
-            if (file.isFile && !isMarker) {
+            val isMarkerToKeep = file.name == PACK_CHECKED_AT_MARKER
+            if (file.isFile && !isMarkerToKeep) {
                 file.delete()
             }
         }

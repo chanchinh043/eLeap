@@ -212,6 +212,7 @@ private fun UserVocabularyDto.toEntry(): com.eleap.eleap.feature.vocab.data.User
         sourceSentenceId = sourceSentenceId,
         sourceWordId     = sourceWordId,
         sourcePhraseId   = sourcePhraseId,
+        readingId        = readingId,
         textEn           = textEn,
         textVi           = textVi,
         phraseTextEn     = phraseTextEn,

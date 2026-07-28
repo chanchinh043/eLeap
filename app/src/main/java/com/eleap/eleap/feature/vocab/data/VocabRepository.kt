@@ -53,6 +53,9 @@ class VocabRepository private constructor(
         sourceWordId     = nullableString(it, "source_word_id"),
         sourcePhraseId   = nullableString(it, "source_phrase_id"),
 
+        // Bài đọc chứa từ này
+        readingId        = nullableString(it, "reading_id"),
+
         // Nội dung
         textEn           = it.getString(it.getColumnIndexOrThrow("text_en")),
         textVi           = it.getString(it.getColumnIndexOrThrow("text_vi")),
@@ -84,6 +87,7 @@ class VocabRepository private constructor(
         sourceSentenceId: String?,
         sourceWordId: String?,
         sourcePhraseId: String?,
+        readingId: String? = null,
         textEn: String?,
         textVi: String?,
         phraseTextEn: String? = null,
@@ -104,6 +108,9 @@ class VocabRepository private constructor(
                     put("source_sentence_id", sourceSentenceId)
                     put("source_word_id", sourceWordId)
                     put("source_phrase_id", sourcePhraseId)
+
+                    // Bài đọc chứa từ này
+                    put("reading_id", readingId)
 
                     // Nội dung
                     put("text_en", textEn)
@@ -511,6 +518,7 @@ class VocabRepository private constructor(
             put("source_sentence_id", entry.sourceSentenceId)
             put("source_word_id", entry.sourceWordId)
             put("source_phrase_id", entry.sourcePhraseId)
+            put("reading_id", entry.readingId)
             put("text_en", entry.textEn)
             put("text_vi", entry.textVi)
             put("phrase_text_en", entry.phraseTextEn)
@@ -535,6 +543,7 @@ class VocabRepository private constructor(
             put("phrase_text_vi", entry.phraseTextVi)
             put("sentence_text_en", entry.sentenceTextEn)
             put("sentence_text_vi", entry.sentenceTextVi)
+            put("reading_id", entry.readingId)
             put("selected", entry.selected)
             put("count", entry.count)
             put("score", entry.score)
